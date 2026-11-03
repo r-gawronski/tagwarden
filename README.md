@@ -203,6 +203,189 @@ repository>`, for example
 `registry.example.internal/mirror/registry.k8s.io/ingress-nginx/controller:v1.11.3`.
 Set `target.repository` to pick a different path.
 
+## Use cases
+
+### Upgrades with Renovate
+
+Your cluster can't see upstream registries, but you still want upgrade
+PRs. Let Tagwarden keep a window of versions in your registry, point
+your manifests at the mirrored path, and run Renovate against your
+registry only. When a new release lands in the mirror, Renovate opens a
+PR. After the merge, GitOps rolls it out and the image is already
+there. Renovate can only ever propose a version that came in through
+Tagwarden.
+
+```mermaid
+---
+config:
+  look: handDrawn
+  theme: base
+  themeVariables:
+    actorBkg: "#EDE9FE"
+    actorBorder: "#8B5CF6"
+    actorTextColor: "#4C1D95"
+    actorLineColor: "#8B95A5"
+    signalColor: "#8B95A5"
+    signalTextColor: "#8B95A5"
+    sequenceNumberColor: "#1E293B"
+---
+sequenceDiagram
+  autonumber
+  participant U as Upstream
+  participant T as Tagwarden
+  participant R as Your registry
+  participant Ren as Renovate
+  participant G as Git
+  participant C as Cluster
+
+  T->>U: list tags, fetch 1.31.7
+  T->>R: push 1.31.7 by digest
+  Ren->>R: list tags
+  Ren->>G: PR: nginx 1.31.6 -> 1.31.7
+  G->>C: merge, GitOps sync
+  C->>R: pull 1.31.7
+```
+
+The mirror keeps the three newest nginx releases from 1.30 up:
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata:
+  name: nginx
+  namespace: team-web
+spec:
+  targetRef: registry
+  schedule: "0 * * * *"
+  source: {registry: docker.io, repository: library/nginx}
+  target: {project: mirror}
+  tags:
+    include: ['^\d+\.\d+\.\d+$']
+    semverRange: ">=1.30.0"
+    keepLatest: 3
+```
+
+Your manifests use the mirrored image:
+
+```yaml
+image: registry.example.internal/mirror/docker.io/library/nginx:1.31.7
+```
+
+Renovate gets read access to your registry. With a self-hosted
+Renovate, keep the credentials in its own config and the token in an
+environment variable:
+
+```js
+// config.js
+module.exports = {
+  secrets: {
+    REGISTRY_TOKEN: process.env.REGISTRY_TOKEN,
+  },
+  hostRules: [
+    {
+      hostType: 'docker',
+      matchHost: 'registry.example.internal',
+      username: 'renovate',
+      password: '{{ secrets.REGISTRY_TOKEN }}',
+    },
+  ],
+};
+```
+
+And the repository config groups the mirrored images and automerges
+patch releases:
+
+```json
+{
+  "packageRules": [
+    {
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["registry.example.internal/mirror/**"],
+      "groupName": "mirrored images"
+    },
+    {
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["registry.example.internal/mirror/**"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    }
+  ]
+}
+```
+
+### Bootstrapping an air-gapped cluster
+
+A fresh cluster needs its platform pieces before anything else works:
+cert-manager, an ingress controller, a CSI driver. Mirror both the
+images and the OCI charts, and your GitOps tool installs everything
+from your registry on day one. Each image is its own mirror, so
+cert-manager's controller, webhook and cainjector each get one.
+
+```yaml
+spec:
+  source: {registry: quay.io, repository: jetstack/cert-manager-controller}
+  target: {project: mirror}
+  tags:
+    semverRange: ">=1.18.0"
+    keepLatest: 2
+  requiredPlatforms: [linux/amd64, linux/arm64]
+---
+spec:
+  type: HelmOCI
+  source: {registry: quay.io, repository: jetstack/charts/cert-manager}
+  target: {project: mirror}
+  tags:
+    semverRange: ">=1.18.0"
+    keepLatest: 2
+```
+
+The chart's default image references still point upstream, so set its
+image repositories to the mirrored paths in your values.
+
+### Staying under Docker Hub pull limits
+
+Fifty nodes pulling the same image from Docker Hub count as fifty pulls.
+With Tagwarden, the image comes from Docker Hub once and every node
+pulls it from your registry. Tags you already have aren't downloaded
+again: Tagwarden checks them with HEAD requests, which Docker Hub
+doesn't count as pulls, so an hourly schedule barely touches your
+quota.
+
+```yaml
+spec:
+  schedule: "0 * * * *"
+  source: {registry: docker.io, repository: library/postgres}
+  target: {project: mirror}
+  tags:
+    include: ['^\d+\.\d+$']
+    semverRange: ">=17.0"
+    keepLatest: 2
+```
+
+### One source, a window per team
+
+Two teams use the same upstream but move at different speeds. Each
+writes its own mirror of the same source into the same project. Both
+mirrors land in the same target repository, so the registry holds the
+union of both windows. Mirrors of different sources can't share a
+path, so nobody can slip another image in under that name.
+
+```yaml
+# team-a stays on 2.13
+spec:
+  source: {registry: registry.k8s.io, repository: kube-state-metrics/kube-state-metrics}
+  target: {project: mirror}
+  tags: {semverRange: ">=2.13.0 <2.14.0", keepLatest: 2}
+---
+# team-b follows the newest releases
+spec:
+  source: {registry: registry.k8s.io, repository: kube-state-metrics/kube-state-metrics}
+  target: {project: mirror}
+  tags: {semverRange: ">=2.15.0", keepLatest: 3}
+```
+
+The project's `namespaceSelector` has to match both teams' namespaces.
+
 ## Features
 
 - **Tag selection:** include and exclude regexes, semver ranges, keep
