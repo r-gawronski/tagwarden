@@ -21,6 +21,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -86,8 +87,8 @@ type ArtifactMirrorReconciler struct {
 // +kubebuilder:rbac:groups=mirror.tagwarden.dev,resources=artifactmirrors/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=batch,namespace=system,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete;deletecollection
-// +kubebuilder:rbac:groups="",namespace=system,resources=configmaps,verbs=get;list;watch;create;update;patch;delete;deletecollection
+// +kubebuilder:rbac:groups=batch,namespace=system,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",namespace=system,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile checks a mirror and renders its CronJob.
 func (r *ArtifactMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -113,25 +114,66 @@ func (r *ArtifactMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	old := m.Status.DeepCopy()
 	oldReady := meta.FindStatusCondition(old.Conditions, ConditionReady)
-	res, err := r.reconcile(ctx, &m)
+	var ev pending
+	res, err := r.reconcile(ctx, &m, &ev)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	m.Status.ObservedGeneration = m.Generation
 	if ready := meta.FindStatusCondition(m.Status.Conditions, ConditionReady); ready != nil &&
 		ready.Status == metav1.ConditionFalse && (oldReady == nil || oldReady.Reason != ready.Reason) {
-		r.Recorder.Eventf(&m, nil, corev1.EventTypeWarning, ready.Reason, "Reconcile", "%s", ready.Message)
+		ev.add(corev1.EventTypeWarning, ready.Reason, "Reconcile", ready.Message)
 	}
 	if !equality.Semantic.DeepEqual(old, &m.Status) {
 		if err := r.Status().Update(ctx, &m); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
+	// Events follow the status they describe, so a failed update does not
+	// leave an Event for a state that was never recorded.
+	for _, e := range ev {
+		r.Recorder.Eventf(&m, nil, e.typ, e.reason, e.action, "%s", e.note)
+	}
 	return res, nil
 }
 
+type event struct{ typ, reason, action, note string }
+
+// pending collects the Events of one reconcile.
+type pending []event
+
+func (p *pending) add(typ, reason, action, note string) {
+	*p = append(*p, event{typ, reason, action, note})
+}
+
+// ownershipError reports an object in the operator namespace whose
+// annotations name another mirror.
+type ownershipError struct {
+	kind, name, owner string
+}
+
+func (e *ownershipError) Error() string {
+	return fmt.Sprintf("%s %s already exists and belongs to mirror %q", e.kind, e.name, e.owner)
+}
+
+// ownedBy reports whether obj is new or names m in its annotations.
+func ownedBy(obj client.Object, m *mirrorv1alpha1.ArtifactMirror) bool {
+	a := obj.GetAnnotations()
+	return obj.GetResourceVersion() == "" ||
+		a[AnnotationMirrorNamespace] == m.Namespace && a[AnnotationMirrorName] == m.Name
+}
+
+// checkOwner returns an ownershipError when obj belongs to another mirror.
+func checkOwner(kind string, obj client.Object, m *mirrorv1alpha1.ArtifactMirror) error {
+	if ownedBy(obj, m) {
+		return nil
+	}
+	a := obj.GetAnnotations()
+	return &ownershipError{kind, obj.GetNamespace() + "/" + obj.GetName(), a[AnnotationMirrorNamespace] + "/" + a[AnnotationMirrorName]}
+}
+
 // reconcile sets the Ready condition and renders or removes the CronJob.
-func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror) (ctrl.Result, error) {
+func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, ev *pending) (ctrl.Result, error) {
 	notReady := func(reason, msg string) (ctrl.Result, error) {
 		r.setReady(m, metav1.ConditionFalse, reason, msg)
 		var res ctrl.Result
@@ -176,28 +218,44 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 
 	key := types.NamespacedName{Namespace: r.Namespace, Name: objectName(m)}
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		if err := checkOwner("ConfigMap", cm, m); err != nil {
+			return err
+		}
 		renderConfigMap(cm, m, spec)
 		return nil
-	}); err != nil {
-		return ctrl.Result{}, err
-	}
-	cj := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, cj, func() error {
-		renderCronJob(cj, &t, m, r.SyncImage, spec)
-		return nil
 	})
-	if apierrors.IsInvalid(err) {
-		return notReady(ReasonInvalidSpec, err.Error())
+	var op controllerutil.OperationResult
+	if err == nil {
+		cj := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}
+		desired := cj.DeepCopy()
+		renderCronJob(desired, &t, m, r.SyncImage, spec)
+		op, err = controllerutil.CreateOrUpdate(ctx, r.Client, cj, func() error {
+			if err := checkOwner("CronJob", cj, m); err != nil {
+				return err
+			}
+			// The server defaults fields the rendered spec leaves empty, so
+			// compare checksums instead of specs to avoid no-op updates.
+			if cj.Annotations[annotationCronJobChecksum] != desired.Annotations[annotationCronJobChecksum] {
+				cj.Labels, cj.Annotations, cj.Spec = desired.Labels, desired.Annotations, desired.Spec
+			}
+			return nil
+		})
 	}
-	if err != nil {
+	var owner *ownershipError
+	switch {
+	case errors.As(err, &owner):
+		return notReady(ReasonOwnershipConflict, owner.Error())
+	case apierrors.IsInvalid(err):
+		return notReady(ReasonInvalidSpec, err.Error())
+	case err != nil:
 		return ctrl.Result{}, err
 	}
 	if op == controllerutil.OperationResultCreated {
-		r.Recorder.Eventf(m, nil, corev1.EventTypeNormal, "Created", "Reconcile", "Created CronJob %s/%s", key.Namespace, key.Name)
+		ev.add(corev1.EventTypeNormal, "Created", "Reconcile", fmt.Sprintf("Created CronJob %s/%s", key.Namespace, key.Name))
 	}
 	r.setReady(m, metav1.ConditionTrue, ReasonReady, fmt.Sprintf("CronJob %s/%s mirrors to %s", key.Namespace, key.Name, targetRepo(&t, m)))
-	return ctrl.Result{}, r.syncStatus(ctx, m)
+	return ctrl.Result{}, r.syncStatus(ctx, m, ev)
 }
 
 func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, status metav1.ConditionStatus, reason, msg string) {
@@ -301,17 +359,39 @@ func older(a, b *mirrorv1alpha1.ArtifactMirror) bool {
 	return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name)) < 0
 }
 
-// cleanup removes the CronJob, with its Jobs, and the ConfigMap of a mirror.
+// cleanup removes the CronJob, with its Jobs, and the ConfigMap of a
+// mirror. It deletes only objects whose annotations name the mirror.
 func (r *ArtifactMirrorReconciler) cleanup(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror) error {
-	opts := []client.DeleteAllOfOption{
+	opts := []client.ListOption{
 		client.InNamespace(r.Namespace),
 		client.MatchingLabels{LabelMirror: mirrorHash(m.Namespace, m.Name)},
-		client.PropagationPolicy(metav1.DeletePropagationBackground),
 	}
-	if err := r.DeleteAllOf(ctx, &batchv1.CronJob{}, opts...); err != nil {
+	var cronJobs batchv1.CronJobList
+	var configMaps corev1.ConfigMapList
+	if err := r.List(ctx, &cronJobs, opts...); err != nil {
 		return err
 	}
-	return r.DeleteAllOf(ctx, &corev1.ConfigMap{}, opts...)
+	if err := r.List(ctx, &configMaps, opts...); err != nil {
+		return err
+	}
+	var objs []client.Object
+	for i := range cronJobs.Items {
+		objs = append(objs, &cronJobs.Items[i])
+	}
+	for i := range configMaps.Items {
+		objs = append(objs, &configMaps.Items[i])
+	}
+	for _, o := range objs {
+		if !ownedBy(o, m) {
+			continue
+		}
+		err := r.Delete(ctx, o, client.PropagationPolicy(metav1.DeletePropagationBackground),
+			client.Preconditions{UID: new(o.GetUID())})
+		if client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // mirrorFromAnnotations maps an object in the operator namespace to the
@@ -354,6 +434,12 @@ func (r *ArtifactMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	byAnnotations := handler.EnqueueRequestsFromMapFunc(r.mirrorFromAnnotations)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.ArtifactMirror{}).
+		// A mirror that moves onto, leaves or claims a path changes who owns
+		// it, so the other mirrors of the path are checked again.
+		Watches(&mirrorv1alpha1.ArtifactMirror{}, handler.EnqueueRequestsFromMapFunc(
+			func(ctx context.Context, o client.Object) []reconcile.Request {
+				return r.mirrorsMatching(ctx, client.MatchingFields{indexTargetKey: targetKey(o.(*mirrorv1alpha1.ArtifactMirror))})
+			})).
 		Watches(&mirrorv1alpha1.ClusterMirrorTarget{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {
 				return r.mirrorsMatching(ctx, client.MatchingFields{indexTargetName: o.GetName()})
