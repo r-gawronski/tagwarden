@@ -60,6 +60,10 @@ const (
 	// AWSTokenFile is the projected ServiceAccount token with audience
 	// AWSTokenAudience, mounted when a registry uses AWS workload identity.
 	AWSTokenFile = "/var/run/tagwarden/aws-token/token" //nolint:gosec // path, not a credential
+	// GCPTokenFile is the projected ServiceAccount token with the audience
+	// of GCP.TokenAudience, mounted when a registry uses Google Cloud
+	// workload identity.
+	GCPTokenFile = "/var/run/tagwarden/gcp-token/token" //nolint:gosec // path, not a credential
 
 	// ProxyUserEnv and ProxyPasswordEnv hold the proxy credentials. The
 	// proxy itself comes from HTTPS_PROXY and NO_PROXY. Only these
@@ -94,7 +98,47 @@ const (
 	// AWSTokenAudience is the audience AWS STS expects in a ServiceAccount
 	// token from an EKS or other IAM OIDC provider, in every partition.
 	AWSTokenAudience = "sts.amazonaws.com" //nolint:gosec // audience, not a credential
+
+	// AuthGCPWorkloadIdentity names Google Cloud Workload Identity
+	// Federation in Spec.TargetAuth and Spec.SourceAuth.
+	AuthGCPWorkloadIdentity = "gcpWorkloadIdentity"
+	// GCPScope is the OAuth scope of the Google access token. Artifact
+	// Registry documents no narrower scope; IAM roles limit what the
+	// token can do.
+	GCPScope = "https://www.googleapis.com/auth/cloud-platform"
 )
+
+// GCP is the Google Cloud Workload Identity Federation provider of a sync
+// run. It holds identifiers only, no secrets.
+type GCP struct {
+	Audience            string `json:"audience"`
+	ServiceAccountEmail string `json:"serviceAccountEmail,omitempty"`
+}
+
+var (
+	gcpAudience = regexp.MustCompile(`^//iam\.googleapis\.com/projects/[0-9]{1,20}/locations/global/workloadIdentityPools/[a-z0-9-]{4,32}/providers/[a-z0-9-]{4,32}$`)
+	gcpEmail    = regexp.MustCompile(`^[a-z0-9-]{6,30}@[a-z0-9-]{6,30}\.iam\.gserviceaccount\.com$`)
+	garHost     = regexp.MustCompile(`^([a-z0-9]+(-[a-z0-9]+)*-docker\.pkg\.dev|((us|eu|asia)\.)?gcr\.io)(:443)?$`)
+)
+
+// TokenAudience is the audience of the projected ServiceAccount token: the
+// default allowed audience of a workload identity pool provider.
+func (g *GCP) TokenAudience() string { return "https:" + g.Audience }
+
+func (g *GCP) validate() error {
+	if !gcpAudience.MatchString(g.Audience) {
+		return errors.New("audience must be a workload identity pool provider")
+	}
+	if g.ServiceAccountEmail != "" && !gcpEmail.MatchString(g.ServiceAccountEmail) {
+		return errors.New("serviceAccountEmail must be a service account email")
+	}
+	return nil
+}
+
+// GARHost reports whether host is a Google Artifact Registry Docker host,
+// <location>-docker.pkg.dev or a gcr.io domain that Artifact Registry
+// serves. ASCII letters are folded as in the CRD rule.
+func GARHost(host string) bool { return garHost.MatchString(lowerASCII(host)) }
 
 // Azure is the Microsoft Entra workload identity of a sync run. It holds
 // identifiers only, no secrets.
@@ -242,6 +286,8 @@ type Spec struct {
 	Azure *Azure `json:"azure,omitempty"`
 	// AWS is required when a registry uses AuthAWSWorkloadIdentity.
 	AWS *AWS `json:"aws,omitempty"`
+	// GCP is required when a registry uses AuthGCPWorkloadIdentity.
+	GCP *GCP `json:"gcp,omitempty"`
 
 	// SourceRepo, TargetRepo and DeniedPrefixes are set by Decode.
 	SourceRepo     name.Repository `json:"-"`
@@ -312,6 +358,10 @@ func (s *Spec) validate() error {
 			if s.AWS == nil {
 				return errors.New("aws: required by " + AuthAWSWorkloadIdentity)
 			}
+		case AuthGCPWorkloadIdentity:
+			if s.GCP == nil {
+				return errors.New("gcp: required by " + AuthGCPWorkloadIdentity)
+			}
 		default:
 			return fmt.Errorf("unknown registry auth %q", a)
 		}
@@ -324,6 +374,11 @@ func (s *Spec) validate() error {
 	if s.AWS != nil {
 		if err := s.AWS.validate(); err != nil {
 			return fmt.Errorf("aws: %w", err)
+		}
+	}
+	if s.GCP != nil {
+		if err := s.GCP.validate(); err != nil {
+			return fmt.Errorf("gcp: %w", err)
 		}
 	}
 	for _, c := range s.DeniedCIDRs {

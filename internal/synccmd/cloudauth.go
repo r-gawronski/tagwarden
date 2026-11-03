@@ -41,7 +41,7 @@ import (
 )
 
 // credentialProvider gets registry credentials from a cloud identity:
-// Azure and AWS; GAR is planned.
+// Azure, AWS and Google Cloud.
 type credentialProvider interface {
 	Authenticator(ctx context.Context, reg name.Registry) (authn.Authenticator, error)
 }
@@ -64,6 +64,11 @@ func cloudAuth(ctx context.Context, provider string, spec syncspec.Spec, o optio
 		p = awsProvider{
 			id: *spec.AWS, tokenFile: o.awsToken, client: client, allowLoopback: o.allowLoopback,
 			session: roleSessionName(spec.Mirror), stsURL: o.awsSTS, ecrURL: o.awsECR,
+		}
+	case syncspec.AuthGCPWorkloadIdentity:
+		p = gcpProvider{
+			id: *spec.GCP, tokenFile: o.gcpToken, client: client, allowLoopback: o.allowLoopback,
+			stsURL: o.gcpSTS, iamURL: o.gcpIAM,
 		}
 	default:
 		return nil, fmt.Errorf("%s credentials: unknown provider %q", what, provider)
