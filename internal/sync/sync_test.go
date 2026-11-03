@@ -235,6 +235,9 @@ func TestRunCopiesSelectedTagsByDigest(t *testing.T) {
 	if got := tagsOf(res.Copied); !slices.Equal(got, want) {
 		t.Fatalf("copied %v, want %v (%+v)", got, want, res)
 	}
+	if !slices.Equal(res.Selected, []string{"v1.3.0", "v1.2.0", "v1.1.0"}) {
+		t.Fatalf("selected %v, want newest first", res.Selected)
+	}
 	if got := list(t, dst.repo); !slices.Equal(got, append([]string{sig}, want...)) {
 		t.Fatalf("target tags %v", got)
 	}
