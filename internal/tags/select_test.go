@@ -126,6 +126,9 @@ func TestSelectErrors(t *testing.T) {
 			if !strings.HasPrefix(err.Error(), tc.field) {
 				t.Fatalf("error %q does not name field %q", err, tc.field)
 			}
+			if tc.field != "tags" && Validate(tc.policy) == nil {
+				t.Fatal("Validate accepts the policy")
+			}
 		})
 	}
 }

@@ -129,6 +129,13 @@ func Select(tags []string, p Policy) ([]string, error) {
 	return append(out, others...), nil
 }
 
+// Validate reports whether p is a valid policy: its patterns compile within
+// the caps and its range parses.
+func Validate(p Policy) error {
+	_, _, _, err := p.compile()
+	return err
+}
+
 // compile validates p and compiles its patterns and range.
 func (p Policy) compile() (include, exclude []*regexp.Regexp, constraint *semver.Constraints, err error) {
 	if include, err = compilePatterns("include", p.Include); err != nil {
