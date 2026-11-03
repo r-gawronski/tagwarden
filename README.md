@@ -182,7 +182,8 @@ The request waits while a sync of the mirror runs and until the target's
 `minSyncInterval` has passed since the last one started.
 `status.lastSyncRequest` says whether it started, waits or was refused.
 For a **Sync now** button and health checks in Argo CD, see
-[docs/argocd.md](docs/argocd.md).
+[docs/argocd.md](docs/argocd.md). To see the sync Jobs in the app tree, see
+[Show sync Jobs in the app tree](docs/argocd.md#show-sync-jobs-in-the-app-tree).
 
 ## Use cases
 
@@ -410,7 +411,7 @@ You need Kubernetes 1.30 or newer and a registry you can push to.
 - [Install](docs/install.md): Helm, Kustomize, uninstall.
 - [Network policies](docs/network-policies.md): sync pod labels and
   example egress policies.
-- [Argo CD](docs/argocd.md): a Sync now button and health checks.
+- [Argo CD](docs/argocd.md): a Sync now button, health checks and sync Jobs in the app tree.
 - [Threat model](docs/threat-model.md): what Tagwarden trusts, and how it
   handles each threat.
 - [Helm chart design](docs/design/helm-chart.md) and
