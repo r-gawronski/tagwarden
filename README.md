@@ -403,6 +403,77 @@ spec:
 
 The project's `namespaceSelector` has to match both teams' namespaces.
 
+## Auto-mirror from pod annotations
+
+Teams don't have to write an `ArtifactMirror` per image. Annotate a pod
+(or the pod template of any workload) and Tagwarden mirrors every image
+of that pod:
+
+```yaml
+metadata:
+  annotations:
+    tagwarden.dev/auto-mirror: default   # name of the ClusterMirrorTarget
+```
+
+The platform team opts in per target, so the annotation alone does
+nothing on a target that doesn't enable it (the pod just gets a Warning
+Event):
+
+```yaml
+spec:
+  projects:
+    - name: shared
+      namespaceSelector: {}
+  autoMirror:
+    enabled: true
+    project: shared                 # must be listed in projects
+    schedule: "0 */6 * * *"         # must respect limits.minSyncInterval
+    maxMirrorsPerNamespace: 20      # default 20, max 200
+```
+
+What you get:
+
+- One generated `ArtifactMirror` per namespace and source repository,
+  named `auto-<16 hex>` and labeled `tagwarden.dev/generated=true`. Many
+  pods share it. It lists explicit tags only (at most 100), and tags are
+  never removed. A new tag sets `tagwarden.dev/sync-now`, so a sync starts
+  right away, within the usual rate limits.
+- The same checks as any mirror: the project must allow the pod's
+  namespace, the source must be in `allowedSources`, limits apply. A
+  mirror you wrote yourself for the same source and path always wins
+  (Event `AlreadyMirrored`).
+- Events on the pod: `MirrorRequested`, `MirrorRefused` with the reason
+  of the mirror's condition, `SyncFailed`, `AutoMirrorDisabled`,
+  `DigestOnlyNotSupported` and `TooManyTags`.
+- `repo:tag` and `repo:tag@digest` work. A ref that already points at the
+  target registry and project is mapped back to its upstream source. A
+  digest-only ref is skipped for now.
+
+Teams keep upstream names in their manifests. The nodes pull through a
+containerd mirror that rewrites the path to the target project. On k3s,
+`/etc/rancher/k3s/registries.yaml`:
+
+```yaml
+mirrors:
+  docker.io:
+    endpoint:
+      - "https://registry.example.internal:8443"
+    rewrite:
+      "^(.*)$": "shared/docker.io/$1"
+  ghcr.io:
+    endpoint:
+      - "https://registry.example.internal:8443"
+    rewrite:
+      "^(.*)$": "shared/ghcr.io/$1"
+configs:
+  "registry.example.internal:8443":
+    tls:
+      ca_file: /etc/ssl/certs/example-internal-ca.pem
+```
+
+The first pull of a new tag waits for the first sync, so the pod may sit
+in `ImagePullBackOff` for a minute. Design notes: [docs/design/auto-mirror.md](docs/design/auto-mirror.md).
+
 ## Features
 
 - **Tag selection:** include and exclude regexes, semver ranges, keep
@@ -433,6 +504,8 @@ The project's `namespaceSelector` has to match both teams' namespaces.
   get no ServiceAccount token, and run distroless, non-root and
   read-only with all capabilities dropped. They refuse source hosts and
   redirects that point at internal, metadata or cluster addresses.
+- **Auto-mirror:** annotate a pod and its images get mirrored (see
+  [Auto-mirror](#auto-mirror-from-pod-annotations)).
 - **Least privilege:** the controller reads Secrets only in its own
   namespace.
 - **Audit trail:** one JSON line per artifact (source digest, target,
