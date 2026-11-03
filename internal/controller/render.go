@@ -253,15 +253,15 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 			Items:                []corev1.KeyToPath{{Key: specKey, Path: filepath.Base(syncspec.SpecFile)}},
 			DefaultMode:          ptr.To[int32](0o440),
 		}}},
-		secretVolume("target-auth", t.Spec.CredentialsSecretRef.Name,
-			corev1.KeyToPath{Key: corev1.DockerConfigJsonKey, Path: filepath.Base(syncspec.TargetAuthFile)}),
-		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	}
-	mounts := []corev1.VolumeMount{
-		readOnly("spec", filepath.Dir(syncspec.SpecFile)),
-		readOnly("target-auth", filepath.Dir(syncspec.TargetAuthFile)),
-		{Name: "tmp", MountPath: "/tmp"},
+	mounts := []corev1.VolumeMount{readOnly("spec", filepath.Dir(syncspec.SpecFile))}
+	if ref := t.Spec.CredentialsSecretRef; ref != nil {
+		volumes = append(volumes, secretVolume("target-auth", ref.Name,
+			corev1.KeyToPath{Key: corev1.DockerConfigJsonKey, Path: filepath.Base(syncspec.TargetAuthFile)}))
+		mounts = append(mounts, readOnly("target-auth", filepath.Dir(syncspec.TargetAuthFile)))
 	}
+	volumes = append(volumes, corev1.Volume{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+	mounts = append(mounts, corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"})
 	addCA := func(name string, ref *mirrorv1alpha1.SecretKeyRef, file string) {
 		if ref == nil {
 			return
@@ -278,8 +278,8 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	}
 	// Only the Secrets of this mirror's source go into its pod.
 	srcCred, srcCA := sourceRefs(t, string(m.Spec.Source.Registry))
-	if srcCred != nil {
-		volumes = append(volumes, secretVolume("source-auth", srcCred.Name,
+	if srcCred != nil && srcCred.SecretRef != nil {
+		volumes = append(volumes, secretVolume("source-auth", srcCred.SecretRef.Name,
 			corev1.KeyToPath{Key: corev1.DockerConfigJsonKey, Path: filepath.Base(syncspec.SourceAuthFile)}))
 		mounts = append(mounts, readOnly("source-auth", filepath.Dir(syncspec.SourceAuthFile)))
 	}

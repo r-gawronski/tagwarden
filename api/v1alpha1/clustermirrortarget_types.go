@@ -89,7 +89,9 @@ type ProxySpec struct {
 	CredentialsSecretRef *SecretRef `json:"credentialsSecretRef,omitempty"`
 }
 
-// SourceCredential holds the pull credentials for one source registry.
+// SourceCredential holds the pull credentials for one source registry:
+// a Secret or a cloud workload identity.
+// +kubebuilder:validation:XValidation:rule="has(self.secretRef) != has(self.azureWorkloadIdentity)",message="set exactly one of secretRef or azureWorkloadIdentity"
 type SourceCredential struct {
 	// registry is the source registry these credentials are for. The Docker
 	// Hub names docker.io, index.docker.io and registry-1.docker.io count as
@@ -99,8 +101,75 @@ type SourceCredential struct {
 
 	// secretRef is a kubernetes.io/dockerconfigjson Secret in the operator
 	// namespace with an auths entry for the registry.
+	// +optional
+	SecretRef *SecretRef `json:"secretRef,omitempty"`
+
+	// azureWorkloadIdentity pulls from an Azure Container Registry with
+	// the identity in spec.workloadIdentity.azure.
+	// +optional
+	AzureWorkloadIdentity *AzureWorkloadIdentityAuth `json:"azureWorkloadIdentity,omitempty"`
+}
+
+// AzureWorkloadIdentityAuth selects Azure workload identity for a
+// registry. It has no fields: the identity is spec.workloadIdentity.azure.
+type AzureWorkloadIdentityAuth struct{}
+
+// RegistryAuth selects how the sync Job authenticates to the target
+// registry when it has no credentialsSecretRef.
+// +kubebuilder:validation:XValidation:rule="has(self.azureWorkloadIdentity)",message="set exactly one provider"
+type RegistryAuth struct {
+	// azureWorkloadIdentity pushes to an Azure Container Registry with
+	// the identity in spec.workloadIdentity.azure.
+	// +optional
+	AzureWorkloadIdentity *AzureWorkloadIdentityAuth `json:"azureWorkloadIdentity,omitempty"`
+}
+
+// WorkloadIdentity is the cloud identity of the sync pods that use cloud
+// registry auth. The platform team creates the ServiceAccount and links it
+// to the cloud identity; the controller only references it.
+type WorkloadIdentity struct {
+	// serviceAccountName is the ServiceAccount in the operator namespace
+	// that sync pods run as when they use cloud registry auth. Its token
+	// is never mounted; the pods get only a projected token with the
+	// cloud audience. Defaults to tagwarden-sync.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
+	// azure is the Microsoft Entra application or user-assigned managed
+	// identity with a federated credential for the ServiceAccount.
+	// +optional
+	Azure *AzureIdentity `json:"azure,omitempty"`
+}
+
+// AzureIdentity is a Microsoft Entra workload identity.
+type AzureIdentity struct {
+	// clientID is the application (client) ID of the identity.
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
 	// +required
-	SecretRef SecretRef `json:"secretRef"`
+	ClientID string `json:"clientID"`
+
+	// tenantID is the directory (tenant) ID of the identity.
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	// +required
+	TenantID string `json:"tenantID"`
+
+	// authorityHost is the Microsoft Entra endpoint, for example
+	// https://login.microsoftonline.us/ in a national cloud. Defaults to
+	// https://login.microsoftonline.com/.
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:XValidation:rule="isURL(self) && self.startsWith('https://') && !self.contains('@') && !self.contains('?') && !self.contains('#')",message="must be an https URL without credentials, query or fragment"
+	// +optional
+	AuthorityHost string `json:"authorityHost,omitempty"`
+
+	// scope is the Microsoft Entra scope of the registry token. Defaults
+	// to https://containerregistry.azure.net/.default. Change it only for
+	// a cloud whose registries expect another resource.
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:XValidation:rule="isURL(self) && self.startsWith('https://') && self.endsWith('/.default')",message="must be an https resource URL ending in /.default"
+	// +optional
+	Scope string `json:"scope,omitempty"`
 }
 
 // SourceCABundle holds extra root CAs for one source registry.
@@ -200,6 +269,7 @@ type TargetLimits struct {
 }
 
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
+// +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
 type ClusterMirrorTargetSpec struct {
 	// registry is the target registry as host[:port], without a scheme.
 	// +required
@@ -207,8 +277,20 @@ type ClusterMirrorTargetSpec struct {
 
 	// credentialsSecretRef holds the push credentials for the target registry
 	// (a kubernetes.io/dockerconfigjson Secret in the operator namespace).
-	// +required
-	CredentialsSecretRef SecretRef `json:"credentialsSecretRef"`
+	// Set it or auth.
+	// +optional
+	CredentialsSecretRef *SecretRef `json:"credentialsSecretRef,omitempty"`
+
+	// auth pushes to the target registry with a cloud workload identity
+	// instead of credentialsSecretRef.
+	// +optional
+	Auth *RegistryAuth `json:"auth,omitempty"`
+
+	// workloadIdentity is the cloud identity used by auth and by
+	// sourceCredentials entries that name a cloud provider. Required when
+	// any of them does.
+	// +optional
+	WorkloadIdentity *WorkloadIdentity `json:"workloadIdentity,omitempty"`
 
 	// caBundleSecretRef holds the CA bundle for the target registry.
 	// +optional

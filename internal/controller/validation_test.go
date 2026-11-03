@@ -39,7 +39,7 @@ func validTarget(name string) *mirrorv1alpha1.ClusterMirrorTarget {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: mirrorv1alpha1.ClusterMirrorTargetSpec{
 			Registry:             "registry.example.internal:8443",
-			CredentialsSecretRef: mirrorv1alpha1.SecretRef{Name: "registry-push"},
+			CredentialsSecretRef: &mirrorv1alpha1.SecretRef{Name: "registry-push"},
 			CABundleSecretRef:    &mirrorv1alpha1.SecretKeyRef{Name: "registry-ca", Key: caKey},
 			ClientCertSecretRef:  &mirrorv1alpha1.SecretRef{Name: "registry-client-tls"},
 			Proxy: &mirrorv1alpha1.ProxySpec{
@@ -58,6 +58,19 @@ func validTarget(name string) *mirrorv1alpha1.ClusterMirrorTarget {
 			},
 			Policy: mirrorv1alpha1.TargetPolicy{OnTagMutation: mirrorv1alpha1.OnTagMutationFail},
 		},
+	}
+}
+
+const zeroGUID = "00000000-0000-0000-0000-000000000000"
+
+// useAzure switches the target push to Azure workload identity.
+func useAzure(t *mirrorv1alpha1.ClusterMirrorTarget) {
+	t.Spec.Registry = "myregistry.azurecr.io"
+	t.Spec.CredentialsSecretRef = nil
+	t.Spec.Auth = &mirrorv1alpha1.RegistryAuth{AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}}
+	t.Spec.WorkloadIdentity = &mirrorv1alpha1.WorkloadIdentity{
+		ServiceAccountName: "tagwarden-sync-azure",
+		Azure:              &mirrorv1alpha1.AzureIdentity{ClientID: zeroGUID, TenantID: zeroGUID},
 	}
 }
 
@@ -134,6 +147,15 @@ var _ = Describe("API validation", func() {
 		}),
 		Entry("empty limits", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{}
+		}),
+		Entry("Azure workload identity", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.WorkloadIdentity.Azure.AuthorityHost = "https://login.microsoftonline.us/"
+			o.Spec.WorkloadIdentity.Azure.Scope = "https://management.usgovcloudapi.net/.default"
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: "src.azurecr.io", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
+				{Registry: ghcrRegistry, SecretRef: &mirrorv1alpha1.SecretRef{Name: "ghcr-pull"}},
+			}
 		}),
 	)
 
@@ -237,6 +259,50 @@ var _ = Describe("API validation", func() {
 		Entry("negative maxArtifactSize", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			size := resource.MustParse("-1Gi")
 			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxArtifactSize: &size}
+		}),
+		Entry("no push credentials", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.CredentialsSecretRef = nil
+		}),
+		Entry("credentialsSecretRef and auth", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.CredentialsSecretRef = &mirrorv1alpha1.SecretRef{Name: "registry-push"}
+		}),
+		Entry("auth without a provider", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.Auth.AzureWorkloadIdentity = nil
+		}),
+		Entry("source credential without a provider", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{{Registry: ghcrRegistry}}
+		}),
+		Entry("source credential with two providers", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{{
+				Registry: ghcrRegistry, SecretRef: &mirrorv1alpha1.SecretRef{Name: "ghcr-pull"},
+				AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{},
+			}}
+		}),
+		Entry("client ID not a GUID", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.WorkloadIdentity.Azure.ClientID = "my-app"
+		}),
+		Entry("tenant ID not a GUID", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.WorkloadIdentity.Azure.TenantID = "example.onmicrosoft.com"
+		}),
+		Entry("http authority host", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.WorkloadIdentity.Azure.AuthorityHost = "http://login.example.internal/"
+		}),
+		Entry("authority host with credentials", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.WorkloadIdentity.Azure.AuthorityHost = "https://u:p@login.example.internal/"
+		}),
+		Entry("scope without /.default", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.WorkloadIdentity.Azure.Scope = "https://containerregistry.azure.net/"
+		}),
+		Entry("invalid ServiceAccount name", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.WorkloadIdentity.ServiceAccountName = "Sync_SA"
 		}),
 	)
 

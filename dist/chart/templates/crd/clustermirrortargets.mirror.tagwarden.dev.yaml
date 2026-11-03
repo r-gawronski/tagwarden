@@ -72,6 +72,20 @@ spec:
                 minItems: 1
                 type: array
                 x-kubernetes-list-type: set
+              auth:
+                description: |-
+                  auth pushes to the target registry with a cloud workload identity
+                  instead of credentialsSecretRef.
+                properties:
+                  azureWorkloadIdentity:
+                    description: |-
+                      azureWorkloadIdentity pushes to an Azure Container Registry with
+                      the identity in spec.workloadIdentity.azure.
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: set exactly one provider
+                  rule: has(self.azureWorkloadIdentity)
               caBundleSecretRef:
                 description: caBundleSecretRef holds the CA bundle for the target
                   registry.
@@ -107,6 +121,7 @@ spec:
                 description: |-
                   credentialsSecretRef holds the push credentials for the target registry
                   (a kubernetes.io/dockerconfigjson Secret in the operator namespace).
+                  Set it or auth.
                 properties:
                   name:
                     description: name of the Secret.
@@ -396,9 +411,15 @@ spec:
                   entry per registry; the controller rejects duplicates, Docker Hub
                   names included.
                 items:
-                  description: SourceCredential holds the pull credentials for one
-                    source registry.
+                  description: |-
+                    SourceCredential holds the pull credentials for one source registry:
+                    a Secret or a cloud workload identity.
                   properties:
+                    azureWorkloadIdentity:
+                      description: |-
+                        azureWorkloadIdentity pulls from an Azure Container Registry with
+                        the identity in spec.workloadIdentity.azure.
+                      type: object
                     registry:
                       description: |-
                         registry is the source registry these credentials are for. The Docker
@@ -426,19 +447,80 @@ spec:
                       type: object
                   required:
                   - registry
-                  - secretRef
                   type: object
+                  x-kubernetes-validations:
+                  - message: set exactly one of secretRef or azureWorkloadIdentity
+                    rule: has(self.secretRef) != has(self.azureWorkloadIdentity)
                 maxItems: 50
                 type: array
                 x-kubernetes-list-map-keys:
                 - registry
                 x-kubernetes-list-type: map
+              workloadIdentity:
+                description: |-
+                  workloadIdentity is the cloud identity used by auth and by
+                  sourceCredentials entries that name a cloud provider. Required when
+                  any of them does.
+                properties:
+                  azure:
+                    description: |-
+                      azure is the Microsoft Entra application or user-assigned managed
+                      identity with a federated credential for the ServiceAccount.
+                    properties:
+                      authorityHost:
+                        description: |-
+                          authorityHost is the Microsoft Entra endpoint, for example
+                          https://login.microsoftonline.us/ in a national cloud. Defaults to
+                          https://login.microsoftonline.com/.
+                        maxLength: 2048
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an https URL without credentials, query
+                            or fragment
+                          rule: isURL(self) && self.startsWith('https://') && !self.contains('@')
+                            && !self.contains('?') && !self.contains('#')
+                      clientID:
+                        description: clientID is the application (client) ID of the
+                          identity.
+                        pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                        type: string
+                      scope:
+                        description: |-
+                          scope is the Microsoft Entra scope of the registry token. Defaults
+                          to https://containerregistry.azure.net/.default. Change it only for
+                          a cloud whose registries expect another resource.
+                        maxLength: 2048
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be an https resource URL ending in /.default
+                          rule: isURL(self) && self.startsWith('https://') && self.endsWith('/.default')
+                      tenantID:
+                        description: tenantID is the directory (tenant) ID of the
+                          identity.
+                        pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                        type: string
+                    required:
+                    - clientID
+                    - tenantID
+                    type: object
+                  serviceAccountName:
+                    description: |-
+                      serviceAccountName is the ServiceAccount in the operator namespace
+                      that sync pods run as when they use cloud registry auth. Its token
+                      is never mounted; the pods get only a projected token with the
+                      cloud audience. Defaults to tagwarden-sync.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                type: object
             required:
             - allowedSources
-            - credentialsSecretRef
             - projects
             - registry
             type: object
+            x-kubernetes-validations:
+            - message: set exactly one of credentialsSecretRef or auth
+              rule: has(self.credentialsSecretRef) != has(self.auth)
           status:
             description: status defines the observed state of ClusterMirrorTarget
             properties:
