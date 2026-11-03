@@ -76,6 +76,38 @@ upstream tags, picks the ones you asked for, copies new digests with
 their signatures, and reports back. You see the result in the mirror's
 status.
 
+### What happens during a sync run
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'Inter, Helvetica, Arial, sans-serif', 'fontSize': '15px', 'actorBkg': '#fbefff', 'actorBorder': '#8250df', 'actorTextColor': '#3e1f79', 'actorLineColor': '#8b949e', 'signalColor': '#57606a', 'signalTextColor': '#1f2328', 'noteBkgColor': '#fff8c5', 'noteBorderColor': '#9a6700', 'noteTextColor': '#4d2d00', 'sequenceNumberColor': '#ffffff'}}}%%
+sequenceDiagram
+  autonumber
+  participant Team
+  participant C as Controller
+  participant J as Sync Job
+  participant P as Proxy
+  participant U as Upstream
+  participant R as Your registry
+
+  rect rgb(221, 244, 255)
+    Note over Team,J: on apply
+    Team->>C: ArtifactMirror
+    C->>C: check against target
+    C->>J: CronJob
+  end
+  rect rgb(218, 251, 225)
+    Note over J,R: on schedule
+    J->>P: list tags
+    P->>U: list tags
+    J->>J: select tags
+    J->>P: fetch new digests
+    P->>U: fetch
+    J->>R: push by digest, with signatures
+    J->>C: result
+    C->>Team: mirror status
+  end
+```
+
 ## Examples
 
 The platform team sets up the target once:
