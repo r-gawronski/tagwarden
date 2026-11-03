@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/Masterminds/semver/v3"
 )
 
 const (
@@ -31,30 +33,55 @@ const (
 
 var all = []string{"v1.9.0", "v1.10.0", "v1.10.1", "v1.11.0-rc.1", "v1.11.0", latest, "v1.12.0"} //nolint:goconst // readable fixtures
 
+var mixed = []string{"1.2", "1.2.0", "v1.2.0", "20240101", "7", "sha-abc", "1.10.0", "v1.11.0+build"} //nolint:goconst // readable fixtures
+
 func TestSelect(t *testing.T) {
 	cases := []struct {
 		name   string
+		in     []string
 		policy Policy
 		want   []string
 	}{
-		{"no policy keeps all, semver first", Policy{},
+		{"no selector selects nothing", all, Policy{}, []string{}},
+		{"exclude alone selects nothing", all, Policy{Exclude: []string{"-rc"}}, []string{}},
+		{"include all, semver first", all, Policy{Include: []string{"."}},
 			[]string{"v1.12.0", "v1.11.0", "v1.11.0-rc.1", "v1.10.1", "v1.10.0", "v1.9.0", latest}},
-		{"include final releases, keep 3", Policy{Include: []string{`^v\d+\.\d+\.\d+$`}, KeepLatest: 3},
+		{"include final releases, keep 3", all, Policy{Include: []string{`^v\d+\.\d+\.\d+$`}, KeepLatest: 3},
 			[]string{"v1.12.0", "v1.11.0", "v1.10.1"}},
-		{"semver range", Policy{SemverRange: ">=1.10.0 <1.11.0"},
+		{"semver range", all, Policy{SemverRange: ">=1.10.0 <1.11.0"},
 			[]string{"v1.10.1", "v1.10.0"}},
-		{"exclude rc, keep 2", Policy{Exclude: []string{"-rc"}, KeepLatest: 2},
+		{"exclude rc, keep 2", all, Policy{Exclude: []string{"-rc"}, KeepLatest: 2},
 			[]string{"v1.12.0", "v1.11.0"}},
-		{"include latest", Policy{Include: []string{latestRe}},
+		{"include latest", all, Policy{Include: []string{latestRe}},
 			[]string{latest}},
-		{"keepLatest drops non-semver", Policy{Include: []string{latestRe}, KeepLatest: 5},
+		{"keepLatest drops non-semver", all, Policy{Include: []string{latestRe}, KeepLatest: 5},
 			[]string{}},
-		{"any include matches", Policy{Include: []string{"^v1\\.9\\.", latestRe}},
+		{"any include matches", all, Policy{Include: []string{"^v1\\.9\\.", latestRe}},
 			[]string{"v1.9.0", latest}},
+		{"keepLatest drops prereleases", all, Policy{KeepLatest: 3},
+			[]string{"v1.12.0", "v1.11.0", "v1.10.1"}},
+		{"keepLatest with prereleases", all, Policy{KeepLatest: 3, AllowPrerelease: true},
+			[]string{"v1.12.0", "v1.11.0", "v1.11.0-rc.1"}},
+		{"range drops prereleases", all, Policy{SemverRange: ">=1.11.0-0 <1.12.0"},
+			[]string{"v1.11.0"}},
+		{"range with prereleases", all, Policy{SemverRange: ">=1.10.1 <1.12.0", AllowPrerelease: true},
+			[]string{"v1.11.0", "v1.11.0-rc.1", "v1.10.1"}},
+		{"plain numbers are not semver", mixed, Policy{KeepLatest: 3},
+			[]string{"v1.11.0+build", "1.10.0", "1.2"}},
+		{"equal versions take separate slots", mixed, Policy{SemverRange: "1.2.0"},
+			[]string{"1.2", "1.2.0", "v1.2.0"}},
+		{"non-semver sorted by name", mixed, Policy{Include: []string{`^\d+$`, "^sha-"}},
+			[]string{"20240101", "7", "sha-abc"}},
+		{"explicit tags only", all, Policy{Tags: []string{latest, "v1.9.0", "v1.9.0", "missing"}},
+			[]string{"v1.9.0", latest}},
+		{"explicit tags on top of selection", all, Policy{KeepLatest: 1, Tags: []string{latest, "v1.12.0", "v1.9.0"}},
+			[]string{"v1.12.0", "v1.9.0", latest}},
+		{"explicit tags ignore exclude", all, Policy{Exclude: []string{"rc"}, Tags: []string{"v1.11.0-rc.1"}},
+			[]string{"v1.11.0-rc.1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Select(all, tc.policy)
+			got, err := Select(tc.in, tc.policy)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -83,6 +110,7 @@ func TestSelectErrors(t *testing.T) {
 		{"too many includes", all, Policy{Include: many}, fieldInclude},
 		{"too many excludes", all, Policy{Exclude: many}, "exclude"},
 		{"pattern too long", all, Policy{Include: []string{long}}, fieldInclude},
+		{"program too large", all, Policy{Include: []string{`\w{1000}\w{1000}`}}, fieldInclude},
 		{"range too long", all, Policy{SemverRange: ">=" + strings.Repeat("1", MaxRangeLength)}, "semverRange"},
 		{"negative keepLatest", all, Policy{KeepLatest: -1}, "keepLatest"},
 		{"too many tags", make([]string, MaxTags+1), Policy{}, "tags"},
@@ -101,17 +129,20 @@ func TestSelectErrors(t *testing.T) {
 }
 
 func FuzzSelect(f *testing.F) {
-	f.Add(strings.Join(all, "\n"), `^v\d+\.\d+\.\d+$`, "-rc", "", 3)
-	f.Add(strings.Join(all, "\n"), "", "", ">=1.10.0 <1.11.0", 0)
-	f.Add("latest\nmain\nv2", latestRe, "", "", 5)
-	f.Fuzz(func(t *testing.T, tagList, include, exclude, rng string, keep int) {
+	f.Add(strings.Join(all, "\n"), `^v\d+\.\d+\.\d+$`, "-rc", "", "", 3, false)
+	f.Add(strings.Join(all, "\n"), "", "", ">=1.10.0 <1.11.0", "", 0, true)
+	f.Add(strings.Join(mixed, "\n"), latestRe, "", "", "7\nlatest", 5, false)
+	f.Fuzz(func(t *testing.T, tagList, include, exclude, rng, explicit string, keep int, pre bool) {
 		in := strings.Split(tagList, "\n")
-		p := Policy{SemverRange: rng, KeepLatest: keep}
+		p := Policy{SemverRange: rng, KeepLatest: keep, AllowPrerelease: pre}
 		if include != "" {
 			p.Include = []string{include}
 		}
 		if exclude != "" {
 			p.Exclude = []string{exclude}
+		}
+		if explicit != "" {
+			p.Tags = strings.Split(explicit, "\n")
 		}
 		out, err := Select(in, p)
 		if err != nil {
@@ -120,19 +151,34 @@ func FuzzSelect(f *testing.F) {
 		if len(out) > len(in) {
 			t.Fatalf("output longer than input: %d > %d", len(out), len(in))
 		}
-		if keep > 0 && len(out) > keep {
+		if keep > 0 && len(out) > keep+len(p.Tags) {
 			t.Fatalf("keepLatest %d not respected: %d tags", keep, len(out))
 		}
+		var prev *semver.Version
+		inSemver := true
+		for _, s := range out {
+			if !slices.Contains(in, s) {
+				t.Fatalf("output tag %s not in input", strconv.Quote(s))
+			}
+			v := parse(s)
+			if v == nil {
+				inSemver = false
+				continue
+			}
+			if !inSemver {
+				t.Fatalf("semver tag %s after non-semver tag in %v", strconv.Quote(s), out)
+			}
+			if prev != nil && v.GreaterThan(prev) {
+				t.Fatalf("not descending: %v", out)
+			}
+			prev = v
+		}
 		seen := map[string]bool{}
-		unique := true
 		for _, s := range in {
 			if seen[s] {
-				unique = false
+				return
 			}
 			seen[s] = true
-		}
-		if !unique {
-			return
 		}
 		got := map[string]bool{}
 		for _, s := range out {
