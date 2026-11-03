@@ -35,3 +35,10 @@ spec:
           example.com/team: a
   policy:
     onTagMutation: Fail
+  # Absent fields use the defaults: 1h, 50, 20, 50 and no size limit.
+  limits:
+    minSyncInterval: 1h
+    maxMirrorsPerNamespace: 50
+    maxKeepLatest: 20
+    maxExplicitTags: 50
+    maxArtifactSize: 10Gi
