@@ -20,9 +20,11 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -34,6 +36,8 @@ import (
 var (
 	// managerImage is the manager image to be built and loaded for testing.
 	managerImage = "example.com/tagwarden:v0.0.1"
+	// helmRelease is the release name of the operator chart.
+	helmRelease = "tagwarden"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
@@ -64,11 +68,35 @@ var _ = BeforeSuite(func() {
 
 	configureKubectlKubeRC()
 	setupCertManager()
+	installOperator()
 })
 
 var _ = AfterSuite(func() {
 	teardownCertManager()
 })
+
+// deniedCIDRs are the kind pod and service CIDRs.
+var deniedCIDRs = []string{"10.244.0.0/16", "10.96.0.0/16"}
+
+// installOperator installs the chart in dist/chart with the image loaded
+// into kind, in a namespace that enforces the restricted Pod Security level.
+func installOperator() {
+	By("creating the operator namespace with the restricted security policy")
+	kubectlApply([]byte(fmt.Sprintf(`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":%q,`+
+		`"labels":{"pod-security.kubernetes.io/enforce":"restricted"}}}`, namespace)))
+
+	By("installing the operator with the Helm chart")
+	repo, tag, _ := strings.Cut(managerImage, ":")
+	cidrs, err := json.Marshal(deniedCIDRs)
+	Expect(err).NotTo(HaveOccurred())
+	_, err = utils.Run(exec.Command("helm", "upgrade", "--install", helmRelease, "dist/chart",
+		"--namespace", namespace,
+		"--set", "manager.image.repository="+repo,
+		"--set", "manager.image.tag="+tag,
+		"--set-json", "deniedCIDRs="+string(cidrs),
+		"--wait", "--timeout", "5m"))
+	Expect(err).NotTo(HaveOccurred(), "Failed to install the chart")
+}
 
 // Disable kubectl kuberc by default for test isolation.
 // This prevents local kubectl configurations from affecting test behavior.
