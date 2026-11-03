@@ -198,3 +198,48 @@ func TestTrivyEnabled(t *testing.T) {
 		t.Error("existing token Secret is not used instead of the generated one")
 	}
 }
+
+// TestVulnerabilityExceptions checks that the approver ClusterRole is
+// always rendered, and its binding and the approvedBy policy only on request.
+func TestVulnerabilityExceptions(t *testing.T) {
+	const (
+		role    = "kind: ClusterRole\nmetadata:\n  labels:\n    app.kubernetes.io/managed-by: Helm\n    app.kubernetes.io/name: tagwarden\n    helm.sh/chart: tagwarden-0.1.0\n    app.kubernetes.io/instance: tagwarden\n  name: tagwarden-exception-approver\n"
+		binding = "kind: ClusterRoleBinding\nmetadata:\n  labels:\n    app.kubernetes.io/managed-by: Helm\n    app.kubernetes.io/name: tagwarden\n    helm.sh/chart: tagwarden-0.1.0\n    app.kubernetes.io/instance: tagwarden\n  name: tagwarden-exception-approver\n"
+		policy  = "expression: object.spec.approvedBy == request.userInfo.username\n"
+		subject = "- apiGroup: rbac.authorization.k8s.io\n  kind: Group\n  name: security-team\n"
+	)
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		ok        bool
+		want, not []string
+	}{
+		{name: "defaults", ok: true, want: []string{role}, not: []string{binding, "kind: ValidatingAdmissionPolicy"}},
+		{name: "approvers", ok: true,
+			args: []string{"--set", "vulnerabilityExceptions.approvers[0].kind=Group,vulnerabilityExceptions.approvers[0].name=security-team," +
+				"vulnerabilityExceptions.approvers[0].apiGroup=rbac.authorization.k8s.io"},
+			want: []string{role, binding, subject}},
+		{name: "approvedBy policy", ok: true, args: []string{"--set", "vulnerabilityExceptions.approvedByPolicy.enabled=true"},
+			want: []string{policy, "kind: ValidatingAdmissionPolicyBinding\n", "validationActions: [\"Deny\"]\n", "failurePolicy: Fail\n"}},
+		{name: "unknown approver kind", args: []string{"--set", "vulnerabilityExceptions.approvers[0].kind=Role,vulnerabilityExceptions.approvers[0].name=x"}},
+		{name: "approver without name", args: []string{"--set", "vulnerabilityExceptions.approvers[0].kind=User"}},
+		{name: "unknown key", args: []string{"--set", "vulnerabilityExceptions.extra=1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := render(t, tc.args...)
+			if (err == nil) != tc.ok {
+				t.Fatalf("helm template error = %v, want ok = %v\n%s", err, tc.ok, out)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("rendered chart lacks %q", w)
+				}
+			}
+			for _, n := range tc.not {
+				if strings.Contains(out, n) {
+					t.Errorf("rendered chart has %q", n)
+				}
+			}
+		})
+	}
+}

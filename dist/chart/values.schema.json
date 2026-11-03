@@ -149,6 +149,27 @@
       "additionalProperties": false,
       "properties": { "helpers": { "$ref": "#/definitions/toggle" } }
     },
+    "vulnerabilityExceptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "approvers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "name"],
+            "properties": {
+              "kind": { "enum": ["User", "Group", "ServiceAccount"] },
+              "name": { "type": "string", "minLength": 1 },
+              "namespace": { "type": "string" },
+              "apiGroup": { "type": "string" }
+            }
+          }
+        },
+        "approvedByPolicy": { "$ref": "#/definitions/toggle" }
+      }
+    },
     "serviceAccount": {
       "type": "object",
       "additionalProperties": false,

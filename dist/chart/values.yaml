@@ -105,6 +105,22 @@ rbac:
   helpers:
     enabled: false
 
+## VulnerabilityExceptions of the vulnerability gate. The chart always
+## renders the <release>-exception-approver ClusterRole (create, update and
+## delete exceptions); the rbac helpers never grant it.
+vulnerabilityExceptions:
+  ## Subjects bound to the approver ClusterRole, usually the security team.
+  ## Empty: no binding.
+  approvers: []
+  # - kind: Group
+  #   name: security-team
+  #   apiGroup: rbac.authorization.k8s.io
+  ## ValidatingAdmissionPolicy that requires spec.approvedBy to equal the
+  ## user who creates or updates an exception. Creating exceptions through
+  ## GitOps then needs approvedBy set to the GitOps ServiceAccount user.
+  approvedByPolicy:
+    enabled: false
+
 ## Manager ServiceAccount. The tagwarden-sync ServiceAccount of the sync
 ## Jobs is always rendered.
 serviceAccount:
