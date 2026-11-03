@@ -288,6 +288,45 @@ spec:
                   finished.
                 format: date-time
                 type: string
+              lastSyncRequest:
+                description: |-
+                  lastSyncRequest is the last tagwarden.dev/sync-now request the
+                  controller handled.
+                properties:
+                  handledAt:
+                    description: handledAt is when the controller last changed the
+                      result.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      message describes the result, such as the Job created or why the
+                      request waits or was refused.
+                    maxLength: 1024
+                    type: string
+                  result:
+                    description: result is Started, Deferred or Refused.
+                    enum:
+                    - Started
+                    - Deferred
+                    - Refused
+                    type: string
+                  value:
+                    description: value of the annotation, cut to 256 bytes.
+                    maxLength: 256
+                    type: string
+                required:
+                - handledAt
+                - result
+                - value
+                type: object
+              lastSyncStartTime:
+                description: |-
+                  lastSyncStartTime is when the last sync Job started, scheduled or
+                  requested. Requests wait until limits.minSyncInterval of the target
+                  has passed since then.
+                format: date-time
+                type: string
               lastSyncTime:
                 description: lastSyncTime is when the last sync finished.
                 format: date-time
