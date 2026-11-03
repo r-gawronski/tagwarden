@@ -349,6 +349,27 @@ func TestRunTagMutation(t *testing.T) {
 	}
 }
 
+// A failed overwrite is only reported as Failed, not as Mutated.
+func TestRunFailedOverwrite(t *testing.T) {
+	src := newRegistry(t, regOpts{})
+	dst := newRegistry(t, regOpts{})
+	push(t, src.repo, v100, index(t, "linux/amd64"))
+	old := push(t, dst.repo, v100, image(t))
+
+	res, err := Run(context.Background(), Request{
+		Source: src.repo, Target: dst.repo,
+		Policy:            tags.Policy{Tags: []string{v100}},
+		OnTagMutation:     v1alpha1.OnTagMutationOverwrite,
+		RequiredPlatforms: []string{"linux/s390x"},
+	})
+	if err == nil || len(res.Mutated) != 0 || !slices.Equal(tagsOf(res.Failed), []string{v100}) {
+		t.Fatalf("err %v, result %+v", err, res)
+	}
+	if got, _ := headDigest(t, dst.repo.Tag(v100)); got != old.String() {
+		t.Fatalf("target digest %s, want %s", got, old)
+	}
+}
+
 func TestRunMaxTags(t *testing.T) {
 	src := newRegistry(t, regOpts{})
 	dst := newRegistry(t, regOpts{})
