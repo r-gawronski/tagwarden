@@ -102,10 +102,13 @@ const (
 	// AuthGCPWorkloadIdentity names Google Cloud Workload Identity
 	// Federation in Spec.TargetAuth and Spec.SourceAuth.
 	AuthGCPWorkloadIdentity = "gcpWorkloadIdentity"
-	// GCPScope is the OAuth scope of the Google access token. Artifact
-	// Registry documents no narrower scope; IAM roles limit what the
-	// token can do.
+	// GCPScope is the OAuth scope of federated tokens: cloud-platform is
+	// used for federated tokens. Artifact Registry also accepts Cloud
+	// Storage scopes, used for impersonated tokens (GCPImpersonatedScope).
 	GCPScope = "https://www.googleapis.com/auth/cloud-platform"
+	// GCPImpersonatedScope is the scope of service account access tokens,
+	// enough to push to and pull from Artifact Registry.
+	GCPImpersonatedScope = "https://www.googleapis.com/auth/devstorage.read_write"
 )
 
 // GCP is the Google Cloud Workload Identity Federation provider of a sync
