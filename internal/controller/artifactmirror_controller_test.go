@@ -25,8 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 )
 
@@ -49,13 +47,8 @@ var _ = Describe("ArtifactMirror Controller", func() {
 			By("creating the custom resource for the Kind ArtifactMirror")
 			err := k8sClient.Get(ctx, typeNamespacedName, artifactmirror)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &mirrorv1alpha1.ArtifactMirror{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: resourceNamespace,
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
+				resource := validMirror(resourceName)
+				resource.Namespace = resourceNamespace
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
 		})

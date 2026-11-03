@@ -21,38 +21,134 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// RegistryHost is a registry host with an optional port, without a scheme or path.
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=253
+// +kubebuilder:validation:XValidation:rule="!self.contains('://')",message="must be host[:port] without a scheme"
+// +kubebuilder:validation:XValidation:rule="!self.contains('/')",message="must be host[:port] without a path"
+type RegistryHost string
 
-// ClusterMirrorTargetSpec defines the desired state of ClusterMirrorTarget
-type ClusterMirrorTargetSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+// SecretRef names a Secret in the operator namespace.
+type SecretRef struct {
+	// name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Name string `json:"name"`
+}
 
-	// foo is an example field of ClusterMirrorTarget. Edit clustermirrortarget_types.go to remove/update
+// SecretKeyRef names a key in a Secret in the operator namespace.
+type SecretKeyRef struct {
+	// name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Name string `json:"name"`
+
+	// key in the Secret that holds the PEM data.
+	// +kubebuilder:default="ca.crt"
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Key string `json:"key,omitempty"`
+}
+
+// ProxySpec configures the HTTP(S) proxy used for upstream traffic.
+type ProxySpec struct {
+	// httpsProxy is the proxy URL, for example http://proxy.example.internal:3128.
+	// Credentials must not be part of the URL. Use credentialsSecretRef.
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:XValidation:rule="isURL(self) && (self.startsWith('http://') || self.startsWith('https://'))",message="must be an http or https URL"
+	// +kubebuilder:validation:XValidation:rule="!self.contains('@')",message="must not contain credentials, use credentialsSecretRef"
+	// +required
+	HTTPSProxy string `json:"httpsProxy"`
+
+	// noProxy lists hosts, domains and CIDRs that bypass the proxy.
+	// +kubebuilder:validation:MaxItems=100
+	// +kubebuilder:validation:items:MaxLength=253
+	// +listType=set
+	// +optional
+	NoProxy []string `json:"noProxy,omitempty"`
+
+	// caBundleSecretRef holds the CA that signs the proxy certificates, for example a TLS-inspection CA.
+	// It is trusted only by the sync Job.
+	// +optional
+	CABundleSecretRef *SecretKeyRef `json:"caBundleSecretRef,omitempty"`
+
+	// credentialsSecretRef holds the proxy username and password
+	// (a kubernetes.io/basic-auth Secret).
+	// +optional
+	CredentialsSecretRef *SecretRef `json:"credentialsSecretRef,omitempty"`
+}
+
+// OnTagMutation is the action taken when an upstream tag points to a new digest.
+// +kubebuilder:validation:Enum=Fail;Overwrite;Ignore
+type OnTagMutation string
+
+const (
+	// OnTagMutationFail keeps the target tag and reports the mutation.
+	OnTagMutationFail OnTagMutation = "Fail"
+	// OnTagMutationOverwrite re-points the target tag to the new digest.
+	OnTagMutationOverwrite OnTagMutation = "Overwrite"
+	// OnTagMutationIgnore keeps the target tag and does not report it.
+	OnTagMutationIgnore OnTagMutation = "Ignore"
+)
+
+// TargetPolicy holds the default policy for mirrors that use this target.
+type TargetPolicy struct {
+	// onTagMutation is the action taken when an upstream tag points to a new digest.
+	// +kubebuilder:default=Fail
+	// +optional
+	OnTagMutation OnTagMutation `json:"onTagMutation,omitempty"`
+}
+
+// ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
+type ClusterMirrorTargetSpec struct {
+	// registry is the target registry as host[:port], without a scheme.
+	// +required
+	Registry RegistryHost `json:"registry"`
+
+	// credentialsSecretRef holds the push credentials for the target registry
+	// (a kubernetes.io/dockerconfigjson Secret in the operator namespace).
+	// +required
+	CredentialsSecretRef SecretRef `json:"credentialsSecretRef"`
+
+	// caBundleSecretRef holds the CA bundle for the target registry.
+	// +optional
+	CABundleSecretRef *SecretKeyRef `json:"caBundleSecretRef,omitempty"`
+
+	// clientCertSecretRef holds a client certificate for mTLS to the target registry
+	// (a kubernetes.io/tls Secret).
+	// +optional
+	ClientCertSecretRef *SecretRef `json:"clientCertSecretRef,omitempty"`
+
+	// proxy configures the proxy for upstream traffic.
+	// +optional
+	Proxy *ProxySpec `json:"proxy,omitempty"`
+
+	// allowedSources lists the upstream registry hosts that mirrors may pull from.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=set
+	// +required
+	AllowedSources []RegistryHost `json:"allowedSources"`
+
+	// allowedNamespaces selects the namespaces whose ArtifactMirrors may use this target.
+	// It is required so that access is always an explicit decision.
+	// An empty selector ({}) allows all namespaces.
+	// +required
+	AllowedNamespaces *metav1.LabelSelector `json:"allowedNamespaces"`
+
+	// policy holds the default policy for mirrors that use this target.
+	// +kubebuilder:default={}
+	// +optional
+	Policy TargetPolicy `json:"policy,omitzero"`
 }
 
 // ClusterMirrorTargetStatus defines the observed state of ClusterMirrorTarget.
 type ClusterMirrorTargetStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the ClusterMirrorTarget resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// conditions represent the current state. The Ready condition reports
+	// whether the resource is usable.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -62,8 +158,11 @@ type ClusterMirrorTargetStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Registry",type=string,JSONPath=`.spec.registry`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ClusterMirrorTarget is the Schema for the clustermirrortargets API
+// ClusterMirrorTarget is a target registry owned by the platform team.
 type ClusterMirrorTarget struct {
 	metav1.TypeMeta `json:",inline"`
 
