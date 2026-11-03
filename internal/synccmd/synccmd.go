@@ -62,6 +62,8 @@ type options struct {
 	// sourceAuth and sourceCA are optional: a missing file means anonymous
 	// pulls and no extra source root.
 	sourceAuth, sourceCA string
+	// azureToken is the projected ServiceAccount token for Azure workload identity.
+	azureToken string
 	// allowLoopback lets loopback addresses pass the source checks. Only
 	// tests set it, for in-process registries on 127.0.0.1; every other
 	// internal address is still refused.
@@ -83,7 +85,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, termPath string) 
 		targetAuth: syncspec.TargetAuthFile, targetCA: syncspec.TargetCAFile,
 		proxyCA: syncspec.ProxyCAFile, clientCertDir: syncspec.ClientCertDir,
 		sourceAuth: syncspec.SourceAuthFile, sourceCA: syncspec.SourceCAFile,
-		lookup: net.DefaultResolver.LookupIPAddr,
+		azureToken: syncspec.AzureTokenFile,
+		lookup:     net.DefaultResolver.LookupIPAddr,
 	}
 	return run(ctx, args, stdout, termPath, o, os.Getenv)
 }
@@ -144,17 +147,25 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	if err := checkSource(ctx, spec, p, getenv("HTTPS_PROXY") != ""); err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
-	auth, err := dockerAuth(p.targetAuth, spec.TargetRepo.RegistryStr(), "target")
+	srcT, dstT, err := transports(p, spec.DeniedPrefixes, getenv)
+	if err != nil {
+		return syncspec.Spec{}, sync.Request{}, err
+	}
+	var auth authn.Authenticator
+	if spec.TargetAuth != "" {
+		auth, err = cloudAuth(ctx, spec.TargetAuth, spec, p, dstT, spec.TargetRepo.Registry, "target")
+	} else {
+		auth, err = dockerAuth(p.targetAuth, spec.TargetRepo.RegistryStr(), "target")
+	}
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
 	srcAuth := authn.Anonymous
-	if _, err := os.Stat(p.sourceAuth); !errors.Is(err, fs.ErrNotExist) {
-		if srcAuth, err = dockerAuth(p.sourceAuth, spec.SourceRepo.RegistryStr(), "source"); err != nil {
-			return syncspec.Spec{}, sync.Request{}, err
-		}
+	if spec.SourceAuth != "" {
+		srcAuth, err = cloudAuth(ctx, spec.SourceAuth, spec, p, srcT, spec.SourceRepo.Registry, "source")
+	} else if _, serr := os.Stat(p.sourceAuth); !errors.Is(serr, fs.ErrNotExist) {
+		srcAuth, err = dockerAuth(p.sourceAuth, spec.SourceRepo.RegistryStr(), "source")
 	}
-	srcT, dstT, err := transports(p, spec.DeniedPrefixes, getenv)
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
