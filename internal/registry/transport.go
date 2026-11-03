@@ -51,6 +51,7 @@ type Options struct {
 // proxies requests to localhost or loopback addresses.
 func NewTransport(o Options) (http.RoundTripper, error) {
 	pool, err := x509.SystemCertPool()
+	// No system roots (for example a scratch image) is fine: CAPEM may cover it.
 	if err != nil {
 		pool = x509.NewCertPool()
 	}

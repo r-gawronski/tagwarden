@@ -213,8 +213,12 @@ func TestProxyConnect(t *testing.T) {
 		err = get(t, rt, "https://example.com/v2/")
 		ps.Close()
 
-		if len(p.auth) != 1 || !strings.HasPrefix(p.auth[0], "Basic ") {
-			t.Fatalf("status %d: Proxy-Authorization = %q", status, p.auth)
+		if len(p.auth) != 1 {
+			t.Fatalf("status %d: %d CONNECT requests", status, len(p.auth))
+		}
+		r := &http.Request{Header: http.Header{"Authorization": {p.auth[0]}}}
+		if u, pw, ok := r.BasicAuth(); !ok || u != proxyUser || pw != proxyPass {
+			t.Fatalf("status %d: Proxy-Authorization does not carry the proxy credentials", status)
 		}
 		if status == http.StatusOK && err != nil {
 			t.Fatalf("via proxy: %v", err)
