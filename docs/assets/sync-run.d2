@@ -1,15 +1,17 @@
-# Source of sync-run-light.svg and sync-run-dark.svg.
+# Source of the sync-run-*.svg diagrams.
 # Render:
-#   d2 --theme 0 --pad 20 sync-run.d2 sync-run-light.svg
-#   d2 --theme 200 --pad 20 sync-run.d2 sync-run-dark.svg
+#   d2 --theme 0 --pad 40 sync-run.d2 sync-run-light.svg
+#   d2 --theme 200 --pad 40 sync-run.d2 sync-run-dark.svg
+#   add --sketch for the sync-run-sketch-*.svg variants
 shape: sequence_diagram
+style.font-size: 18
 
-team: Team
-c: Controller
-j: Sync Job
-p: Proxy
-u: Upstream
-r: Your registry
+team: Team {style: {border-radius: 14; shadow: true}}
+c: Controller {style: {border-radius: 14; shadow: true}}
+j: Sync Job {style: {border-radius: 14; shadow: true}}
+p: Proxy {style: {border-radius: 14; shadow: true}}
+u: Upstream {style: {border-radius: 14; shadow: true}}
+r: Your registry {style: {border-radius: 14; shadow: true}}
 
 on apply: {
   team -> c: ArtifactMirror
