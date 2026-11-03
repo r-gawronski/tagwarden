@@ -218,6 +218,25 @@ var _ = Describe("sync-now", Ordered, func() {
 		Expect(manualJobs(m)()).To(HaveLen(1))
 	})
 
+	It("refuses a value whose Job already finished", func() {
+		m := readyMirror("sync-reuse")
+		request(m, "first")
+		Eventually(lastRequest(m)).Should(And(Not(BeNil()), HaveField("Value", "first"),
+			HaveField("Result", mirrorv1alpha1.SyncRequestStarted)))
+		first := manualJobs(m)()
+		Expect(first).To(HaveLen(1))
+		completeJob(&first[0])
+
+		request(m, "second")
+		Eventually(lastRequest(m)).Should(And(HaveField("Value", "second"), HaveField("Result", mirrorv1alpha1.SyncRequestDeferred)))
+		request(m, "first")
+		msg := "value already used by Job " + operatorNamespace + "/" + first[0].Name + "; set a new value"
+		Eventually(lastRequest(m)).Should(And(HaveField("Value", "first"),
+			HaveField("Result", mirrorv1alpha1.SyncRequestRefused), HaveField("Message", msg)))
+		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning SyncRefused " + msg)))
+		Expect(manualJobs(m)()).To(HaveLen(1))
+	})
+
 	DescribeTable("refuses a request",
 		func(mutate func(*mirrorv1alpha1.ArtifactMirror), message string) {
 			m := newMirror(teamA, "sync-refused")

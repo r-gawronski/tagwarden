@@ -108,8 +108,13 @@ func (r *ArtifactMirrorReconciler) syncNow(ctx context.Context, t *mirrorv1alpha
 			continue
 		}
 		if j.Name == name {
-			// Started before, but the status update was lost.
-			recordRequest(m, ev, value, mirrorv1alpha1.SyncRequestStarted, fmt.Sprintf("Created Job %s/%s", j.Namespace, j.Name))
+			if finished(j) != nil {
+				recordRequest(m, ev, value, mirrorv1alpha1.SyncRequestRefused,
+					fmt.Sprintf("value already used by Job %s/%s; set a new value", j.Namespace, j.Name))
+			} else {
+				// Started before, but the status update was lost.
+				recordRequest(m, ev, value, mirrorv1alpha1.SyncRequestStarted, fmt.Sprintf("Created Job %s/%s", j.Namespace, j.Name))
+			}
 			return ctrl.Result{}, nil
 		}
 		if finished(j) == nil && j.DeletionTimestamp.IsZero() {
