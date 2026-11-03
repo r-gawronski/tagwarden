@@ -295,3 +295,38 @@ func TestRunAzureRefusesHosts(t *testing.T) {
 		})
 	}
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// The default port is dropped from the exchange URL and the service field.
+func TestAzureExchangeDropsDefaultPort(t *testing.T) {
+	var exchangeHost, service string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		_ = r.ParseForm()
+		body := `{"access_token":"a"}`
+		if r.URL.Path == "/oauth2/exchange" {
+			exchangeHost, service, body = r.URL.Host, r.PostForm.Get("service"), `{"refresh_token":"r"}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte(saToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := name.NewRegistry("myregistry.azurecr.io:443", name.StrictValidation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := azureProvider{
+		id:        syncspec.Azure{ClientID: clientID, TenantID: tenantID, AuthorityHost: syncspec.DefaultAzureAuthorityHost},
+		tokenFile: token, client: &http.Client{Transport: rt},
+	}
+	if _, err := p.Authenticator(t.Context(), reg); err != nil {
+		t.Fatal(err)
+	}
+	if exchangeHost != "myregistry.azurecr.io" || service != "myregistry.azurecr.io" {
+		t.Fatalf("exchange host %q, service %q", exchangeHost, service)
+	}
+}
