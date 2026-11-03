@@ -20,8 +20,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -162,6 +165,8 @@ func newEnv(t *testing.T, source, target name.Repository, pass string) *env {
 			targetAuth:    filepath.Join(dir, "auth.json"),
 			targetCA:      filepath.Join(dir, "missing", "ca.crt"),
 			proxyCA:       filepath.Join(dir, "missing", "proxy.crt"),
+			sourceAuth:    filepath.Join(dir, "missing", "source.json"),
+			sourceCA:      filepath.Join(dir, "missing", "source-ca.crt"),
 			clientCertDir: filepath.Join(dir, "missing"),
 			// The in-process registries listen on 127.0.0.1.
 			allowLoopback: true,
@@ -397,7 +402,17 @@ func TestRunConfigErrors(t *testing.T) {
 		"auth elsewhere": func(e *env) { e.write(t, e.opts.targetAuth, `{"auths":{"other.example.internal":{"auth":"eDp5"}}}`) },
 		"bad auth":       func(e *env) { e.write(t, e.opts.targetAuth, `{"auths":`) },
 		"unreadable CA":  func(e *env) { e.opts.targetCA = e.dir },
-		"empty CA":       func(e *env) { e.opts.proxyCA = e.spec },
+		"bad source auth": func(e *env) {
+			e.opts.sourceAuth = filepath.Join(e.dir, "source.json")
+			e.write(t, e.opts.sourceAuth, `{"auths":`)
+		},
+		"source auth elsewhere": func(e *env) {
+			e.opts.sourceAuth = filepath.Join(e.dir, "source.json")
+			e.write(t, e.opts.sourceAuth, `{"auths":{"other.example.internal":{"auth":"eDp5"}}}`)
+		},
+		"unreadable source auth": func(e *env) { e.opts.sourceAuth = e.dir },
+		"empty source CA":        func(e *env) { e.opts.sourceCA = e.spec },
+		"empty CA":               func(e *env) { e.opts.proxyCA = e.spec },
 		"key without cert": func(e *env) {
 			e.opts.clientCertDir = e.dir
 			e.write(t, filepath.Join(e.dir, "tls.key"), "x")
@@ -582,7 +597,7 @@ func TestTargetAuthKeyChoice(t *testing.T) {
 			}
 			// Repeat: map order must not change the choice.
 			for range 20 {
-				a, err := targetAuth(path, host)
+				a, err := dockerAuth(path, host, "target")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -592,6 +607,90 @@ func TestTargetAuthKeyChoice(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The source needs basic auth: it syncs with the mounted credentials and
+// fails without them; the password never reaches the outputs.
+func TestRunSourceCredentials(t *testing.T) {
+	src, dst := newRegistry(t, true), newRegistry(t, true)
+	img, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{"v1.0.0", v110} {
+		if err := remote.Write(src.Tag(tag), img, remote.WithAuth(&authn.Basic{Username: user, Password: password})); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := newEnv(t, src, dst, password)
+	code, out, msg := e.run(t)
+	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, "list source tags") {
+		t.Fatalf("anonymous: exit %d: %s\n%s", code, msg, out)
+	}
+	assertNoSecrets(t, out, msg)
+
+	e.opts.sourceAuth = filepath.Join(e.dir, "source.json")
+	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+	e.write(t, e.opts.sourceAuth, fmt.Sprintf(`{"auths":{"https://%s/v1/":{"auth":%q}}}`, src.RegistryStr(), auth))
+	code, out, msg = e.run(t)
+	if code != syncspec.ExitOK || !strings.Contains(msg, `"copied":2`) {
+		t.Fatalf("with credentials: exit %d: %s\n%s", code, msg, out)
+	}
+	assertNoSecrets(t, out, msg)
+}
+
+func TestSourceAuthDockerHub(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth.json")
+	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"auths":{"https://index.docker.io/v1/":{"auth":%q}}}`, auth)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"docker.io", "index.docker.io", "registry-1.docker.io"} {
+		a, err := dockerAuth(path, host, "source")
+		if err != nil {
+			t.Fatalf("%s: %v", host, err)
+		}
+		if cfg, err := a.Authorization(); err != nil || cfg.Password != password {
+			t.Fatalf("%s: %v", host, err)
+		}
+	}
+}
+
+// A source served over TLS with its own CA syncs only when the source CA
+// file is mounted. The target transport does not trust that CA.
+func TestRunSourceCA(t *testing.T) {
+	h := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
+	srv := httptest.NewTLSServer(h)
+	t.Cleanup(srv.Close)
+	src, err := name.NewRepository(strings.TrimPrefix(srv.URL, "https://")+"/team/app", name.StrictValidation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	img, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Write(src.Tag("v1.0.0"), img, remote.WithTransport(tr)); err != nil {
+		t.Fatal(err)
+	}
+
+	e := newEnv(t, src, newRegistry(t, true), password)
+	code, out, msg := e.run(t)
+	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, "list source tags") {
+		t.Fatalf("without CA: exit %d: %s\n%s", code, msg, out)
+	}
+
+	e.opts.sourceCA = filepath.Join(e.dir, "source-ca.crt")
+	e.write(t, e.opts.sourceCA, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})))
+	code, out, msg = e.run(t)
+	if code != syncspec.ExitOK || !strings.Contains(msg, `"copied":1`) {
+		t.Fatalf("with CA: exit %d: %s\n%s", code, msg, out)
 	}
 }
 
