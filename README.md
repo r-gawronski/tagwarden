@@ -1,217 +1,223 @@
-# tagwarden
-// TODO(user): Add simple overview of use/purpose
+# Tagwarden
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+[![CI](https://github.com/r-gawronski/tagwarden/actions/workflows/ci.yaml/badge.svg)](https://github.com/r-gawronski/tagwarden/actions/workflows/ci.yaml)
+[![E2E Tests](https://github.com/r-gawronski/tagwarden/actions/workflows/test-e2e.yaml/badge.svg)](https://github.com/r-gawronski/tagwarden/actions/workflows/test-e2e.yaml)
+[![License](https://img.shields.io/github/license/r-gawronski/tagwarden)](LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/r-gawronski/tagwarden)](go.mod)
 
-## Getting Started
+Tagwarden is a Kubernetes operator that keeps your own OCI registry
+stocked with the container images and Helm charts you pick.
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+You write one small YAML resource per upstream source: which repository,
+which tags, how often. Tagwarden copies those tags by digest into your
+registry, signatures included, and keeps doing it on schedule.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+It's made for clusters that can't pull from the internet directly. Maybe
+all you have is an HTTPS proxy, and someone wants to know exactly which
+images got in. Tagwarden handles both.
 
-```sh
-make docker-build docker-push IMG=<some-registry>/tagwarden:tag
+> **Status: alpha.** The API is `v1alpha1` and can still change. Images
+> and OCI charts work today. Classic Helm repositories and signature
+> verification come next.
+
+## Why you might want it
+
+Registry replication rules match tags with globs and copy everything
+that matches. That's fine until you want "the last three 1.31 patch
+releases" or "stable tags from 1.17 up, nothing else". Pull-through
+caches fetch on first use, so they fail when the upstream or the proxy is
+down, which is when you need them most.
+
+With Tagwarden, the list of allowed artifacts lives in Git next to the
+rest of your cluster config. You review it in pull requests like any
+other change.
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph cluster [Kubernetes cluster]
+    AM[ArtifactMirror<br/>team namespace] --> C[Tagwarden controller]
+    T[ClusterMirrorTarget<br/>platform team] --> C
+    C -->|CronJob + spec| J[sync Job<br/>operator namespace]
+    J -->|result| C
+  end
+  J -->|list tags, copy by digest| P[HTTPS proxy<br/>optional]
+  P --> U[(Upstream registries)]
+  J -->|push| R[(Your OCI registry)]
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+There are two resources:
 
-**Install the CRDs into the cluster:**
+- `ClusterMirrorTarget` belongs to the platform team. It names your
+  registry, the push credentials, the proxy, which upstream registries
+  are allowed, and which namespaces may push to which project.
+- `ArtifactMirror` belongs to a team. It lives in their namespace and
+  says what to mirror and when.
 
-```sh
-make install
-```
+The controller checks each mirror against its target and turns it into a
+CronJob in the operator namespace. On schedule, a sync Job lists the
+upstream tags, picks the ones you asked for, copies new digests with
+their signatures, and reports back. You see the result in the mirror's
+status.
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+## Examples
 
-```sh
-make deploy IMG=<some-registry>/tagwarden:tag
-```
-
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-Sync Jobs run the same image in `sync` mode, in the operator namespace
-`tagwarden-system`. Add `--denied-cidrs=<pod CIDR>,<service CIDR>` to the
-manager args in `config/manager/manager.yaml` so that sources cannot resolve
-to cluster addresses. The Secrets a `ClusterMirrorTarget` references must
-exist in `tagwarden-system`.
-
-Changing the operator namespace leaves the CronJobs and ConfigMaps in the
-old namespace behind. Delete them there, for example with
-`kubectl delete cronjobs,configmaps -l tagwarden.dev/mirror -n <old namespace>`.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
-```sh
-kubectl apply -k config/samples/
-```
-
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Network policies
-
-Sync pods carry two labels, so cluster admins can restrict their egress
-per path:
-
-- `tagwarden.dev/target`: the `ClusterMirrorTarget` name. A name that is not
-  a valid label value (longer than 63 characters, for example) becomes `h-`
-  and the first 20 hex characters of its sha256.
-- `tagwarden.dev/egress`: `proxy` when the target sets `spec.proxy`, else
-  `direct`.
-
-The controller restores both labels when someone edits them by hand. The
-example lets `proxy` pods reach only the proxy, the target registry and
-DNS, and `direct` pods reach the target, DNS and port 443 outside private
-and cluster ranges. Add `tagwarden.dev/target` to `podSelector` for a policy
-per target.
+The platform team sets up the target once:
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
 metadata:
-  name: sync-egress-proxy
-  namespace: tagwarden-system
+  name: registry
 spec:
-  podSelector:
-    matchLabels:
-      tagwarden.dev/egress: proxy
-  policyTypes: [Egress]
-  egress:
-  - to: [{ipBlock: {cidr: 10.0.0.10/32}}]   # proxy
-    ports: [{port: 3128, protocol: TCP}]
-  - to: [{ipBlock: {cidr: 10.0.0.20/32}}]   # target registry
-    ports: [{port: 8443, protocol: TCP}]
-  - to: [{namespaceSelector: {}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
-    ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [registry.k8s.io, ghcr.io, quay.io, docker.io]
+  projects:
+    - name: mirror
+      namespaceSelector: {}          # any namespace may push to "mirror"
+  proxy:
+    httpsProxy: http://proxy.example.internal:3128
+    noProxy: [registry.example.internal]
+    credentialsSecretRef: {name: proxy-credentials}
+```
+
+A team mirrors an image. This one keeps the three newest ingress-nginx
+releases from 1.11.0 up, and only if they ship for both architectures:
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
 metadata:
-  name: sync-egress-direct
-  namespace: tagwarden-system
+  name: ingress-nginx
+  namespace: team-net
 spec:
-  podSelector:
-    matchLabels:
-      tagwarden.dev/egress: direct
-  policyTypes: [Egress]
-  egress:
-  - to:
-    - ipBlock:
-        cidr: 0.0.0.0/0
-        except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
-    ports: [{port: 443, protocol: TCP}]
-  - to: [{ipBlock: {cidr: 10.0.0.20/32}}]   # target registry
-    ports: [{port: 8443, protocol: TCP}]
-  - to: [{namespaceSelector: {}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
-    ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+  targetRef: registry
+  schedule: "0 3 * * *"
+  source: {registry: registry.k8s.io, repository: ingress-nginx/controller}
+  target: {project: mirror}
+  tags:
+    include: ['^v\d+\.\d+\.\d+$']
+    semverRange: ">=1.11.0"
+    keepLatest: 3
+  requiredPlatforms: [linux/amd64, linux/arm64]
 ```
 
-Add your pod and service CIDRs to `except` when they are outside these
-ranges. NetworkPolicies are a second layer: the sync Job checks every
-source address itself (threat model T16).
+Helm charts stored in an OCI registry work the same way. Set
+`type: HelmOCI`:
 
-Some CNIs reject the packets of a new pod until its policy is programmed,
-usually for a second or so. Only during the first ~35 s of a run, the sync
-Job retries connections that fail at dial time (for example
-`proxyconnect tcp: ... connection refused`) and temporary DNS errors. If a
-sync still fails with such an error, check that the policy allows DNS and
-the proxy or registry address and port.
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/tagwarden:tag
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata:
+  name: kube-prometheus-stack
+  namespace: team-obs
+spec:
+  targetRef: registry
+  schedule: "@daily"
+  type: HelmOCI
+  source: {registry: ghcr.io, repository: prometheus-community/charts/kube-prometheus-stack}
+  target: {project: mirror}
+  tags:
+    semverRange: ">=75.0.0"
+    keepLatest: 5
 ```
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+Artifacts land at `<registry>/<project>/<source registry>/<source
+repository>`, for example
+`registry.example.internal/mirror/registry.k8s.io/ingress-nginx/controller:v1.11.3`.
+Set `target.repository` to pick a different path.
 
-2. Using the installer
+## Features
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+- **Tag selection:** include and exclude regexes, semver ranges, keep
+  latest N, and a list of exact tags. Regexes use RE2, so a bad pattern
+  can't hang the sync. Plain numbers like `7` or `20240101` don't count
+  as versions.
+- **Digest first:** each tag gets resolved once and copied by digest.
+  Tagwarden copies whole multi-arch indexes, so digests and signatures
+  stay valid.
+- **Signatures and attestations:** OCI referrers and cosign `.sig`,
+  `.att` and `.sbom` tags come along with the image. If upstream signs
+  later, the next run picks the signature up.
+- **Proxy-only egress:** an HTTPS proxy with credentials and its own CA
+  (for TLS-inspecting proxies), plus `noProxy`. mTLS and a private CA for
+  your registry.
+- **Moving tags:** when an upstream tag points to a new digest, the
+  target decides: `Fail` (default), `Overwrite` or `Ignore`.
+- **Multi-tenancy:** teams can only push to projects the platform team
+  opened for their namespace, and only from allowed registries. Two
+  mirrors can't write different sources to the same path.
+- **Locked-down sync Jobs:** they run only in the operator namespace,
+  get no ServiceAccount token, and run distroless, non-root and
+  read-only with all capabilities dropped. They refuse source hosts and
+  redirects that point at internal, metadata or cluster addresses.
+- **Least privilege:** the controller reads Secrets only in its own
+  namespace.
+- **Audit trail:** one JSON line per artifact (source digest, target,
+  action, referrers), plus status conditions and Events.
 
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/tagwarden/<tag or branch>/dist/install.yaml
-```
+## Quick start
 
-### With the Helm chart
+You need Kubernetes 1.30 or newer and a registry you can push to.
 
-The chart lives in `dist/chart`. The release namespace becomes the operator
-namespace. Set `deniedCIDRs` to the pod and service CIDRs of the cluster:
+1. Install the operator. Set `deniedCIDRs` to your pod and service
+   CIDRs. More options are in [docs/install.md](docs/install.md).
 
-```sh
-helm install tagwarden dist/chart --namespace tagwarden-system --create-namespace \
-  --set manager.image.repository=<some-registry>/tagwarden \
-  --set manager.image.tag=<tag> \
-  --set 'deniedCIDRs={10.244.0.0/16,10.96.0.0/12}'
-```
+   ```sh
+   helm install tagwarden oci://ghcr.io/r-gawronski/charts/tagwarden \
+     --version <version> \
+     --namespace tagwarden-system --create-namespace \
+     --set 'deniedCIDRs={10.244.0.0/16,10.96.0.0/12}'
+   ```
 
-`targets` and `mirrors` in the values create `ClusterMirrorTarget` and
-`ArtifactMirror` objects. On the first install the CRDs are not served yet,
-so run `helm upgrade` with the same values once more to create them.
-`helm uninstall` keeps the CRDs, targets and mirrors; reinstalling with the
-same release name adopts them. To remove mirrors, delete them while the
-operator still runs. See
-[docs/design/helm-chart.md](docs/design/helm-chart.md) for the values and
-for how the chart is generated (`make helm`).
+   The first release is v0.1.0. Until it's out, install from source as
+   described in [docs/install.md](docs/install.md).
+
+2. Give the operator a push credential for your registry:
+
+   ```sh
+   kubectl -n tagwarden-system create secret docker-registry registry-push \
+     --docker-server=registry.example.internal \
+     --docker-username=<robot> --docker-password=<token>
+   ```
+
+3. Apply a `ClusterMirrorTarget` and an `ArtifactMirror` like the ones in
+   [Examples](#examples). Leave out `proxy` if you have direct access.
+
+4. Check how it went:
+
+   ```sh
+   kubectl get artifactmirrors -A
+   kubectl -n team-net get artifactmirror ingress-nginx -o jsonpath='{.status.synced}'
+   ```
+
+   Don't want to wait for the schedule? Create a Job from the mirror's
+   CronJob. `kubectl -n tagwarden-system get cronjobs` lists them; each
+   has a `tagwarden.dev/mirror-name` annotation.
+
+## Documentation
+
+- [Install](docs/install.md): Helm, Kustomize, uninstall.
+- [Network policies](docs/network-policies.md): sync pod labels and
+  example egress policies.
+- [Threat model](docs/threat-model.md): what Tagwarden trusts, and how it
+  handles each threat.
+- [Helm chart design](docs/design/helm-chart.md) and
+  [spike results](docs/design/spikes.md).
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
+Contributions are welcome. Have a look at
+[CONTRIBUTING.md](CONTRIBUTING.md) first: commits need a DCO sign-off,
+and changes come with tests. `make help` lists the build targets.
 
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+## Security
+
+Found a vulnerability? Please report it privately, as described in
+[SECURITY.md](SECURITY.md), not in a public issue.
 
 ## License
 
-Copyright 2026 The Tagwarden Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache License 2.0. See [LICENSE](LICENSE).
