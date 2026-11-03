@@ -261,6 +261,29 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		Expect(writes.Load()).To(Equal(updates), "CronJob or ConfigMap update calls")
 	})
 
+	It("restores hand-edited security fields of the CronJob", func() {
+		m := newMirror(teamA, "hand-edit")
+		createMirror(m)
+		Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
+		cj, _ := cronJob(m)()
+		pod := &cj.Spec.JobTemplate.Spec.Template.Spec
+		pod.Containers[0].Image = "registry.example.internal/evil:latest"
+		pod.Containers[0].SecurityContext.Privileged = new(true)
+		pod.Containers[0].SecurityContext.AllowPrivilegeEscalation = new(true)
+		pod.SecurityContext.RunAsNonRoot = new(false)
+		Expect(k8sClient.Update(ctx, cj)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			got, err := cronJob(m)()
+			g.Expect(err).NotTo(HaveOccurred())
+			p := got.Spec.JobTemplate.Spec.Template.Spec
+			g.Expect(p.Containers[0].Image).To(Equal(syncImage))
+			g.Expect(p.Containers[0].SecurityContext.Privileged).To(BeNil())
+			g.Expect(*p.Containers[0].SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
+			g.Expect(*p.SecurityContext.RunAsNonRoot).To(BeTrue())
+		}).Should(Succeed())
+	})
+
 	It("never touches a CronJob or ConfigMap that names another mirror", func() {
 		m := newMirror(teamA, "squatted")
 		foreign := func() (*batchv1.CronJob, *corev1.ConfigMap) {
