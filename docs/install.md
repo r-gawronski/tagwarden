@@ -350,7 +350,8 @@ address, and the sync Job refuses link-local addresses by design (T16).
   NetworkPolicies. ECR serves layers from the S3 bucket
   `prod-<region>-starport-layer-bucket`, so also allow the region's S3
   endpoints (for example `*.s3.<region>.amazonaws.com`). China regions use
-  `amazonaws.com.cn` instead of `amazonaws.com`.
+  `amazonaws.com.cn` instead of `amazonaws.com`. In `us-east-1`, layer
+  redirects may also use the global `s3.amazonaws.com` name; allow both.
 - The STS and ECR API endpoints come from `region`; there is no endpoint
   field. A FIPS registry host (`<account>.dkr.ecr-fips.<region>.amazonaws.com`)
   gets its token from `ecr-fips.<region>.amazonaws.com`; STS stays the
@@ -366,18 +367,28 @@ address, and the sync Job refuses link-local addresses by design (T16).
   most). The CRD refuses other hosts. The sync Job checks again before it
   sends a token, and also refuses a registry whose region differs from
   `workloadIdentity.aws.region`, so a token for one region never goes to
-  another.
-- The STS session is `tagwarden-<hash of the mirror>` and lasts 15
-  minutes. CloudTrail shows it in `AssumeRoleWithWebIdentity` and in the
+  another. Only the Job checks the region, not the CRD: a mismatch shows
+  at run time as a failed sync with a config error (exit 3).
+- The STS session is `tagwarden-<hash of the mirror>` and lasts one
+  hour, as long as a sync Job may run, because the ECR token may expire
+  with the session. The role's maximum session duration must be at least
+  one hour (the IAM default). CloudTrail shows it in `AssumeRoleWithWebIdentity` and in the
   ECR calls.
-- Every mirror of the target shares the role, and the role trusts the
-  ServiceAccount. Give each target whose role differs its own
-  ServiceAccount and its own trust policy subject, and always set
-  `serviceAccountName`, for the same reason as with Azure above.
+- Use one ServiceAccount per role, and one trust policy subject per
+  ServiceAccount, and always set `serviceAccountName`. STS accepts the
+  projected token for every role whose trust policy names its
+  ServiceAccount. If two targets with different roles share one
+  ServiceAccount (the default `tagwarden-sync`, for example), a
+  compromised sync pod of one target can assume the other target's role.
+  Every mirror of a target shares its role.
 - A missing ServiceAccount leaves the target `Ready`; the Job's pod is not
   created and only a `FailedCreate` Event shows it.
 - STS and ECR errors show the HTTP status and the AWS error code (for
   example `HTTP 400 InvalidIdentityToken`), never a token or a key.
+- `HTTP 400 InvalidSignatureException` from ECR usually means the node
+  clock is off: SigV4 signatures expire after a few minutes of skew. It
+  is a config error (exit 3) and the Job is not retried; fix NTP on the
+  nodes.
 - China and GovCloud are untested. Real-cloud tests are manual; CI uses
   fakes for STS, ECR and the registry.
 

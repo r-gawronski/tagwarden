@@ -259,7 +259,7 @@ func (f *awsFakes) assertRequests(t *testing.T) {
 	want := url.Values{
 		"Action": {"AssumeRoleWithWebIdentity"}, "Version": {"2011-06-15"}, "RoleArn": {awsRole},
 		"RoleSessionName":  {roleSessionName(syncspec.Mirror{Namespace: "team-a", Name: "app"})},
-		"WebIdentityToken": {awsSAToken}, "DurationSeconds": {"900"},
+		"WebIdentityToken": {awsSAToken}, "DurationSeconds": {"3600"},
 	}
 	if form.Encode() != want.Encode() || f.stsAuth.Load() {
 		t.Fatalf("STS form %v, signed %v", form, f.stsAuth.Load())
