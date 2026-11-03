@@ -138,6 +138,12 @@ Add your pod and service CIDRs to `except` when they are outside these
 ranges. NetworkPolicies are a second layer: the sync Job checks every
 source address itself (threat model T16).
 
+Some CNIs reject the packets of a new pod until its policy is programmed,
+usually for a second or so. The sync Job retries connections that fail at
+dial time (for example `proxyconnect tcp: ... connection refused`) for about
+30 s. If a sync still fails with such an error, check that the policy allows
+the proxy or registry address and port.
+
 ## Project Distribution
 
 Following the options to release and provide this solution to the users.
