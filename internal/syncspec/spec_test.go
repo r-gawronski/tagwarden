@@ -71,6 +71,23 @@ func TestDecodeAzure(t *testing.T) {
 	}
 }
 
+func aws(role, region string) string {
+	return `"sourceAuth": "awsWorkloadIdentity", "aws": {"roleARN": "` + role + `", "region": "` + region + `"},`
+}
+
+const exampleRole = "arn:aws:iam::123456789012:role/tagwarden-sync"
+
+func TestDecodeAWS(t *testing.T) {
+	in := strings.Replace(valid, maxTags, `"maxTags": 100, `+aws(exampleRole, "eu-west-1"), 1)
+	s, err := Decode(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.SourceAuth != AuthAWSWorkloadIdentity || *s.AWS != (AWS{RoleARN: exampleRole, Region: "eu-west-1"}) {
+		t.Fatalf("decoded %+v", s)
+	}
+}
+
 func TestDecodeRejects(t *testing.T) {
 	cases := map[string]struct{ old, new string }{
 		"unknown field":      {maxTags, `"maxTags": 100, "extra": 1,`},
@@ -95,6 +112,13 @@ func TestDecodeRejects(t *testing.T) {
 		"azure bad client":   {maxTags, `"maxTags": 100, ` + azure(`"x"`, `"https://login.example.internal/"`)},
 		"azure http host":    {maxTags, `"maxTags": 100, ` + azure(zeroGUID, `"http://login.example.internal/"`)},
 		"azure no host":      {maxTags, `"maxTags": 100, ` + azure(zeroGUID, `""`)},
+		"aws missing":        {maxTags, `"maxTags": 100, "targetAuth": "awsWorkloadIdentity",`},
+		"aws bad role":       {maxTags, `"maxTags": 100, ` + aws("arn:aws:iam::123456789012:user/sync", "eu-west-1")},
+		"aws bad region":     {maxTags, `"maxTags": 100, ` + aws(exampleRole, "eu-west-1.example.internal")},
+		"aws iso region":     {maxTags, `"maxTags": 100, ` + aws(exampleRole, "us-isob-east-1")},
+		"aws partition":      {maxTags, `"maxTags": 100, ` + aws(exampleRole, "cn-north-1")},
+		"aws gov partition":  {maxTags, `"maxTags": 100, ` + aws("arn:aws-us-gov:iam::123456789012:role/sync", "us-east-1")},
+		"aws endpoint":       {maxTags, `"maxTags": 100, ` + strings.Replace(aws(exampleRole, "eu-west-1"), "},", `, "stsEndpoint": "https://sts.example.internal/"},`, 1)},
 		"azure scope":        {maxTags, `"maxTags": 100, ` + strings.Replace(azure(zeroGUID, `"https://login.microsoftonline.com/"`), "},", `, "scope": "https://management.azure.com/.default"},`, 1)},
 	}
 	for name, tc := range cases {
@@ -176,6 +200,34 @@ func TestAzureHosts(t *testing.T) {
 	} {
 		if AzureAuthority(u) != want {
 			t.Errorf("AzureAuthority(%q) = %v", u, !want)
+		}
+	}
+}
+
+func TestECRHosts(t *testing.T) {
+	type res struct {
+		region string
+		fips   bool
+	}
+	for host, want := range map[string]*res{
+		"123456789012.dkr.ecr.eu-west-1.amazonaws.com":                  {"eu-west-1", false},
+		"123456789012.DKR.ECR.US-EAST-1.amazonaws.com:443":              {"us-east-1", false},
+		"123456789012.dkr.ecr-fips.us-gov-west-1.amazonaws.com":         {"us-gov-west-1", true},
+		"123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn":              {"cn-north-1", false},
+		"123456789012.dkr.ecr.eu-west-1.amazonaws.com:5000":             nil,
+		"123456789012.dkr.ecr.eu-west-1.amazonaws.com.cn":               nil,
+		"123456789012.dkr.ecr.cn-north-1.amazonaws.com":                 nil,
+		"123456789012.dkr.ecr-fips.cn-north-1.amazonaws.com.cn":         nil,
+		"12345678901.dkr.ecr.eu-west-1.amazonaws.com":                   nil,
+		"123456789012.dkr.ecr.eu-west-1.amazonaws.com.example.internal": nil,
+		"123456789012.dkr-ecr.eu-west-1.on.aws":                         nil,
+		"123456789012.dkr.ecr.us-isob-east-1.amazonaws.com":             nil,
+		"public.ecr.aws": nil,
+		"123456789012.dkr.ecr.eu-west-1.amazonaws.\u212Aom": nil,
+	} {
+		region, fips, ok := ECRHost(host)
+		if ok != (want != nil) || want != nil && (region != want.region || fips != want.fips) {
+			t.Errorf("ECRHost(%q) = %q %v %v", host, region, fips, ok)
 		}
 	}
 }

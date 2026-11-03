@@ -64,6 +64,11 @@ type options struct {
 	sourceAuth, sourceCA string
 	// azureToken is the projected ServiceAccount token for Azure workload identity.
 	azureToken string
+	// awsToken is the projected ServiceAccount token for AWS IRSA.
+	awsToken string
+	// awsSTS and awsECR replace the STS and ECR API endpoints that the
+	// region gives. Only tests set them.
+	awsSTS, awsECR string
 	// allowLoopback lets loopback addresses pass the source checks. Only
 	// tests set it, for in-process registries on 127.0.0.1; every other
 	// internal address is still refused.
@@ -85,8 +90,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, termPath string) 
 		targetAuth: syncspec.TargetAuthFile, targetCA: syncspec.TargetCAFile,
 		proxyCA: syncspec.ProxyCAFile, clientCertDir: syncspec.ClientCertDir,
 		sourceAuth: syncspec.SourceAuthFile, sourceCA: syncspec.SourceCAFile,
-		azureToken: syncspec.AzureTokenFile,
-		lookup:     net.DefaultResolver.LookupIPAddr,
+		azureToken: syncspec.AzureTokenFile, awsToken: syncspec.AWSTokenFile,
+		lookup: net.DefaultResolver.LookupIPAddr,
 	}
 	return run(ctx, args, stdout, termPath, o, os.Getenv)
 }

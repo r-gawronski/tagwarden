@@ -57,6 +57,9 @@ const (
 	// AzureTokenFile is the projected ServiceAccount token with audience
 	// AzureTokenAudience, mounted when a registry uses Azure workload identity.
 	AzureTokenFile = "/var/run/tagwarden/azure-token/token" //nolint:gosec // path, not a credential
+	// AWSTokenFile is the projected ServiceAccount token with audience
+	// AWSTokenAudience, mounted when a registry uses AWS workload identity.
+	AWSTokenFile = "/var/run/tagwarden/aws-token/token" //nolint:gosec // path, not a credential
 
 	// ProxyUserEnv and ProxyPasswordEnv hold the proxy credentials. The
 	// proxy itself comes from HTTPS_PROXY and NO_PROXY. Only these
@@ -84,6 +87,13 @@ const (
 	// scope would mint a management token and send it to the registry, so
 	// no other scope is allowed.
 	AzureScope = "https://containerregistry.azure.net/.default"
+
+	// AuthAWSWorkloadIdentity names AWS IAM roles for service accounts in
+	// Spec.TargetAuth and Spec.SourceAuth.
+	AuthAWSWorkloadIdentity = "awsWorkloadIdentity"
+	// AWSTokenAudience is the audience AWS STS expects in a ServiceAccount
+	// token from an EKS or other IAM OIDC provider, in every partition.
+	AWSTokenAudience = "sts.amazonaws.com" //nolint:gosec // audience, not a credential
 )
 
 // Azure is the Microsoft Entra workload identity of a sync run. It holds
@@ -94,6 +104,63 @@ type Azure struct {
 	AuthorityHost string `json:"authorityHost"`
 }
 
+// AWS is the IAM role of a sync run. It holds identifiers only, no secrets.
+type AWS struct {
+	RoleARN string `json:"roleARN"`
+	Region  string `json:"region"`
+}
+
+var (
+	roleARN   = regexp.MustCompile(`^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,576}$`)
+	awsRegion = regexp.MustCompile(`^((us|eu|ap|sa|ca|me|af|il|mx|cn)-[a-z]+|us-gov-[a-z]+)-[0-9]{1,2}$`)
+	ecrHost   = regexp.MustCompile(`^[0-9]{12}\.dkr\.ecr(-fips)?\.([a-z0-9-]+)\.amazonaws\.com(\.cn)?(:443)?$`)
+)
+
+func (a *AWS) validate() error {
+	if !roleARN.MatchString(a.RoleARN) || !awsRegion.MatchString(a.Region) {
+		return errors.New("roleARN must be an IAM role ARN and region an AWS Region")
+	}
+	if strings.HasPrefix(a.RoleARN, "arn:aws-cn:") != strings.HasPrefix(a.Region, "cn-") ||
+		strings.HasPrefix(a.RoleARN, "arn:aws-us-gov:") != strings.HasPrefix(a.Region, "us-gov-") {
+		return errors.New("roleARN and region must be in the same AWS partition")
+	}
+	return nil
+}
+
+// ECRHost parses an Amazon ECR private registry host,
+// <account>.dkr.ecr[-fips].<region>.amazonaws.com[.cn][:443]. It reports
+// ok only when the DNS suffix fits the region: amazonaws.com.cn for China,
+// amazonaws.com without FIPS in China otherwise. ASCII letters are folded
+// as in the CRD rule.
+func ECRHost(host string) (region string, fips, ok bool) {
+	m := ecrHost.FindStringSubmatch(lowerASCII(host))
+	if m == nil || !awsRegion.MatchString(m[2]) {
+		return "", false, false
+	}
+	china := strings.HasPrefix(m[2], "cn-")
+	if china != (m[3] != "") || china && m[1] != "" {
+		return "", false, false
+	}
+	return m[2], m[1] != "", true
+}
+
+// AWSDNSSuffix is the DNS suffix of the AWS endpoints in region.
+func AWSDNSSuffix(region string) string {
+	if strings.HasPrefix(region, "cn-") {
+		return "amazonaws.com.cn"
+	}
+	return "amazonaws.com"
+}
+
+func lowerASCII(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+		return r
+	}, s)
+}
+
 var (
 	acrHost        = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$`)
 	azureAuthority = regexp.MustCompile(`^https://(login\.microsoftonline\.(com|us)|login\.partner\.microsoftonline\.cn|login\.chinacloudapi\.cn)/?$`)
@@ -102,14 +169,7 @@ var (
 // ACRHost reports whether host is an Azure Container Registry login
 // server. Like CEL lowerAscii in the CRD rule, only ASCII letters are
 // folded, so a non-ASCII look-alike such as the Kelvin sign never matches.
-func ACRHost(host string) bool {
-	return acrHost.MatchString(strings.Map(func(r rune) rune {
-		if 'A' <= r && r <= 'Z' {
-			return r + 'a' - 'A'
-		}
-		return r
-	}, host))
-}
+func ACRHost(host string) bool { return acrHost.MatchString(lowerASCII(host)) }
 
 // AzureAuthority reports whether u is a known Microsoft Entra authority
 // host. The CRD has the same rule; a new cloud needs both changed.
@@ -180,6 +240,8 @@ type Spec struct {
 	SourceAuth string `json:"sourceAuth,omitempty"`
 	// Azure is required when a registry uses AuthAzureWorkloadIdentity.
 	Azure *Azure `json:"azure,omitempty"`
+	// AWS is required when a registry uses AuthAWSWorkloadIdentity.
+	AWS *AWS `json:"aws,omitempty"`
 
 	// SourceRepo, TargetRepo and DeniedPrefixes are set by Decode.
 	SourceRepo     name.Repository `json:"-"`
@@ -246,6 +308,10 @@ func (s *Spec) validate() error {
 			if s.Azure == nil {
 				return errors.New("azure: required by " + AuthAzureWorkloadIdentity)
 			}
+		case AuthAWSWorkloadIdentity:
+			if s.AWS == nil {
+				return errors.New("aws: required by " + AuthAWSWorkloadIdentity)
+			}
 		default:
 			return fmt.Errorf("unknown registry auth %q", a)
 		}
@@ -253,6 +319,11 @@ func (s *Spec) validate() error {
 	if s.Azure != nil {
 		if err := s.Azure.validate(); err != nil {
 			return fmt.Errorf("azure: %w", err)
+		}
+	}
+	if s.AWS != nil {
+		if err := s.AWS.validate(); err != nil {
+			return fmt.Errorf("aws: %w", err)
 		}
 	}
 	for _, c := range s.DeniedCIDRs {
