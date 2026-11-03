@@ -1,0 +1,1 @@
+{"v":1,"copied":1,"skipped":1,"mutated":1,"failed":1,"synced":[{"tag":"v1.1.0","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"tag":"v1.0.0","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"errors":["v0.9.0: resolve source tag: not found"]}
