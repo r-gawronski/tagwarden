@@ -48,7 +48,30 @@ and check the target, the referrers and the mirror status. CI needs no
 internet access beyond pulling images.
 
 `E2E_INTERNET=1 make test-e2e` also mirrors `registry.k8s.io/pause`
-through the proxy.
+through the proxy. `E2E_SKIP_IMAGE_BUILD=1` skips `make docker-build` and
+loads an image you built as `example.com/tagwarden:v0.0.1`; CI uses it to
+build the image with a layer cache first.
+
+## CI
+
+Changes that touch only Markdown, `docs/`, `LICENSE` or
+`.github/CODEOWNERS` skip CI, CodeQL and e2e. DCO still runs.
+
+On pull requests the e2e workflow runs only when the pull request has the
+`e2e` label: when the label is added and on every push after that. Without
+the label the job shows as skipped. It always runs on pushes to `main` and
+nightly.
+
+Add the `e2e` label before merge when a change touches the controller, the
+sync code, the registry transport, the chart or the e2e tests. Leave it off
+while you iterate on review fixes if you like, but add it before the last
+push.
+
+## Merge checklist
+
+- CI, CodeQL and DCO are green.
+- A pull request that touches the controller, sync, registry, chart or e2e
+  code has a green e2e run on its last commit.
 
 ## Security
 
