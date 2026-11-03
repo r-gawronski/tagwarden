@@ -57,7 +57,9 @@ const (
 type testRegistry struct {
 	repo   name.Repository
 	writes atomic.Int32
-	mu     stdsync.Mutex
+	// manifestGets counts GET requests for manifests.
+	manifestGets atomic.Int32
+	mu           stdsync.Mutex
 	// puts lists the paths of manifest PUT requests.
 	puts []string
 }
@@ -88,6 +90,9 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 		}
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			r.writes.Add(1)
+		}
+		if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/manifests/") {
+			r.manifestGets.Add(1)
 		}
 		if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/manifests/") {
 			r.mu.Lock()
@@ -295,13 +300,17 @@ func TestRunSyncsReferrersOfUpToDateTags(t *testing.T) {
 		}
 	}
 
-	writes := dst.writes.Load()
+	writes, gets := dst.writes.Load(), src.manifestGets.Load()
 	res, err = Run(context.Background(), req)
 	if err != nil || len(res.Skipped) != 1 || res.Skipped[0].Referrers != 2 {
 		t.Fatalf("third run: %v %+v", err, res)
 	}
 	if n := dst.writes.Load() - writes; n != 0 {
 		t.Fatalf("third run wrote %d requests", n)
+	}
+	// Some registries count manifest GETs as pulls.
+	if n := src.manifestGets.Load() - gets; n != 0 {
+		t.Fatalf("third run made %d source manifest GETs", n)
 	}
 }
 

@@ -70,7 +70,8 @@ type Artifact struct {
 }
 
 // Result lists what happened to each selected tag. Overwritten mutated tags
-// are in both Mutated and Copied. A tag deleted upstream is not selected, so
+// are in both Mutated and Copied. An up-to-date tag is reported Failed when
+// its referrers cannot be listed or copied; the image itself is untouched. A tag deleted upstream is not selected, so
 // its target tag stays untouched; prune and reporting come in phase 4.
 type Result struct {
 	Copied, Skipped, Mutated, Failed []Artifact
@@ -321,6 +322,18 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 	}
 	n := 0
 	for _, m := range im.Manifests {
+		// Check the target first: some registries count manifest GETs as pulls.
+		_, err := resolve(ctx, s.dst, s.req.Target.Digest(m.Digest.String()))
+		if err == nil {
+			// Fallback-tag pollution has no artifactType; real referrers do.
+			if m.ArtifactType != "" {
+				n++
+			}
+			continue
+		}
+		if !notFound(err) {
+			return n, fmt.Errorf("check target referrer %s: %w", m.Digest, err)
+		}
 		desc, err := s.src.Get(ctx, s.req.Source.Digest(m.Digest.String()))
 		if err != nil {
 			return n, fmt.Errorf("fetch referrer: %w", err)
@@ -331,7 +344,7 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		if err := json.Unmarshal(desc.Manifest, &mf); err != nil || mf.Subject == nil || mf.Subject.Digest != d {
 			continue
 		}
-		if err := s.ensure(ctx, desc); err != nil {
+		if err := s.copy(ctx, desc); err != nil {
 			return n, err
 		}
 		n++
