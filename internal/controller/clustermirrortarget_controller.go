@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -44,7 +45,8 @@ import (
 // condition. Secret contents never leave this check.
 type ClusterMirrorTargetReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 	// Namespace is the operator namespace that holds the referenced Secrets.
 	Namespace string
 }
@@ -63,17 +65,44 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 		Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonReady,
 		Message: "all referenced Secrets are valid", ObservedGeneration: t.Generation,
 	}
-	reason, msg, err := r.check(ctx, &t)
-	if err != nil {
-		return ctrl.Result{}, err
+	reason, msg := ambiguousSources(&t)
+	if reason == "" {
+		var err error
+		if reason, msg, err = r.check(ctx, &t); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if reason != "" {
 		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, reason, msg
 	}
-	if meta.SetStatusCondition(&t.Status.Conditions, cond) {
-		return ctrl.Result{}, r.Status().Update(ctx, &t)
+	old := meta.FindStatusCondition(t.Status.Conditions, ConditionReady)
+	newReason := reason != "" && (old == nil || old.Reason != reason)
+	if !meta.SetStatusCondition(&t.Status.Conditions, cond) {
+		return ctrl.Result{}, nil
+	}
+	if err := r.Status().Update(ctx, &t); err != nil {
+		return ctrl.Result{}, err
+	}
+	if newReason {
+		r.Recorder.Eventf(&t, nil, corev1.EventTypeWarning, reason, "Reconcile", "%s", msg)
 	}
 	return ctrl.Result{}, nil
+}
+
+// ambiguousSources refuses allowedSources of different registries that
+// map to the same segment of the default target path, such as
+// reg.example.internal:5000 and reg.example.internal-5000. Default paths
+// stay unique per source only without such pairs (threat model T23).
+func ambiguousSources(t *mirrorv1alpha1.ClusterMirrorTarget) (string, string) {
+	seen := map[string]mirrorv1alpha1.RegistryHost{}
+	for _, a := range t.Spec.AllowedSources {
+		seg := registrySegment(a)
+		if b, ok := seen[seg]; ok && syncspec.CanonicalRegistry(string(a)) != syncspec.CanonicalRegistry(string(b)) {
+			return ReasonAmbiguousAllowedSources, fmt.Sprintf("allowedSources %s and %s both map to target path %s", b, a, seg)
+		}
+		seen[seg] = a
+	}
+	return "", ""
 }
 
 // check returns a reason and message for the first invalid Secret, or an
