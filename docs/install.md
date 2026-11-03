@@ -67,6 +67,33 @@ Add `--denied-cidrs=<pod CIDR>,<service CIDR>` to the manager args in
 `config/manager/manager.yaml`. Remove with `make undeploy` and
 `make uninstall`.
 
+## Tenant limits
+
+`ClusterMirrorTarget.spec.limits` caps schedules, mirrors per namespace,
+tags and artifact size (see the [README](../README.md#limits)). Two
+controls outside Tagwarden complement it:
+
+- A Kubernetes ResourceQuota on `count/artifactmirrors.mirror.tagwarden.dev`
+  caps the mirrors a namespace can create at all, across every target:
+
+  ```yaml
+  apiVersion: v1
+  kind: ResourceQuota
+  metadata:
+    name: artifactmirrors
+    namespace: team-a
+  spec:
+    hard:
+      count/artifactmirrors.mirror.tagwarden.dev: "20"
+  ```
+
+- A storage quota on each registry project caps what all mirrors of the
+  project can store together, which `maxArtifactSize` does not.
+
+Upgrading from a release without limits: the defaults refuse mirrors with
+schedules more frequent than hourly or `keepLatest` above 20. Set `limits`
+on the target before upgrading if you need more.
+
 ## Changing the operator namespace
 
 The controller only manages objects in the current operator namespace.
