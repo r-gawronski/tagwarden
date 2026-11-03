@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -62,9 +63,13 @@ type Request struct {
 }
 
 // Artifact is one tag and the digest it resolved to. For a mutated tag
-// skipped under the Ignore policy, Digest is the digest the target keeps.
+// skipped under the Ignore policy, Digest is the digest the target keeps
+// and UpstreamDigest the one it ignored.
 type Artifact struct {
-	Tag, Digest string
+	Tag, Digest    string
+	UpstreamDigest string
+	// Finished is when the processing of the tag ended.
+	Finished time.Time
 	// Referrers counts the referrers and cosign tag-scheme artifacts of the
 	// digest that the target holds after the run.
 	Referrers int
@@ -126,6 +131,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 			res.Failed = append(res.Failed, Artifact{Tag: tag})
 			res.Errors = append(res.Errors, tag+": "+short(err))
 		}
+		stamp(&res, tag, time.Now())
 	}
 	var errs []error
 	if mutated {
@@ -135,6 +141,16 @@ func Run(ctx context.Context, r Request) (Result, error) {
 		errs = append(errs, fmt.Errorf("sync: %d of %d tags failed", len(res.Failed), len(selected)))
 	}
 	return res, errors.Join(errs...)
+}
+
+// stamp sets the finish time of tag in every list. A tag is processed
+// once, so its entries are the last ones appended.
+func stamp(res *Result, tag string, t time.Time) {
+	for _, as := range [][]Artifact{res.Copied, res.Skipped, res.Mutated, res.Failed} {
+		if n := len(as); n > 0 && as[n-1].Tag == tag {
+			as[n-1].Finished = t
+		}
+	}
 }
 
 func newSyncer(r Request) (*syncer, error) {
@@ -218,7 +234,7 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationIgnore:
 		// Report what the target holds, not the upstream digest.
-		a.Digest = dst.Digest.String()
+		a.Digest, a.UpstreamDigest = dst.Digest.String(), a.Digest
 		res.Skipped = append(res.Skipped, a)
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationOverwrite:

@@ -235,6 +235,11 @@ func TestRunCopiesSelectedTagsByDigest(t *testing.T) {
 	if got := tagsOf(res.Copied); !slices.Equal(got, want) {
 		t.Fatalf("copied %v, want %v (%+v)", got, want, res)
 	}
+	for _, a := range res.Copied {
+		if a.Finished.IsZero() || a.UpstreamDigest != "" {
+			t.Fatalf("%+v: want a finish time and no upstream digest", a)
+		}
+	}
 	if !slices.Equal(res.Selected, []string{"v1.3.0", "v1.2.0", "v1.1.0"}) {
 		t.Fatalf("selected %v, want newest first", res.Selected)
 	}
@@ -366,8 +371,8 @@ func TestRunTagMutation(t *testing.T) {
 			}
 			// An ignored mutation reports what the target holds.
 			for _, a := range res.Skipped {
-				if a.Tag == v100 && a.Digest != old.String() {
-					t.Fatalf("skipped digest %s, want target digest %s", a.Digest, old)
+				if a.Tag == v100 && (a.Digest != old.String() || a.UpstreamDigest != upstream.String()) {
+					t.Fatalf("skipped %+v, want target digest %s and upstream %s", a, old, upstream)
 				}
 			}
 		})
@@ -387,7 +392,7 @@ func TestRunFailedOverwrite(t *testing.T) {
 		OnTagMutation:     v1alpha1.OnTagMutationOverwrite,
 		RequiredPlatforms: []string{"linux/s390x"},
 	})
-	if err == nil || len(res.Mutated) != 0 || !slices.Equal(tagsOf(res.Failed), []string{v100}) {
+	if err == nil || len(res.Mutated) != 0 || !slices.Equal(tagsOf(res.Failed), []string{v100}) || res.Failed[0].Finished.IsZero() {
 		t.Fatalf("err %v, result %+v", err, res)
 	}
 	if got, _ := headDigest(t, dst.repo.Tag(v100)); got != old.String() {
