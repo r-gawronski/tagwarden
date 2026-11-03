@@ -236,8 +236,10 @@ type ClusterMirrorTargetSpec struct {
 	SourceCredentials []SourceCredential `json:"sourceCredentials,omitempty"`
 
 	// sourceCABundles lists extra root CAs per source registry, for
-	// upstreams signed by a private CA. They are trusted only for that
-	// source registry, on top of the system roots. Tenants never see or
+	// upstreams signed by a private CA. Each CA is mounted only in sync
+	// pods of that source and trusted there for every host the source
+	// transport reaches (the registry, its redirect and token hosts), never
+	// for the target. It adds to the system roots. Tenants never see or
 	// reference these Secrets: the platform team decides which sources
 	// have private CAs. At most one entry per registry.
 	// +kubebuilder:validation:MaxItems=50
