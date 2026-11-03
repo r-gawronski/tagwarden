@@ -178,8 +178,60 @@ type SyncedTag struct {
 	Digest string `json:"digest"`
 }
 
+// SyncNowAnnotation requests a sync outside the schedule. Each new value
+// is one request; the controller reports it in status.lastSyncRequest.
+const SyncNowAnnotation = "tagwarden.dev/sync-now"
+
+// SyncRequestResult is how the controller handled a sync request.
+// +kubebuilder:validation:Enum=Started;Deferred;Refused
+type SyncRequestResult string
+
+const (
+	// SyncRequestStarted means a sync Job was created for the request.
+	SyncRequestStarted SyncRequestResult = "Started"
+	// SyncRequestDeferred means the request waits for a running Job or
+	// for limits.minSyncInterval of the target.
+	SyncRequestDeferred SyncRequestResult = "Deferred"
+	// SyncRequestRefused means the request was dropped, for example
+	// because the mirror is not Ready or is suspended.
+	SyncRequestRefused SyncRequestResult = "Refused"
+)
+
+// SyncRequest records the last handled tagwarden.dev/sync-now request.
+type SyncRequest struct {
+	// value of the annotation, cut to 256 bytes.
+	// +kubebuilder:validation:MaxLength=256
+	// +required
+	Value string `json:"value"`
+
+	// handledAt is when the controller last changed the result.
+	// +required
+	HandledAt metav1.Time `json:"handledAt"`
+
+	// result is Started, Deferred or Refused.
+	// +required
+	Result SyncRequestResult `json:"result"`
+
+	// message describes the result, such as the Job created or why the
+	// request waits or was refused.
+	// +kubebuilder:validation:MaxLength=1024
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // ArtifactMirrorStatus defines the observed state of ArtifactMirror.
 type ArtifactMirrorStatus struct {
+	// lastSyncStartTime is when the last sync Job started, scheduled or
+	// requested. Requests wait until limits.minSyncInterval of the target
+	// has passed since then.
+	// +optional
+	LastSyncStartTime *metav1.Time `json:"lastSyncStartTime,omitempty"`
+
+	// lastSyncRequest is the last tagwarden.dev/sync-now request the
+	// controller handled.
+	// +optional
+	LastSyncRequest *SyncRequest `json:"lastSyncRequest,omitempty"`
+
 	// lastSyncTime is when the last sync finished.
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
