@@ -573,10 +573,14 @@ func TestRunRefusesArtifactsOverMaxSize(t *testing.T) {
 	push(t, src.repo, "small", small)
 	bigDigest := push(t, src.repo, "big", big)
 	idxDigest := push(t, src.repo, "idx", idx)
-	// A referrer counts separately from its subject.
-	pushReferrer(t, src.repo, *must(partial.Descriptor(small)))
+	// A referrer counts separately from its subject. Random layers compress to
+	// slightly different sizes, so the limit must also cover the referrer.
+	ref := mutate.Subject(image(t), *must(partial.Descriptor(small))).(v1.Image)
+	if err := remote.Write(src.repo.Digest(digestOf(t, ref).String()), ref); err != nil {
+		t.Fatal(err)
+	}
 
-	limit := artifactSize(t, small)
+	limit := max(artifactSize(t, small), artifactSize(t, ref))
 	children := must(idx.IndexManifest()).Manifests
 	var idxSize int64
 	for _, c := range children {
