@@ -303,6 +303,33 @@ func TestRunWrongPassword(t *testing.T) {
 	assertNoSecrets(t, out, msg) // password is a substring of the wrong one
 }
 
+// Behind a proxy any lookup failure passes: the proxy resolves names and
+// its ACL is the control. Each host is resolved once per run.
+func TestRunProxiedLookupFailure(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(proxy.Close)
+	src, err := name.NewRepository("registry.example.internal/team/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t, src, newRegistry(t, true), password)
+	e.vars["HTTPS_PROXY"] = proxy.URL
+	lookups := map[string]int{}
+	e.opts.lookup = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		lookups[host]++
+		return nil, &net.DNSError{Err: "timeout", Name: host, IsTimeout: true}
+	}
+	code, out, msg := e.run(t)
+	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, "list source tags") {
+		t.Fatalf("exit %d: %s\n%s", code, msg, out)
+	}
+	if lookups["registry.example.internal"] != 1 {
+		t.Fatalf("lookups %v, want one per host", lookups)
+	}
+}
+
 // The proxy gets the credentials; they never reach stdout or the
 // termination message.
 func TestRunProxyCredentials(t *testing.T) {
