@@ -28,7 +28,9 @@ const valid = `{
   "tags": {"include": ["^3\\."], "keepLatest": 2},
   "requiredPlatforms": ["linux/amd64"],
   "onTagMutation": "Fail",
-  "maxTags": 100
+  "maxTags": 100,
+  "allowedSources": ["registry.k8s.io"],
+  "deniedCIDRs": ["10.96.0.0/12", "fd00:10::/108"]
 }`
 
 func TestDecode(t *testing.T) {
@@ -43,11 +45,14 @@ func TestDecode(t *testing.T) {
 	if s.SourceRepo.String() != "registry.k8s.io/pause" || s.TargetRepo.RegistryStr() != "registry.example.internal" {
 		t.Fatalf("repositories %v %v", s.SourceRepo, s.TargetRepo)
 	}
+	if s.AllowedSources[0] != "registry.k8s.io" || len(s.DeniedPrefixes) != 2 || s.DeniedPrefixes[0].String() != "10.96.0.0/12" {
+		t.Fatalf("source checks %v %v", s.AllowedSources, s.DeniedPrefixes)
+	}
 }
 
 func TestDecodeRejects(t *testing.T) {
 	cases := map[string]struct{ old, new string }{
-		"unknown field":      {`"maxTags": 100`, `"maxTags": 100, "extra": 1`},
+		"unknown field":      {`"maxTags": 100,`, `"maxTags": 100, "extra": 1,`},
 		"unknown tag field":  {`"keepLatest": 2`, `"keepLatest": 2, "latest": true`},
 		"no namespace":       {`"namespace": "team-a"`, `"namespace": ""`},
 		"no name":            {`"name": "pause"`, `"name": ""`},
@@ -58,8 +63,11 @@ func TestDecodeRejects(t *testing.T) {
 		"bad platform":       {`"linux/amd64"`, `"linux/amd64/v1/x/y"`},
 		"no mutation policy": {`"onTagMutation": "Fail"`, `"onTagMutation": ""`},
 		"bad mutation":       {`"Fail"`, `"Replace"`},
-		"negative max":       {`"maxTags": 100`, `"maxTags": -1`},
+		"negative max":       {`"maxTags": 100,`, `"maxTags": -1,`},
 		"trailing data":      {"\n}", "\n}{}"},
+		"no allowed sources": {`["registry.k8s.io"]`, `[]`},
+		"empty allowed host": {`["registry.k8s.io"]`, `[""]`},
+		"bad CIDR":           {`"10.96.0.0/12"`, `"10.96.0.0/33"`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
