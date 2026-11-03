@@ -139,11 +139,11 @@ func duplicateSourceRegistries(t *mirrorv1alpha1.ClusterMirrorTarget) (string, s
 
 // sourceRefs returns the credentials and CA entries for a source
 // registry, or nil. The first entry wins; duplicates make the target not Ready.
-func sourceRefs(t *mirrorv1alpha1.ClusterMirrorTarget, registry string) (cred *mirrorv1alpha1.SecretRef, ca *mirrorv1alpha1.SecretKeyRef) {
+func sourceRefs(t *mirrorv1alpha1.ClusterMirrorTarget, registry string) (cred *mirrorv1alpha1.SourceCredential, ca *mirrorv1alpha1.SecretKeyRef) {
 	c := syncspec.CanonicalRegistry(registry)
 	for i := range t.Spec.SourceCredentials {
 		if e := &t.Spec.SourceCredentials[i]; cred == nil && syncspec.CanonicalRegistry(string(e.Registry)) == c {
-			cred = &e.SecretRef
+			cred = e
 		}
 	}
 	for i := range t.Spec.SourceCABundles {
@@ -157,25 +157,33 @@ func sourceRefs(t *mirrorv1alpha1.ClusterMirrorTarget, registry string) (cred *m
 // check returns a reason and message for the first invalid Secret, or an
 // empty reason. Messages name Secrets and keys, never their content.
 func (r *ClusterMirrorTargetReconciler) check(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget) (string, string, error) {
-	s, reason, msg, err := r.secret(ctx, t.Spec.CredentialsSecretRef.Name)
-	if s == nil {
-		return reason, msg, err
+	type dockerRef struct {
+		secret   string
+		registry mirrorv1alpha1.RegistryHost
 	}
-	if s.Type != corev1.SecretTypeDockerConfigJson {
-		return ReasonInvalidSecret, fmt.Sprintf("Secret %s is of type %s, want %s", s.Name, s.Type, corev1.SecretTypeDockerConfigJson), nil
-	}
-	if !hasAuth(s.Data[corev1.DockerConfigJsonKey], string(t.Spec.Registry)) {
-		return ReasonInvalidSecret, fmt.Sprintf("Secret %s has no auths entry for %s", s.Name, t.Spec.Registry), nil
+	var docker []dockerRef
+	if ref := t.Spec.CredentialsSecretRef; ref != nil {
+		docker = append(docker, dockerRef{ref.Name, t.Spec.Registry})
 	}
 	for _, c := range t.Spec.SourceCredentials {
-		if s, reason, msg, err = r.secret(ctx, c.SecretRef.Name); s == nil {
+		if c.SecretRef != nil {
+			docker = append(docker, dockerRef{c.SecretRef.Name, c.Registry})
+		}
+	}
+	var (
+		s           *corev1.Secret
+		reason, msg string
+		err         error
+	)
+	for _, d := range docker {
+		if s, reason, msg, err = r.secret(ctx, d.secret); s == nil {
 			return reason, msg, err
 		}
 		if s.Type != corev1.SecretTypeDockerConfigJson {
 			return ReasonInvalidSecret, fmt.Sprintf("Secret %s is of type %s, want %s", s.Name, s.Type, corev1.SecretTypeDockerConfigJson), nil
 		}
-		if !hasAuth(s.Data[corev1.DockerConfigJsonKey], string(c.Registry)) {
-			return ReasonInvalidSecret, fmt.Sprintf("Secret %s has no auths entry for %s", s.Name, c.Registry), nil
+		if !hasAuth(s.Data[corev1.DockerConfigJsonKey], string(d.registry)) {
+			return ReasonInvalidSecret, fmt.Sprintf("Secret %s has no auths entry for %s", s.Name, d.registry), nil
 		}
 	}
 	cas := []*mirrorv1alpha1.SecretKeyRef{t.Spec.CABundleSecretRef}
@@ -250,7 +258,10 @@ func hasAuth(data []byte, host string) bool {
 
 // referencesSecret reports whether t references the named Secret.
 func referencesSecret(t *mirrorv1alpha1.ClusterMirrorTarget, name string) bool {
-	names := []string{t.Spec.CredentialsSecretRef.Name}
+	var names []string
+	if r := t.Spec.CredentialsSecretRef; r != nil {
+		names = append(names, r.Name)
+	}
 	if r := t.Spec.CABundleSecretRef; r != nil {
 		names = append(names, r.Name)
 	}
@@ -258,7 +269,9 @@ func referencesSecret(t *mirrorv1alpha1.ClusterMirrorTarget, name string) bool {
 		names = append(names, r.Name)
 	}
 	for _, c := range t.Spec.SourceCredentials {
-		names = append(names, c.SecretRef.Name)
+		if c.SecretRef != nil {
+			names = append(names, c.SecretRef.Name)
+		}
 	}
 	for _, c := range t.Spec.SourceCABundles {
 		names = append(names, c.SecretRef.Name)
