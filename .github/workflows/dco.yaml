@@ -1,0 +1,38 @@
+name: DCO
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check Signed-off-by on every commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          fail=0
+          for c in $(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA"); do
+            email=$(git log -1 --format=%ae "$c")
+            if git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$c" \
+              | grep -Fqi "<$email>"; then
+              echo "ok      $c"
+            else
+              echo "::error::Commit $c has no Signed-off-by for author <$email>. Use git commit -s."
+              fail=1
+            fi
+          done
+          exit "$fail"
