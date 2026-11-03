@@ -167,6 +167,23 @@ spec:
     maxArtifactSize: 5Gi         # config plus layers, all platforms
 ```
 
+### Sync now
+
+Need a sync before the next scheduled run? Set the
+`tagwarden.dev/sync-now` annotation to a new value. `patch` on your own
+mirror is all it takes:
+
+```sh
+kubectl -n team-a annotate artifactmirror ingress-nginx --overwrite \
+  tagwarden.dev/sync-now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+The request waits while a sync of the mirror runs and until the target's
+`minSyncInterval` has passed since the last one started.
+`status.lastSyncRequest` says whether it started, waits or was refused.
+For a **Sync now** button and health checks in Argo CD, see
+[docs/argocd.md](docs/argocd.md).
+
 ## Use cases
 
 ### Upgrades with Renovate
@@ -386,15 +403,14 @@ You need Kubernetes 1.30 or newer and a registry you can push to.
    kubectl -n team-net get artifactmirror ingress-nginx -o jsonpath='{.status.synced}'
    ```
 
-   Don't want to wait for the schedule? Create a Job from the mirror's
-   CronJob. `kubectl -n tagwarden-system get cronjobs` lists them; each
-   has a `tagwarden.dev/mirror-name` annotation.
+   Don't want to wait for the schedule? See [Sync now](#sync-now).
 
 ## Documentation
 
 - [Install](docs/install.md): Helm, Kustomize, uninstall.
 - [Network policies](docs/network-policies.md): sync pod labels and
   example egress policies.
+- [Argo CD](docs/argocd.md): a Sync now button and health checks.
 - [Threat model](docs/threat-model.md): what Tagwarden trusts, and how it
   handles each threat.
 - [Helm chart design](docs/design/helm-chart.md) and
