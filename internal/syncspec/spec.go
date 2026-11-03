@@ -78,8 +78,11 @@ const (
 	// global Azure cloud.
 	DefaultAzureAuthorityHost = "https://login.microsoftonline.com/"
 	// AzureScope is the Microsoft Entra scope of Azure Container Registry
-	// tokens in every cloud. A Resource Manager scope would mint a
-	// management token and send it to the registry, so no other is allowed.
+	// tokens, the documented public-cloud ACR audience. US Government and
+	// China clouds are untested and may need another audience; there the
+	// token request fails closed and no token leaks. A Resource Manager
+	// scope would mint a management token and send it to the registry, so
+	// no other scope is allowed.
 	AzureScope = "https://containerregistry.azure.net/.default"
 )
 
