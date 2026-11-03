@@ -32,6 +32,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -81,12 +82,17 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var operatorNamespace, syncImage, deniedCIDRs string
+	var argoTracking, argoInstanceLabel string
 	flag.StringVar(&operatorNamespace, "operator-namespace", os.Getenv("POD_NAMESPACE"),
 		"The namespace that holds sync CronJobs, Jobs and target Secrets. Defaults to $POD_NAMESPACE.")
 	flag.StringVar(&syncImage, "sync-image", os.Getenv("SYNC_IMAGE"),
 		"The image that runs sync Jobs, usually the manager image. Defaults to $SYNC_IMAGE.")
 	flag.StringVar(&deniedCIDRs, "denied-cidrs", "",
 		"Comma-separated CIDRs, such as the cluster pod and service CIDRs, that sources must not resolve to.")
+	flag.StringVar(&argoTracking, "argocd-tracking", "",
+		`Show sync CronJobs in the Argo CD app of their mirror: "inherit", or empty to turn it off.`)
+	flag.StringVar(&argoInstanceLabel, "argocd-instance-label", controller.DefaultArgoCDInstanceLabel,
+		"The label Argo CD uses for label tracking mode.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -116,6 +122,14 @@ func main() {
 
 	if operatorNamespace == "" || syncImage == "" {
 		setupLog.Error(nil, "--operator-namespace (or POD_NAMESPACE) and --sync-image (or SYNC_IMAGE) are required")
+		os.Exit(1)
+	}
+	if argoTracking != "" && argoTracking != controller.ArgoCDTrackingInherit {
+		setupLog.Error(nil, `--argocd-tracking must be empty or "inherit"`, "value", argoTracking)
+		os.Exit(1)
+	}
+	if errs := validation.IsQualifiedName(argoInstanceLabel); len(errs) > 0 {
+		setupLog.Error(nil, "Invalid --argocd-instance-label", "value", argoInstanceLabel, "reason", strings.Join(errs, "; "))
 		os.Exit(1)
 	}
 	var denied []string
@@ -231,6 +245,9 @@ func main() {
 		Namespace:   operatorNamespace,
 		SyncImage:   syncImage,
 		DeniedCIDRs: denied,
+
+		ArgoCDTracking:      argoTracking,
+		ArgoCDInstanceLabel: argoInstanceLabel,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "artifactmirror")
 		os.Exit(1)
