@@ -15,8 +15,8 @@ Each new value is one request. The controller then:
 - or waits while a Job of the mirror runs, or until
   `limits.minSyncInterval` of the target has passed since the last Job
   started, and starts it then (Event `SyncDeferred`),
-- or refuses the request when the mirror is not Ready or is suspended
-  (Event `SyncRefused`).
+- or refuses the request when the mirror is not Ready or is suspended,
+  or when the value already named a finished Job (Event `SyncRefused`).
 
 `status.lastSyncRequest` shows the value, the result and when the
 controller handled it.
@@ -28,10 +28,9 @@ kubectl -n team-a annotate artifactmirror ingress-nginx --overwrite \
   tagwarden.dev/sync-now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
-Argo CD runs custom actions without the Lua standard library, so the
-action has no clock. It uses the resource version of the mirror instead,
-which changes on every write and is never reused, for example
-`argocd-48213`.
+The action loads the `os` module with `require("os")` and sets the
+annotation to the current UTC time, for example `2026-11-03T10:00:00Z`.
+Two clicks within the same second make one request.
 
 ## Health
 
@@ -66,10 +65,11 @@ configs:
       definitions:
       - name: sync-now
         action.lua: |
+          local os = require("os")
           if obj.metadata.annotations == nil then
             obj.metadata.annotations = {}
           end
-          obj.metadata.annotations["tagwarden.dev/sync-now"] = "argocd-" .. obj.metadata.resourceVersion
+          obj.metadata.annotations["tagwarden.dev/sync-now"] = os.date("!%Y-%m-%dT%H:%M:%SZ")
           return obj
     resource.customizations.health.mirror.tagwarden.dev_ArtifactMirror: |
       local hs = {}
@@ -158,10 +158,11 @@ data:
     definitions:
     - name: sync-now
       action.lua: |
+        local os = require("os")
         if obj.metadata.annotations == nil then
           obj.metadata.annotations = {}
         end
-        obj.metadata.annotations["tagwarden.dev/sync-now"] = "argocd-" .. obj.metadata.resourceVersion
+        obj.metadata.annotations["tagwarden.dev/sync-now"] = os.date("!%Y-%m-%dT%H:%M:%SZ")
         return obj
   resource.customizations.health.mirror.tagwarden.dev_ArtifactMirror: |
     local hs = {}
