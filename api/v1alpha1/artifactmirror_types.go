@@ -103,8 +103,9 @@ type TagSelector struct {
 	KeepLatest *int32 `json:"keepLatest,omitempty"`
 
 	// allowPrerelease keeps prerelease versions when semverRange or
-	// keepLatest is set. They are dropped by default.
-	// +kubebuilder:default=false
+	// keepLatest is set. They are dropped by default. A semverRange that
+	// names a prerelease, such as ">=1.11.0-0", still needs
+	// allowPrerelease: true to select prereleases.
 	// +optional
 	AllowPrerelease bool `json:"allowPrerelease,omitempty"`
 

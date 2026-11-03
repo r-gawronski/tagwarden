@@ -70,6 +70,8 @@ func TestSelect(t *testing.T) {
 			[]string{"v1.11.0+build", "1.10.0", "1.2"}},
 		{"equal versions take separate slots", mixed, Policy{SemverRange: "1.2.0"},
 			[]string{"1.2", "1.2.0", "v1.2.0"}},
+		{"leading zeros are not semver", []string{"01.02.03", "1.02.3", "1.2.03", "1.2.3", "0.10.0"}, Policy{KeepLatest: 5},
+			[]string{"1.2.3", "0.10.0"}},
 		{"non-semver sorted by name", mixed, Policy{Include: []string{`^\d+$`, "^sha-"}},
 			[]string{"20240101", "7", "sha-abc"}},
 		{"explicit tags only", all, Policy{Tags: []string{latest, "v1.9.0", "v1.9.0", "missing"}},
