@@ -32,6 +32,15 @@ The action loads the `os` module with `require("os")` and sets the
 annotation to the current UTC time, for example `2026-11-03T10:00:00Z`.
 Two clicks within the same second make one request.
 
+A requested Job is owned by the mirror's CronJob and follows its history
+limits. The CronJob's `concurrencyPolicy: Forbid` does not count it,
+though, so a scheduled run can start while a requested one is still
+running. That's safe: the sync copies by digest, so two runs at once only
+pull the same data twice. The CronJob controller records an
+`UnexpectedJob` Event while a requested Job runs; that's expected.
+A value works once while its Job still exists (24 h after it finishes),
+so always send a fresh one, like the timestamp above.
+
 ## Health
 
 | Resource | Status | When |
