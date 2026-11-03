@@ -20,8 +20,10 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -78,6 +80,13 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var operatorNamespace, syncImage, deniedCIDRs string
+	flag.StringVar(&operatorNamespace, "operator-namespace", os.Getenv("POD_NAMESPACE"),
+		"The namespace that holds sync CronJobs, Jobs and target Secrets. Defaults to $POD_NAMESPACE.")
+	flag.StringVar(&syncImage, "sync-image", os.Getenv("SYNC_IMAGE"),
+		"The image that runs sync Jobs, usually the manager image. Defaults to $SYNC_IMAGE.")
+	flag.StringVar(&deniedCIDRs, "denied-cidrs", "",
+		"Comma-separated CIDRs, such as the cluster pod and service CIDRs, that sources must not resolve to.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -104,6 +113,22 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if operatorNamespace == "" || syncImage == "" {
+		setupLog.Error(nil, "--operator-namespace (or POD_NAMESPACE) and --sync-image (or SYNC_IMAGE) are required")
+		os.Exit(1)
+	}
+	var denied []string
+	for c := range strings.SplitSeq(deniedCIDRs, ",") {
+		if c = strings.TrimSpace(c); c == "" {
+			continue
+		}
+		if _, err := netip.ParsePrefix(c); err != nil {
+			setupLog.Error(err, "Invalid --denied-cidrs entry", "cidr", c)
+			os.Exit(1)
+		}
+		denied = append(denied, c)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -180,6 +205,7 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "7cfdf066.tagwarden.dev",
+		Cache:                  controller.CacheOptions(operatorNamespace),
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -198,16 +224,20 @@ func main() {
 	}
 
 	if err := (&controller.ArtifactMirrorReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("tagwarden"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorder("tagwarden"),
+		Namespace:   operatorNamespace,
+		SyncImage:   syncImage,
+		DeniedCIDRs: denied,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "artifactmirror")
 		os.Exit(1)
 	}
 	if err := (&controller.ClusterMirrorTargetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Namespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "clustermirrortarget")
 		os.Exit(1)
