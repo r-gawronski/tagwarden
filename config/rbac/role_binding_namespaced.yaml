@@ -6,12 +6,12 @@ metadata:
   labels:
     app.kubernetes.io/name: tagwarden
     app.kubernetes.io/managed-by: kustomize
-  name: manager-rolebinding
+  name: manager-namespaced-rolebinding
   namespace: system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: manager-role
+  name: manager-namespaced-role
 subjects:
 - kind: ServiceAccount
   name: controller-manager
