@@ -19,13 +19,18 @@ limitations under the License.
 package registry
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+	"syscall"
+	"time"
 
 	"golang.org/x/net/http/httpproxy"
 )
@@ -44,6 +49,13 @@ type Options struct {
 	ProxyUser, ProxyPassword string
 	// ClientCert is presented for mTLS.
 	ClientCert *tls.Certificate
+	// CheckHost runs before every request, including each redirect hop,
+	// with the URL host name and whether the request goes through the
+	// proxy. An error fails the request before it is sent.
+	CheckHost func(ctx context.Context, host string, proxied bool) error
+	// CheckDial runs on the resolved address of every direct connection
+	// before it connects. Connections to the proxy are not checked.
+	CheckDial func(netip.Addr) error
 }
 
 // NewTransport returns a transport based on http.DefaultTransport. It trusts
@@ -66,7 +78,86 @@ func NewTransport(o Options) (http.RoundTripper, error) {
 	if t.Proxy, err = proxyFunc(o); err != nil {
 		return nil, err
 	}
+	if o.CheckDial != nil {
+		t.DialContext = checkedDial(t.DialContext, o)
+	}
+	if o.CheckHost != nil {
+		return &checkedTransport{t, o.CheckHost}, nil
+	}
 	return t, nil
+}
+
+type checkedTransport struct {
+	*http.Transport
+	check func(ctx context.Context, host string, proxied bool) error
+}
+
+func (c *checkedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	p, err := c.Proxy(r)
+	if err == nil {
+		err = c.check(r.Context(), r.URL.Hostname(), p != nil)
+	}
+	if err != nil {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, err
+	}
+	return c.Transport.RoundTrip(r)
+}
+
+// checkedDial runs o.CheckDial on the address a direct connection is about
+// to use, after DNS resolution, so a name cannot be rebound in between.
+func checkedDial(plain func(context.Context, string, string) (net.Conn, error), o Options) func(context.Context, string, string) (net.Conn, error) {
+	exempt := proxyAddrs(o)
+	d := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			ap, err := netip.ParseAddrPort(address)
+			if err != nil {
+				return err
+			}
+			return o.CheckDial(ap.Addr())
+		},
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if exempt[addr] {
+			return plain(ctx, network, addr)
+		}
+		return d.DialContext(ctx, network, addr)
+	}
+}
+
+// proxyAddrs returns the host:port of every proxy the transport may use,
+// as the transport dials it.
+func proxyAddrs(o Options) map[string]bool {
+	urls := []string{}
+	if o.ProxyURL != nil {
+		urls = append(urls, o.ProxyURL.String())
+	} else {
+		env := httpproxy.FromEnvironment()
+		urls = append(urls, env.HTTPProxy, env.HTTPSProxy)
+	}
+	out := map[string]bool{}
+	for _, s := range urls {
+		if s == "" {
+			continue
+		}
+		if !strings.Contains(s, "://") {
+			s = "http://" + s
+		}
+		u, err := url.Parse(s)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		port := u.Port()
+		if port == "" {
+			port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+		}
+		out[net.JoinHostPort(u.Hostname(), port)] = true
+	}
+	return out
 }
 
 func proxyFunc(o Options) (func(*http.Request) (*url.URL, error), error) {
