@@ -257,6 +257,22 @@ func runSync(mirror, job, want string) {
 	}, 5*time.Minute, 2*time.Second).Should(Succeed())
 }
 
+// removeLeftovers deletes what an earlier run on the same cluster left
+// behind: mirrors, targets, sync Jobs and the test namespaces, so stale
+// registry data, CAs or Job names cannot break this run.
+func removeLeftovers() {
+	By("removing leftovers of an earlier run")
+	for _, args := range [][]string{
+		{"delete", "artifactmirrors", "--all", "-A", "--ignore-not-found", "--wait"},
+		{"delete", "clustermirrortargets", "--all", "--ignore-not-found", "--wait"},
+		{"delete", "jobs", "--all", "-n", namespace, "--ignore-not-found", "--wait"},
+		{"delete", "namespace", infraNamespace, e2eTeam, e2eOther, "--ignore-not-found", "--wait"},
+	} {
+		_, err := utils.Run(exec.Command("kubectl", args...))
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
 // dumpDiagnostics prints the state the mirror tests depend on.
 func dumpDiagnostics() {
 	for _, args := range [][]string{

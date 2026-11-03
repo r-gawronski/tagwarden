@@ -41,7 +41,8 @@ data:
     }
 ---
 # Test-only user e2e with password e2e-password (bcrypt), for the target
-# registry and the proxy.
+# registry and the proxy. Static, because generating it at test time would
+# need golang.org/x/crypto, which is not a dependency.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -172,7 +173,8 @@ spec:
           hostnames: [source.example.internal]
       containers:
         - name: squid
-          image: ubuntu/squid:6.13-25.04_beta@sha256:3de2e64f0ca6efdac3e98557607dc0f23050037f3885016d5d5bfcf9950501b8
+          # Ubuntu 24.04 LTS based.
+          image: ubuntu/squid:6.6-24.04_beta@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029
           args: ["-f", "/etc/squid/conf/squid.conf", "-NYC"]
           ports: [{containerPort: 3128}]
           readinessProbe:
@@ -196,6 +198,9 @@ spec:
   ports: [{port: 3128, targetPort: 3128}]
 ---
 # The proxy may reach DNS, the source and public HTTPS, nothing else.
+# Public HTTPS is deliberately loose (any address outside the cluster on
+# 443): registry.k8s.io redirects blobs to CDN and storage hosts whose
+# addresses change, and only the optional E2E_INTERNET case uses it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
