@@ -114,8 +114,9 @@ metrics:
 ## Prometheus Operator ServiceMonitor.
 prometheus:
   enabled: false
-  ## tlsConfig of the endpoint when metrics.secure is true, for example a CA
-  ## that signed the metrics certificate. serverName is set by the chart.
+  ## tlsConfig of the endpoint when metrics.secure is true. Scraping needs the
+  ## CA that signed the metrics certificate here. serverName is set by the
+  ## chart.
   tlsConfig: {}
   # labels: {}
   # annotations: {}
