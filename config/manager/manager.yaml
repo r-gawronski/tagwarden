@@ -63,8 +63,18 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+        # Add --denied-cidrs=<pod CIDR>,<service CIDR> so that sources
+        # cannot resolve to cluster addresses.
         image: controller:latest
         name: manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        # Set to the manager image by the replacement in kustomization.yaml.
+        - name: SYNC_IMAGE
+          value: controller:latest
         ports:
         - containerPort: 8081
           name: health
