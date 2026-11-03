@@ -30,10 +30,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,20 +61,26 @@ const (
 	exitConfig = 2
 )
 
-type paths struct {
+type options struct {
 	targetAuth, targetCA, proxyCA, clientCertDir string
+	// allowInternal skips the internal address check. Only tests set it,
+	// for in-process registries on 127.0.0.1.
+	allowInternal bool
 }
 
 // Run runs one sync and returns the exit code: 0 when every selected tag is
 // on the target, 1 when a tag failed or a mutation was refused, 2 on a spec
 // or configuration error.
 func Run(ctx context.Context, args []string, stdout io.Writer, termPath string) int {
-	p := paths{syncspec.TargetAuthFile, syncspec.TargetCAFile, syncspec.ProxyCAFile, syncspec.ClientCertDir}
-	return run(ctx, args, stdout, termPath, p, os.Getenv)
+	o := options{
+		targetAuth: syncspec.TargetAuthFile, targetCA: syncspec.TargetCAFile,
+		proxyCA: syncspec.ProxyCAFile, clientCertDir: syncspec.ClientCertDir,
+	}
+	return run(ctx, args, stdout, termPath, o, os.Getenv)
 }
 
-func run(ctx context.Context, args []string, stdout io.Writer, termPath string, p paths, getenv func(string) string) int {
-	spec, req, err := setup(args, p, getenv)
+func run(ctx context.Context, args []string, stdout io.Writer, termPath string, o options, getenv func(string) string) int {
+	spec, req, err := setup(ctx, args, o, getenv)
 	if err != nil {
 		writeTermination(stdout, termPath, report{Errors: []string{err.Error()}})
 		return exitConfig
@@ -92,7 +101,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, termPath string, 
 	return code
 }
 
-func setup(args []string, p paths, getenv func(string) string) (syncspec.Spec, sync.Request, error) {
+func setup(ctx context.Context, args []string, p options, getenv func(string) string) (syncspec.Spec, sync.Request, error) {
 	fl := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fl.SetOutput(io.Discard)
 	specPath := fl.String("spec", syncspec.SpecFile, "path to the sync spec")
@@ -109,6 +118,9 @@ func setup(args []string, p paths, getenv func(string) string) (syncspec.Spec, s
 	defer func() { _ = f.Close() }()
 	spec, err := syncspec.Decode(f)
 	if err != nil {
+		return syncspec.Spec{}, sync.Request{}, err
+	}
+	if err := checkSource(ctx, spec, p.allowInternal); err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
 	auth, err := targetAuth(p.targetAuth, spec.TargetRepo.RegistryStr())
@@ -179,7 +191,7 @@ func registryHost(key string) string {
 // transports builds the source and target transports. The source trusts
 // only the proxy CA; the target also trusts its own CA and presents the
 // client certificate.
-func transports(p paths, getenv func(string) string) (src, dst http.RoundTripper, err error) {
+func transports(p options, getenv func(string) string) (src, dst http.RoundTripper, err error) {
 	proxyCA, err := readOptional(p.proxyCA)
 	if err != nil {
 		return nil, nil, err
@@ -228,6 +240,84 @@ func transports(p paths, getenv func(string) string) (src, dst http.RoundTripper
 		return nil, nil, fmt.Errorf("target transport: %w", err)
 	}
 	return src, dst, nil
+}
+
+// checkSource refuses a source registry that the target does not allow or
+// that resolves to an internal address (threat model T6, T16). It runs
+// before any registry call. With a proxy the proxy resolves names itself,
+// so this check covers literal addresses and the Job's own DNS view only.
+func checkSource(ctx context.Context, spec syncspec.Spec, allowInternal bool) error {
+	host := spec.SourceRepo.RegistryStr()
+	if !allowedSource(host, spec.AllowedSources) {
+		return fmt.Errorf("source: registry %s is not in allowedSources", host)
+	}
+	if allowInternal {
+		return nil
+	}
+	name := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		name = h
+	}
+	name = strings.Trim(name, "[]")
+	var addrs []netip.Addr
+	if a, err := netip.ParseAddr(name); err == nil {
+		addrs = []netip.Addr{a}
+	} else {
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, name)
+		var dnsErr *net.DNSError
+		switch {
+		// An air-gapped Job often cannot resolve upstream names; the proxy does.
+		case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
+		case err != nil:
+			return fmt.Errorf("source: resolve %s: %w", name, err)
+		}
+		for _, ip := range ips {
+			if a, ok := netip.AddrFromSlice(ip.IP); ok {
+				addrs = append(addrs, a)
+			}
+		}
+	}
+	if err := checkAddrs(addrs, spec.DeniedPrefixes); err != nil {
+		return fmt.Errorf("source: registry %s: %w", host, err)
+	}
+	return nil
+}
+
+// dockerHub lists the names of the same registry.
+var dockerHub = []string{"docker.io", "index.docker.io", "registry-1.docker.io"}
+
+// allowedSource reports whether host matches an allowed host[:port] exactly,
+// ignoring case and treating the Docker Hub names as one registry.
+func allowedSource(host string, allowed []string) bool {
+	canon := func(h string) string {
+		h = strings.ToLower(h)
+		if slices.Contains(dockerHub, h) {
+			return dockerHub[0]
+		}
+		return h
+	}
+	return slices.ContainsFunc(allowed, func(a string) bool { return canon(a) == canon(host) })
+}
+
+// metadataAddrs are cloud metadata endpoints outside the link-local range.
+var metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254")}
+
+// checkAddrs refuses loopback, link-local, unspecified and metadata
+// addresses and any address in denied.
+func checkAddrs(addrs []netip.Addr, denied []netip.Prefix) error {
+	for _, a := range addrs {
+		a = a.Unmap()
+		if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsUnspecified() ||
+			slices.Contains(metadataAddrs, a) {
+			return fmt.Errorf("resolves to internal address %s", a)
+		}
+		for _, p := range denied {
+			if p.Contains(a) {
+				return fmt.Errorf("resolves to %s in denied CIDR %s", a, p)
+			}
+		}
+	}
+	return nil
 }
 
 // readOptional returns nil for a missing file and an error for one that
