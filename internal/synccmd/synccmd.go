@@ -55,7 +55,7 @@ import (
 const TerminationLogPath = "/dev/termination-log"
 
 // maxTermination is the Kubernetes limit for a termination message.
-const maxTermination = 4096
+const maxTermination = syncspec.MaxReportSize
 
 type options struct {
 	targetAuth, targetCA, proxyCA, clientCertDir string
@@ -415,23 +415,10 @@ func audit(w io.Writer, spec syncspec.Spec, res sync.Result) {
 	}
 }
 
-type syncedTag struct {
-	Tag    string `json:"tag"`
-	Digest string `json:"digest"`
-}
-
-// report is the termination message the controller reads.
-type report struct {
-	V               int         `json:"v"`
-	Copied          int         `json:"copied"`
-	Skipped         int         `json:"skipped"`
-	Mutated         int         `json:"mutated"`
-	Failed          int         `json:"failed"`
-	Synced          []syncedTag `json:"synced"`
-	Errors          []string    `json:"errors,omitempty"`
-	ErrorsTruncated bool        `json:"errorsTruncated,omitempty"`
-	Truncated       bool        `json:"truncated,omitempty"`
-}
+type (
+	syncedTag = syncspec.SyncedTag
+	report    = syncspec.Report
+)
 
 // summarize lists the tags on the target after the run, newest first.
 func summarize(res sync.Result) report {
@@ -446,7 +433,7 @@ func summarize(res sync.Result) report {
 	}
 	for _, tag := range res.Selected {
 		if d, ok := digests[tag]; ok {
-			r.Synced = append(r.Synced, syncedTag{tag, d})
+			r.Synced = append(r.Synced, syncedTag{Tag: tag, Digest: d})
 		}
 	}
 	return r
@@ -462,7 +449,7 @@ const (
 // keeps the first errors cut to keptErrorLen bytes, then as many synced
 // tags as fit, then as many further errors as fit, and flags what it cut.
 func encode(r report) []byte {
-	r.V = 1
+	r.V = syncspec.ReportVersion
 	if r.Synced == nil {
 		r.Synced = []syncedTag{}
 	}

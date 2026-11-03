@@ -186,9 +186,9 @@ type ArtifactMirrorStatus struct {
 	// +optional
 	LastSuccessfulSyncTime *metav1.Time `json:"lastSuccessfulSyncTime,omitempty"`
 
-	// synced lists the mirrored tags and their digests. The controller keeps
-	// at most the 200 newest entries and sets the Ready condition reason
-	// Truncated when it drops some.
+	// synced lists the mirrored tags and their digests, newest first. The
+	// controller keeps at most 200 entries and sets the Synced condition
+	// reason Truncated when the list is cut.
 	// +kubebuilder:validation:MaxItems=200
 	// +listType=atomic
 	// +optional

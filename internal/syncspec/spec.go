@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -220,4 +221,62 @@ func AuthKeyHost(key string) string {
 	key = strings.TrimPrefix(strings.TrimPrefix(key, "https://"), "http://")
 	host, _, _ := strings.Cut(key, "/")
 	return host
+}
+
+// MaxReportSize is the Kubernetes limit for a termination message.
+const MaxReportSize = 4096
+
+// ReportVersion is the version of Report.
+const ReportVersion = 1
+
+// SyncedTag is a tag on the target and the digest it was copied by.
+type SyncedTag struct {
+	Tag    string `json:"tag"`
+	Digest string `json:"digest"`
+}
+
+// Report is the termination message of a sync Job.
+type Report struct {
+	V       int `json:"v"`
+	Copied  int `json:"copied"`
+	Skipped int `json:"skipped"`
+	Mutated int `json:"mutated"`
+	Failed  int `json:"failed"`
+	// Synced lists the selected tags on the target, newest first.
+	Synced          []SyncedTag `json:"synced"`
+	Errors          []string    `json:"errors,omitempty"`
+	ErrorsTruncated bool        `json:"errorsTruncated,omitempty"`
+	// Truncated means Synced was cut to fit the message.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+var (
+	tagPattern    = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`)
+	digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+)
+
+// ParseReport decodes a termination message. The message comes from the
+// Job, so it is untrusted: it must fit MaxReportSize, have version
+// ReportVersion, non-negative counts and valid tags and digests. Unknown
+// fields are ignored so that a newer Job can add some.
+func ParseReport(msg string) (Report, error) {
+	if len(msg) > MaxReportSize {
+		return Report{}, fmt.Errorf("report: larger than %d bytes", MaxReportSize)
+	}
+	var r Report
+	if err := json.Unmarshal([]byte(msg), &r); err != nil {
+		return Report{}, errors.New("report: not valid JSON")
+	}
+	if r.V != ReportVersion {
+		return Report{}, fmt.Errorf("report: version %d, want %d", r.V, ReportVersion)
+	}
+	if min(r.Copied, r.Skipped, r.Mutated, r.Failed) < 0 {
+		return Report{}, errors.New("report: negative count")
+	}
+	for _, s := range r.Synced {
+		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
+			return Report{}, errors.New("report: invalid synced entry")
+		}
+	}
+	return r, nil
 }
