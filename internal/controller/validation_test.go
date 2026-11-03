@@ -38,12 +38,12 @@ func validTarget(name string) *mirrorv1alpha1.ClusterMirrorTarget {
 		Spec: mirrorv1alpha1.ClusterMirrorTargetSpec{
 			Registry:             "registry.example.internal:8443",
 			CredentialsSecretRef: mirrorv1alpha1.SecretRef{Name: "registry-push"},
-			CABundleSecretRef:    &mirrorv1alpha1.SecretKeyRef{Name: "registry-ca", Key: "ca.crt"},
+			CABundleSecretRef:    &mirrorv1alpha1.SecretKeyRef{Name: "registry-ca", Key: caKey},
 			ClientCertSecretRef:  &mirrorv1alpha1.SecretRef{Name: "registry-client-tls"},
 			Proxy: &mirrorv1alpha1.ProxySpec{
 				HTTPSProxy:           "http://proxy.example.internal:3128",
 				NoProxy:              []string{".example.internal", "10.0.0.0/8"},
-				CABundleSecretRef:    &mirrorv1alpha1.SecretKeyRef{Name: "proxy-ca", Key: "ca.crt"},
+				CABundleSecretRef:    &mirrorv1alpha1.SecretKeyRef{Name: "proxy-ca", Key: caKey},
 				CredentialsSecretRef: &mirrorv1alpha1.SecretRef{Name: "proxy-auth"},
 			},
 			AllowedSources: []mirrorv1alpha1.RegistryHost{"registry.k8s.io", "ghcr.io"},

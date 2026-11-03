@@ -11,6 +11,7 @@ repo: github.com/r-gawronski/tagwarden
 resources:
 - api:
     crdVersion: v1
+  controller: true
   domain: tagwarden.dev
   group: mirror
   kind: ClusterMirrorTarget

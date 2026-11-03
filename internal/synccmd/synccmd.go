@@ -179,7 +179,7 @@ func targetAuth(path, host string) (authn.Authenticator, error) {
 	keys := slices.Sorted(maps.Keys(cfg.Auths))
 	i := slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(k, host) })
 	if i < 0 {
-		i = slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(registryHost(k), host) })
+		i = slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(syncspec.AuthKeyHost(k), host) })
 	}
 	if i >= 0 {
 		a := cfg.Auths[keys[i]]
@@ -198,13 +198,6 @@ func targetAuth(path, host string) (authn.Authenticator, error) {
 		return authn.FromConfig(c), nil
 	}
 	return nil, fmt.Errorf("target credentials: no entry for %s", host)
-}
-
-// registryHost turns a docker config key such as https://host/v1/ into host.
-func registryHost(key string) string {
-	key = strings.TrimPrefix(strings.TrimPrefix(key, "https://"), "http://")
-	host, _, _ := strings.Cut(key, "/")
-	return host
 }
 
 // transports builds the source and target transports. The source trusts
