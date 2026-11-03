@@ -19,6 +19,7 @@ limitations under the License.
 package vuln
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -106,7 +107,7 @@ func Parse(r io.Reader) ([]Finding, error) {
 		return nil, ErrTooLarge
 	}
 	var out []Finding
-	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec := json.NewDecoder(bytes.NewReader(b))
 	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}

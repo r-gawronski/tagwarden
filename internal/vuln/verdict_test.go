@@ -23,12 +23,14 @@ import (
 )
 
 const (
-	cve1       = "CVE-1"
-	digA       = "sha256:a"
-	failed     = "ScanFailed"
-	linux      = "linux"
-	amd64      = "amd64"
-	linuxAmd64 = linux + "/" + amd64
+	cve1        = "CVE-1"
+	digA        = "sha256:a"
+	failed      = "ScanFailed"
+	linux       = "linux"
+	amd64       = "amd64"
+	unk         = "unknown"
+	statusFixed = "fixed"
+	linuxAmd64  = linux + "/" + amd64
 )
 
 var now = time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
@@ -82,6 +84,8 @@ func TestEvaluateSingle(t *testing.T) {
 			[]PlatformInput{pl(linuxAmd64, digA, f("CVE-5", Unknown, "1"))}, FindingsFound, true, []string{"CVE-5"}, 0},
 		{"ignoreUnfixed drops unfixed", Policy{Action: Block, Severity: Critical, IgnoreUnfixed: true}, nil,
 			[]PlatformInput{pl(linuxAmd64, digA, f("CVE-6", Critical, ""))}, Passed, false, nil, 0},
+		{"ignoreUnfixed keeps status fixed with empty fix", Policy{Action: Block, Severity: Critical, IgnoreUnfixed: true}, nil,
+			[]PlatformInput{pl(linuxAmd64, digA, Finding{ID: cve1, Severity: Critical, Status: statusFixed})}, FindingsFound, true, []string{cve1}, 0},
 		{"ignoreUnfixed keeps fixed", Policy{Action: Block, Severity: Critical, IgnoreUnfixed: true}, nil,
 			[]PlatformInput{pl(linuxAmd64, digA, crit)}, FindingsFound, true, []string{cve1}, 0},
 		{"exception by digest covers all", Policy{Action: Block, Severity: Critical}, []Exception{exc("e1", nil)},
@@ -243,19 +247,43 @@ func itoa(i int) string {
 func TestSkipPlatform(t *testing.T) {
 	tests := []struct {
 		os, arch string
-		ann      map[string]string
 		want     bool
 	}{
-		{linux, amd64, nil, false},
-		{"unknown", "unknown", nil, true},
-		{linux, amd64, map[string]string{"vnd.docker.reference.type": "attestation-manifest"}, true},
-		{linux, amd64, map[string]string{"vnd.docker.reference.type": "other"}, false},
+		{linux, amd64, false},
+		{unk, unk, true},
+		{unk, amd64, false},
+		{linux, unk, false},
 	}
 	for _, tc := range tests {
-		if got := SkipPlatform(tc.os, tc.arch, tc.ann); got != tc.want {
+		if got := SkipPlatform(tc.os, tc.arch); got != tc.want {
 			t.Errorf("%v: got %v", tc, got)
 		}
 	}
+}
+
+func TestAcceptedDedupeAndCap(t *testing.T) {
+	pol := Policy{Action: Block, Severity: Critical}
+	e := exc("e1", nil)
+	t.Run("duplicates collapse", func(t *testing.T) {
+		fs := make([]Finding, 0, 5000)
+		for range 5000 {
+			fs = append(fs, f(cve1, Critical, "1"))
+		}
+		r := Evaluate(pol, []Exception{e}, subj, []PlatformInput{pl(linuxAmd64, digA, fs...)}, false, now)
+		if got := r.Platforms[0]; len(got.Accepted) != 1 || got.AcceptedTruncated || r.Verdict != Accepted {
+			t.Fatalf("accepted=%d trunc=%v verdict=%s", len(got.Accepted), got.AcceptedTruncated, r.Verdict)
+		}
+	})
+	t.Run("cap keeps the verdict", func(t *testing.T) {
+		fs := make([]Finding, 0, 3*MaxAuditIDs)
+		for i := range 3 * MaxAuditIDs {
+			fs = append(fs, f("CVE-"+itoa(i), Critical, "1"), f("CVE-"+itoa(i), Critical, "1"))
+		}
+		r := Evaluate(pol, []Exception{e}, subj, []PlatformInput{pl(linuxAmd64, digA, fs...)}, false, now)
+		if got := r.Platforms[0]; len(got.Accepted) != MaxAuditIDs || !got.AcceptedTruncated || r.Verdict != Accepted || r.Block {
+			t.Fatalf("accepted=%d trunc=%v verdict=%s", len(got.Accepted), got.AcceptedTruncated, r.Verdict)
+		}
+	})
 }
 
 func TestParseSeverity(t *testing.T) {

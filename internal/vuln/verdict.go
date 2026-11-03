@@ -92,16 +92,17 @@ type AcceptedFinding struct {
 
 // PlatformResult is the verdict of one platform.
 type PlatformResult struct {
-	Platform     string
-	Digest       string
-	Verdict      Verdict
-	Counts       map[Severity]int // every reported finding
-	Highest      Severity         // empty when there are no findings
-	IDs          []string         // uncovered counting IDs, worst first, up to MaxAuditIDs
-	IDsTruncated bool
-	Accepted     []AcceptedFinding
-	ScanError    string
-	JavaScanned  bool
+	Platform          string
+	Digest            string
+	Verdict           Verdict
+	Counts            map[Severity]int // every reported finding
+	Highest           Severity         // empty when there are no findings
+	IDs               []string         // uncovered counting IDs, worst first, up to MaxAuditIDs
+	IDsTruncated      bool
+	Accepted          []AcceptedFinding // deduped by ID, up to MaxAuditIDs
+	AcceptedTruncated bool
+	ScanError         string
+	JavaScanned       bool
 }
 
 // Result is the verdict of a tag.
@@ -117,10 +118,10 @@ type Result struct {
 }
 
 // SkipPlatform reports whether an index child is not an image to scan:
-// unknown/unknown or a buildkit attestation manifest.
-func SkipPlatform(os, arch string, annotations map[string]string) bool {
-	return (os == "unknown" && arch == "unknown") ||
-		annotations["vnd.docker.reference.type"] == "attestation-manifest"
+// unknown/unknown. The attestation annotation is publisher-controlled and
+// never skips a child.
+func SkipPlatform(os, arch string) bool {
+	return os == "unknown" && arch == "unknown"
 }
 
 // Evaluate judges a tag from the scan outcomes of its image manifests. The
@@ -176,8 +177,10 @@ func platform(p Policy, excs []Exception, s Subject, in PlatformInput, javaScann
 		return pr, nil
 	}
 	var counting []Finding
+	anyAccepted := false
+	acceptedSeen := map[string]bool{}
 	for _, f := range in.Findings {
-		if p.IgnoreUnfixed && f.Fix == "" {
+		if p.IgnoreUnfixed && f.Fix == "" && f.Status != "fixed" {
 			continue
 		}
 		pr.Counts[f.Severity]++
@@ -188,7 +191,15 @@ func platform(p Policy, excs []Exception, s Subject, in PlatformInput, javaScann
 			continue
 		}
 		if name, ok := covered(excs, s, in.Digest, f.ID, now); ok {
-			pr.Accepted = append(pr.Accepted, AcceptedFinding{ID: f.ID, Exception: name})
+			anyAccepted = true
+			switch {
+			case acceptedSeen[f.ID]:
+			case len(pr.Accepted) == MaxAuditIDs:
+				pr.AcceptedTruncated = true
+			default:
+				acceptedSeen[f.ID] = true
+				pr.Accepted = append(pr.Accepted, AcceptedFinding{ID: f.ID, Exception: name})
+			}
 			continue
 		}
 		counting = append(counting, f)
@@ -196,7 +207,7 @@ func platform(p Policy, excs []Exception, s Subject, in PlatformInput, javaScann
 	switch {
 	case len(counting) > 0:
 		pr.Verdict = FindingsFound
-	case len(pr.Accepted) > 0:
+	case anyAccepted:
 		pr.Verdict = Accepted
 	default:
 		pr.Verdict = Passed

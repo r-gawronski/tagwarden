@@ -67,7 +67,7 @@ func TestParseFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Finding{ID: "CVE-2026-0001", Pkg: "libssl3", Version: "3.1.4-r5", Fix: "3.1.4-r6", Severity: Critical, Status: "fixed"}
+	want := Finding{ID: "CVE-2026-0001", Pkg: "libssl3", Version: "3.1.4-r5", Fix: "3.1.4-r6", Severity: Critical, Status: statusFixed}
 	if got[0] != want {
 		t.Fatalf("got %+v, want %+v", got[0], want)
 	}
