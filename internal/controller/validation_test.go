@@ -151,9 +151,9 @@ var _ = Describe("API validation", func() {
 		Entry("Azure workload identity", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			useAzure(o)
 			o.Spec.WorkloadIdentity.Azure.AuthorityHost = "https://login.microsoftonline.us/"
-			o.Spec.WorkloadIdentity.Azure.Scope = "https://management.usgovcloudapi.net/.default"
 			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
 				{Registry: "src.azurecr.io", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
+				{Registry: "Other-ab12cd.AzureCR.us:443", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
 				{Registry: ghcrRegistry, SecretRef: &mirrorv1alpha1.SecretRef{Name: "ghcr-pull"}},
 			}
 		}),
@@ -296,9 +296,31 @@ var _ = Describe("API validation", func() {
 			useAzure(o)
 			o.Spec.WorkloadIdentity.Azure.AuthorityHost = "https://u:p@login.example.internal/"
 		}),
-		Entry("scope without /.default", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+		Entry("unknown authority host", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			useAzure(o)
-			o.Spec.WorkloadIdentity.Azure.Scope = "https://containerregistry.azure.net/"
+			o.Spec.WorkloadIdentity.Azure.AuthorityHost = "https://login.example.internal/"
+		}),
+		Entry("authority host with a tenant path", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.WorkloadIdentity.Azure.AuthorityHost = "https://login.microsoftonline.com/" + zeroGUID
+		}),
+		Entry("Azure push to a non-ACR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.Registry = "registry.example.internal"
+		}),
+		Entry("Azure push to an ACR host on another port", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.Registry = "myregistry.azurecr.io:5000"
+		}),
+		Entry("Azure pull from a non-ACR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: ghcrRegistry, AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
+			}
+		}),
+		Entry("Azure pull from a look-alike host", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: "src.azurecr.io.example.internal", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
+			}
 		}),
 		Entry("invalid ServiceAccount name", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			useAzure(o)

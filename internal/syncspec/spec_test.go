@@ -57,7 +57,7 @@ const zeroGUID = `"00000000-0000-0000-0000-000000000000"`
 
 func azure(clientID, host string) string {
 	return `"targetAuth": "azureWorkloadIdentity", "azure": {"clientID": ` + clientID + `, "tenantID": ` + zeroGUID +
-		`, "authorityHost": ` + host + `, "scope": "https://containerregistry.azure.net/.default"},`
+		`, "authorityHost": ` + host + `},`
 }
 
 func TestDecodeAzure(t *testing.T) {
@@ -66,7 +66,7 @@ func TestDecodeAzure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.TargetAuth != AuthAzureWorkloadIdentity || s.SourceAuth != AuthAzureWorkloadIdentity || s.Azure.Scope != DefaultAzureScope {
+	if s.TargetAuth != AuthAzureWorkloadIdentity || s.SourceAuth != AuthAzureWorkloadIdentity || s.Azure.AuthorityHost != DefaultAzureAuthorityHost {
 		t.Fatalf("decoded %+v", s)
 	}
 }
@@ -95,6 +95,7 @@ func TestDecodeRejects(t *testing.T) {
 		"azure bad client":   {maxTags, `"maxTags": 100, ` + azure(`"x"`, `"https://login.example.internal/"`)},
 		"azure http host":    {maxTags, `"maxTags": 100, ` + azure(zeroGUID, `"http://login.example.internal/"`)},
 		"azure no host":      {maxTags, `"maxTags": 100, ` + azure(zeroGUID, `""`)},
+		"azure scope":        {maxTags, `"maxTags": 100, ` + strings.Replace(azure(zeroGUID, `"https://login.microsoftonline.com/"`), "},", `, "scope": "https://management.azure.com/.default"},`, 1)},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -152,6 +153,28 @@ func TestParseReport(t *testing.T) {
 	for name, msg := range bad {
 		if _, err := ParseReport(msg); err == nil {
 			t.Errorf("%s: want error", name)
+		}
+	}
+}
+
+func TestAzureHosts(t *testing.T) {
+	for host, want := range map[string]bool{
+		"myregistry.azurecr.io": true, "MyRegistry.azurecr.us": true, "reg-abc123.azurecr.cn:443": true,
+		"myregistry.azurecr.io:5000": false, "azurecr.io": false, "myregistry.azurecr.io.example.internal": false,
+		"evil.example.internal": false, "myregistry.azurecr.com": false,
+	} {
+		if ACRHost(host) != want {
+			t.Errorf("ACRHost(%q) = %v", host, !want)
+		}
+	}
+	for u, want := range map[string]bool{
+		"https://login.microsoftonline.com/": true, "https://login.microsoftonline.us": true,
+		"https://login.partner.microsoftonline.cn/": true, "https://login.chinacloudapi.cn/": true,
+		"http://login.microsoftonline.com/": false, "https://login.microsoftonline.com.example.internal/": false,
+		"https://login.example.internal/": false, "https://login.microsoftonline.com/tenant/": false,
+	} {
+		if AzureAuthority(u) != want {
+			t.Errorf("AzureAuthority(%q) = %v", u, !want)
 		}
 	}
 }

@@ -448,6 +448,9 @@ spec:
                   x-kubernetes-validations:
                   - message: set exactly one of secretRef or azureWorkloadIdentity
                     rule: has(self.secretRef) != has(self.azureWorkloadIdentity)
+                  - message: azureWorkloadIdentity needs an Azure Container Registry
+                      host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)
+                    rule: '!has(self.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$'')'
                 maxItems: 50
                 type: array
                 x-kubernetes-list-map-keys:
@@ -466,31 +469,22 @@ spec:
                     properties:
                       authorityHost:
                         description: |-
-                          authorityHost is the Microsoft Entra endpoint, for example
-                          https://login.microsoftonline.us/ in a national cloud. Defaults to
-                          https://login.microsoftonline.com/.
+                          authorityHost is the Microsoft Entra endpoint: one of
+                          https://login.microsoftonline.com/ (the default),
+                          https://login.microsoftonline.us/,
+                          https://login.partner.microsoftonline.cn/ or
+                          https://login.chinacloudapi.cn/. The registry token is always
+                          requested for https://containerregistry.azure.net/.default.
                         maxLength: 2048
                         type: string
                         x-kubernetes-validations:
-                        - message: must be an https URL without credentials, query
-                            or fragment
-                          rule: isURL(self) && self.startsWith('https://') && !self.contains('@')
-                            && !self.contains('?') && !self.contains('#')
+                        - message: must be a known Microsoft Entra authority host
+                          rule: self.matches(r'^https://(login\.microsoftonline\.(com|us)|login\.partner\.microsoftonline\.cn|login\.chinacloudapi\.cn)/?$')
                       clientID:
                         description: clientID is the application (client) ID of the
                           identity.
                         pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
                         type: string
-                      scope:
-                        description: |-
-                          scope is the Microsoft Entra scope of the registry token. Defaults
-                          to https://containerregistry.azure.net/.default. Change it only for
-                          a cloud whose registries expect another resource.
-                        maxLength: 2048
-                        type: string
-                        x-kubernetes-validations:
-                        - message: must be an https resource URL ending in /.default
-                          rule: isURL(self) && self.startsWith('https://') && self.endsWith('/.default')
                       tenantID:
                         description: tenantID is the directory (tenant) ID of the
                           identity.
@@ -518,6 +512,9 @@ spec:
             x-kubernetes-validations:
             - message: set exactly one of credentialsSecretRef or auth
               rule: has(self.credentialsSecretRef) != has(self.auth)
+            - message: auth.azureWorkloadIdentity needs an Azure Container Registry
+                host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)
+              rule: '!has(self.auth) || self.registry.lowerAscii().matches(r''^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$'')'
           status:
             description: status defines the observed state of ClusterMirrorTarget
             properties:

@@ -23,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -56,7 +58,7 @@ func cloudAuth(ctx context.Context, provider string, spec syncspec.Spec, o optio
 	var p credentialProvider
 	switch provider {
 	case syncspec.AuthAzureWorkloadIdentity:
-		p = azureProvider{id: *spec.Azure, tokenFile: o.azureToken, client: client}
+		p = azureProvider{id: *spec.Azure, tokenFile: o.azureToken, client: client, allowLoopback: o.allowLoopback}
 	default:
 		return nil, fmt.Errorf("%s credentials: unknown provider %q", what, provider)
 	}
@@ -77,9 +79,34 @@ type azureProvider struct {
 	id        syncspec.Azure
 	tokenFile string
 	client    *http.Client
+	// allowLoopback lets tests use fakes on 127.0.0.1.
+	allowLoopback bool
+}
+
+// loopback reports whether rawHost (host[:port] or a URL) is a loopback
+// address that tests may use.
+func (a azureProvider) loopback(rawHost string) bool {
+	if u, err := url.Parse(rawHost); err == nil && u.Host != "" {
+		rawHost = u.Host
+	}
+	h, _, err := net.SplitHostPort(rawHost)
+	if err != nil {
+		h = rawHost
+	}
+	ip, err := netip.ParseAddr(strings.Trim(h, "[]"))
+	return a.allowLoopback && err == nil && ip.IsLoopback()
 }
 
 func (a azureProvider) Authenticator(ctx context.Context, reg name.Registry) (authn.Authenticator, error) {
+	host := reg.RegistryStr()
+	// The Entra token is sent only to Azure Container Registry, and the
+	// projected token only to a known authority (threat model T27).
+	if !syncspec.ACRHost(host) && !a.loopback(host) {
+		return nil, fmt.Errorf("%s is not an Azure Container Registry host", host)
+	}
+	if !syncspec.AzureAuthority(a.id.AuthorityHost) && !a.loopback(a.id.AuthorityHost) {
+		return nil, errors.New("authorityHost is not a known Microsoft Entra authority host")
+	}
 	assertion, err := os.ReadFile(a.tokenFile)
 	if err != nil {
 		return nil, fmt.Errorf("projected ServiceAccount token: %w", err)
@@ -92,7 +119,7 @@ func (a azureProvider) Authenticator(ctx context.Context, reg name.Registry) (au
 	r, err := postForm(ctx, a.client, "token request to Microsoft Entra ID", entra, url.Values{
 		"grant_type":            {"client_credentials"},
 		"client_id":             {a.id.ClientID},
-		"scope":                 {a.id.Scope},
+		"scope":                 {syncspec.AzureScope},
 		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
 		"client_assertion":      {string(assertion)},
 	})
@@ -102,7 +129,6 @@ func (a azureProvider) Authenticator(ctx context.Context, reg name.Registry) (au
 	if r.AccessToken == "" {
 		return nil, errors.New("token request to Microsoft Entra ID: no access_token in the response")
 	}
-	host := reg.RegistryStr()
 	r, err = postForm(ctx, a.client, "registry token exchange", "https://"+host+"/oauth2/exchange", url.Values{
 		"grant_type":   {"access_token"},
 		"service":      {host},
