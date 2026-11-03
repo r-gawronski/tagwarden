@@ -37,8 +37,9 @@ const (
 )
 
 // semverTag is the tag shape treated as a version. It rejects plain numbers
-// such as "7" or "20240101", which semver.NewVersion would coerce.
-var semverTag = regexp.MustCompile(`^v?\d+\.\d+(\.\d+)?(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
+// such as "7" or "20240101" and leading zeros such as "01.02.03", which
+// semver.NewVersion would coerce.
+var semverTag = regexp.MustCompile(`^v?(0|[1-9]\d*)\.(0|[1-9]\d*)(\.(0|[1-9]\d*))?(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
 
 // Policy describes which tags to keep.
 type Policy struct {
