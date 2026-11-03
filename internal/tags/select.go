@@ -217,3 +217,4 @@ func compilePatterns(field string, patterns []string) ([]*regexp.Regexp, error) 
 func matchAny(res []*regexp.Regexp, s string) bool {
 	return slices.ContainsFunc(res, func(re *regexp.Regexp) bool { return re.MatchString(s) })
 }
+// throwaway: CI timing probe 1
