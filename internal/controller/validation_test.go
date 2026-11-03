@@ -48,7 +48,8 @@ func validTarget(name string) *mirrorv1alpha1.ClusterMirrorTarget {
 			},
 			AllowedSources: []mirrorv1alpha1.RegistryHost{"registry.k8s.io", "ghcr.io"},
 			Projects: []mirrorv1alpha1.TargetProject{
-				{Name: "mirror", NamespaceSelector: &metav1.LabelSelector{}},
+				// The controller tests set target.repository in this project.
+				{Name: "mirror", NamespaceSelector: &metav1.LabelSelector{}, AllowRepositoryOverride: true},
 				{Name: "team-a", NamespaceSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"example.com/team": "a"},
 				}},
