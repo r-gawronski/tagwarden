@@ -142,7 +142,7 @@ func newSyncer(r Request) (*syncer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("sync: platform %q: %w", p, err)
 		}
-		s.platforms = append(s.platforms, *pl)
+		s.platforms = append(s.platforms, normalize(*pl))
 	}
 	var err error
 	if s.src, err = remote.NewPuller(r.SourceOpts...); err != nil {
@@ -252,7 +252,7 @@ func (s *syncer) checkPlatforms(desc *remote.Descriptor) error {
 		}
 		for _, m := range im.Manifests {
 			if m.Platform != nil {
-				have = append(have, *m.Platform)
+				have = append(have, normalize(*m.Platform))
 			}
 		}
 	} else {
@@ -265,7 +265,7 @@ func (s *syncer) checkPlatforms(desc *remote.Descriptor) error {
 			return err
 		}
 		if p := cf.Platform(); p != nil {
-			have = append(have, *p)
+			have = append(have, normalize(*p))
 		}
 	}
 	for _, want := range s.platforms {
@@ -274,6 +274,14 @@ func (s *syncer) checkPlatforms(desc *remote.Descriptor) error {
 		}
 	}
 	return nil
+}
+
+// normalize treats arm64 and arm64/v8 as the same platform, like containerd.
+func normalize(p v1.Platform) v1.Platform {
+	if p.Architecture == "arm64" && (p.Variant == "v8" || p.Variant == "8") {
+		p.Variant = ""
+	}
+	return p
 }
 
 // copy writes desc to the target by digest. ggcr keeps the original manifest
