@@ -78,7 +78,7 @@ func validMirror(name string) *mirrorv1alpha1.ArtifactMirror {
 				AllowPrerelease: true,
 				Tags:            []string{"3.10"},
 			},
-			Platforms: []string{"linux/amd64", "linux/arm64/v8"},
+			RequiredPlatforms: []string{"linux/amd64", "linux/arm64/v8"},
 		},
 	}
 }
@@ -266,7 +266,7 @@ var _ = Describe("API validation", func() {
 			o.Spec.Tags.Tags = []string{"-bad"}
 		}),
 		Entry("invalid platform", func(o *mirrorv1alpha1.ArtifactMirror) {
-			o.Spec.Platforms = []string{"linux"}
+			o.Spec.RequiredPlatforms = []string{"linux"}
 		}),
 	)
 })

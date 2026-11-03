@@ -59,10 +59,12 @@ spec:
           spec:
             description: spec defines the desired state of ArtifactMirror
             properties:
-              platforms:
+              requiredPlatforms:
                 description: |-
-                  platforms limits multi-platform images to these platforms, as os/arch[/variant].
-                  Empty mirrors all platforms.
+                  requiredPlatforms lists platforms, as os/arch[/variant], that must
+                  exist in the source. A tag missing any of them fails and is not
+                  mirrored. The whole index is always mirrored so digests and
+                  signatures stay valid.
                 items:
                   pattern: ^[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?$
                   type: string
