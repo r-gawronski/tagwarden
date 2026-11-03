@@ -20,10 +20,12 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -120,6 +122,19 @@ var _ = Describe("API validation", func() {
 		Entry("IPv6 registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.Registry = "[::1]:5000"
 		}),
+		Entry("limits", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			size := resource.MustParse("10Gi")
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{
+				MinSyncInterval:        &metav1.Duration{Duration: 5 * time.Minute},
+				MaxMirrorsPerNamespace: ptr.To[int32](1),
+				MaxKeepLatest:          ptr.To[int32](100),
+				MaxExplicitTags:        ptr.To[int32](100),
+				MaxArtifactSize:        &size,
+			}
+		}),
+		Entry("empty limits", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{}
+		}),
 	)
 
 	It("defaults the CA bundle key and tag mutation policy", func() {
@@ -202,6 +217,26 @@ var _ = Describe("API validation", func() {
 		}),
 		Entry("unknown tag mutation policy", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.Policy.OnTagMutation = "Replace"
+		}),
+		Entry("minSyncInterval below 5m", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MinSyncInterval: &metav1.Duration{Duration: time.Minute}}
+		}),
+		Entry("maxMirrorsPerNamespace 0", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxMirrorsPerNamespace: ptr.To[int32](0)}
+		}),
+		Entry("maxKeepLatest 101", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxKeepLatest: ptr.To[int32](101)}
+		}),
+		Entry("maxExplicitTags 0", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxExplicitTags: ptr.To[int32](0)}
+		}),
+		Entry("maxArtifactSize 0", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			size := resource.MustParse("0")
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxArtifactSize: &size}
+		}),
+		Entry("negative maxArtifactSize", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			size := resource.MustParse("-1Gi")
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxArtifactSize: &size}
 		}),
 	)
 
