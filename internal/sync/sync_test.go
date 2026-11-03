@@ -219,7 +219,7 @@ func TestRunCopiesSelectedTagsByDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v (%+v)", err, res)
 	}
-	want := []string{"v1.1.0", "v1.2.0", "v1.3.0"}
+	want := []string{"v1.1.0", "v1.2.0", "v1.3.0"} //nolint:goconst // readable fixtures
 	if got := tagsOf(res.Copied); !slices.Equal(got, want) {
 		t.Fatalf("copied %v, want %v (%+v)", got, want, res)
 	}
@@ -414,16 +414,18 @@ func TestRunMissingPlatform(t *testing.T) {
 	dst := newRegistry(t, regOpts{})
 	push(t, src.repo, v100, index(t, "linux/amd64", "linux/arm64/v8"))
 	push(t, src.repo, "v1.1.0", index(t, "linux/amd64", "linux/s390x"))
+	push(t, src.repo, "v1.2.0", index(t, "linux/amd64", "linux/arm64"))
 
 	res, err := Run(context.Background(), Request{
 		Source: src.repo, Target: dst.repo,
 		Policy:            tags.Policy{Include: []string{"."}},
-		RequiredPlatforms: []string{"linux/arm64", "linux/amd64"},
+		RequiredPlatforms: []string{"linux/arm64/v8", "linux/amd64"},
 	})
 	if err == nil {
 		t.Fatal("want error for failed tags")
 	}
-	if !slices.Equal(tagsOf(res.Copied), []string{v100}) || !slices.Equal(tagsOf(res.Failed), []string{"v1.1.0"}) {
+	// arm64 and arm64/v8 are the same platform, either way round.
+	if !slices.Equal(tagsOf(res.Copied), []string{v100, "v1.2.0"}) || !slices.Equal(tagsOf(res.Failed), []string{"v1.1.0"}) {
 		t.Fatalf("result %+v", res)
 	}
 	if _, ok := headDigest(t, dst.repo.Tag("v1.1.0")); ok {
