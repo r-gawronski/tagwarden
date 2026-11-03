@@ -44,17 +44,17 @@ var semverTag = regexp.MustCompile(`^v?(0|[1-9]\d*)\.(0|[1-9]\d*)(\.(0|[1-9]\d*)
 // Policy describes which tags to keep.
 type Policy struct {
 	// Include keeps a tag if any pattern matches.
-	Include []string
+	Include []string `json:"include,omitempty"`
 	// Exclude drops a tag if any pattern matches.
-	Exclude []string
+	Exclude []string `json:"exclude,omitempty"`
 	// SemverRange keeps semver tags within the constraint.
-	SemverRange string
+	SemverRange string `json:"semverRange,omitempty"`
 	// KeepLatest keeps only the N highest semver tags. Zero means no limit.
-	KeepLatest int
+	KeepLatest int `json:"keepLatest,omitempty"`
 	// AllowPrerelease keeps prerelease versions when SemverRange or KeepLatest is set.
-	AllowPrerelease bool
+	AllowPrerelease bool `json:"allowPrerelease,omitempty"`
 	// Tags are always selected when present in the input, on top of the patterns.
-	Tags []string
+	Tags []string `json:"tags,omitempty"`
 }
 
 // Select returns the tags chosen by p.
