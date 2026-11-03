@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	ctrlevent "sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -443,15 +444,24 @@ func (r *ArtifactMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.ArtifactMirror{}).
 		// A mirror that moves onto, leaves or claims a path changes who owns
-		// it, so the other mirrors of the path are checked again. One that
-		// comes or goes changes which mirrors of its namespace fit the
-		// target's maxMirrorsPerNamespace.
+		// it, so the other mirrors of the path are checked again.
 		Watches(&mirrorv1alpha1.ArtifactMirror{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {
-				m := o.(*mirrorv1alpha1.ArtifactMirror)
-				return append(r.mirrorsMatching(ctx, client.MatchingFields{indexTargetKey: targetKey(m)}),
-					r.mirrorsMatching(ctx, client.InNamespace(m.Namespace), client.MatchingFields{indexTargetName: m.Spec.TargetRef})...)
+				return r.mirrorsMatching(ctx, client.MatchingFields{indexTargetKey: targetKey(o.(*mirrorv1alpha1.ArtifactMirror))})
 			})).
+		// A mirror that comes, goes or changes target changes which mirrors
+		// of its namespace fit the target's maxMirrorsPerNamespace.
+		Watches(&mirrorv1alpha1.ArtifactMirror{}, handler.EnqueueRequestsFromMapFunc(
+			func(ctx context.Context, o client.Object) []reconcile.Request {
+				return r.mirrorsMatching(ctx, client.InNamespace(o.GetNamespace()),
+					client.MatchingFields{indexTargetName: o.(*mirrorv1alpha1.ArtifactMirror).Spec.TargetRef})
+			}), builder.WithPredicates(predicate.Funcs{
+			UpdateFunc: func(e ctrlevent.UpdateEvent) bool {
+				o, n := e.ObjectOld.(*mirrorv1alpha1.ArtifactMirror), e.ObjectNew.(*mirrorv1alpha1.ArtifactMirror)
+				return o.Spec.TargetRef != n.Spec.TargetRef || o.DeletionTimestamp.IsZero() != n.DeletionTimestamp.IsZero()
+			},
+			GenericFunc: func(ctrlevent.GenericEvent) bool { return false },
+		})).
 		Watches(&mirrorv1alpha1.ClusterMirrorTarget{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {
 				return r.mirrorsMatching(ctx, client.MatchingFields{indexTargetName: o.GetName()})

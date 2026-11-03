@@ -184,6 +184,13 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 		expectReady(c)
 		Expect(mirrorReady(b)()).To(HaveField("Status", metav1.ConditionTrue))
 
+		// Moving to another target frees a place too.
+		d := mirrorOf(t, teamA, "count-d")
+		d.Spec.Target.Repository = "count/count-d"
+		createMirror(d)
+		expectRefused(d, ReasonLimitExceeded, "maxMirrorsPerNamespace")
+		updateMirror(b, func(m *mirrorv1alpha1.ArtifactMirror) { m.Spec.TargetRef = mirrorTarget })
+		expectReady(d)
 	})
 
 	It("does not let a mirror over the count limit claim a path", func() {
