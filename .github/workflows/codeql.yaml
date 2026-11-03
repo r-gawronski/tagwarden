@@ -47,7 +47,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum', 'Makefile') }}
+          key: go-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum', 'go.mod', 'Makefile') }}
           restore-keys: go-${{ runner.os }}-${{ github.job }}-
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
