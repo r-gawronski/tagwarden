@@ -293,12 +293,16 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 // securityDrift reports whether the security-relevant fields of a live sync
 // pod template differ from the desired ones. A hand edit keeps the checksum
 // annotation, so the checksum alone would let it persist. Every compared
-// field is set by renderCronJob, so server defaulting causes no drift.
+// field is either set by renderCronJob or left empty and not defaulted by the
+// server, so server defaulting causes no drift. DNSPolicy is defaulted and
+// left out.
 func securityDrift(live, want *corev1.PodSpec) bool {
 	fields := func(p *corev1.PodSpec) []any {
-		f := make([]any, 0, 9+8*len(p.Containers))
+		f := make([]any, 0, 18+8*len(p.Containers))
 		f = append(f, p.ServiceAccountName, p.AutomountServiceAccountToken, p.SecurityContext,
-			p.HostNetwork, p.HostPID, p.HostIPC, p.Volumes, len(p.InitContainers), len(p.Containers))
+			p.HostNetwork, p.HostPID, p.HostIPC, p.HostUsers, p.ShareProcessNamespace,
+			p.EnableServiceLinks, p.HostAliases, p.DNSConfig, p.NodeName, p.RuntimeClassName,
+			p.ImagePullSecrets, p.Volumes, len(p.InitContainers), len(p.Containers))
 		for _, c := range p.Containers {
 			f = append(f, c.Name, c.Image, c.Command, c.Args, c.Env, c.EnvFrom, c.SecurityContext, c.VolumeMounts)
 		}
