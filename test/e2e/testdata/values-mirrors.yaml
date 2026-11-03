@@ -18,6 +18,7 @@ targets:
         - name: mirror
           namespaceSelector:
             matchLabels: {e2e.tagwarden.dev/team: "true"}
+          allowRepositoryOverride: true
   # e2e-proxy without the proxy.
   - name: e2e-direct
     spec:
@@ -29,6 +30,7 @@ targets:
         - name: mirror
           namespaceSelector:
             matchLabels: {e2e.tagwarden.dev/team: "true"}
+          allowRepositoryOverride: true
 mirrors:
   - name: app
     namespace: e2e-team

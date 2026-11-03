@@ -49,6 +49,8 @@ const (
 	v310         = "3.10"
 	teamLabel    = "example.com/team"
 	ghcrRegistry = "ghcr.io"
+	// sharedProject allows every namespace and no target.repository override.
+	sharedProject = "shared"
 )
 
 // deleteAndWait deletes obj and waits until the finalizer is gone.
@@ -115,6 +117,8 @@ func createMirrorFixtures() {
 	}
 	createReadyTarget(mirrorTarget, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 		t.Spec.AllowedSources = append(t.Spec.AllowedSources, "docker.io", "169.254.169.254", "10.96.0.10")
+		t.Spec.Projects = append(t.Spec.Projects, mirrorv1alpha1.TargetProject{
+			Name: sharedProject, NamespaceSelector: &metav1.LabelSelector{}})
 	})
 }
 
@@ -399,7 +403,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a-2", Labels: map[string]string{teamLabel: "a"}}}
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		m := newMirror(ns.Name, "labelled")
-		m.Spec.Target.Project = teamA
+		m.Spec.Target = mirrorv1alpha1.Target{Project: teamA}
 		createMirror(m)
 		Eventually(func() error { _, err := cronJob(m)(); return err }).Should(Succeed())
 
@@ -504,6 +508,76 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		deleteAndWait(owner)
 		Eventually(mirrorReady(next)).Should(HaveField("Status", metav1.ConditionTrue))
 		Eventually(func() error { _, err := cronJob(next)(); return err }).Should(Succeed())
+	})
+
+	Describe("target.repository override", func() {
+		// validMirror sets target.repository: k8s/pause.
+		shared := func(namespace, name string) *mirrorv1alpha1.ArtifactMirror {
+			m := newMirror(namespace, name)
+			m.Spec.Target.Project = sharedProject
+			return m
+		}
+
+		It("refuses an override in a project that does not allow it", func() {
+			m := shared(teamA, "override-refused")
+			createMirror(m)
+			Eventually(mirrorReady(m)).Should(And(
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", ReasonRepositoryOverrideNotAllowed),
+				HaveField("Message", ContainSubstring("registry.k8s.io/pause"))))
+			Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning " + ReasonRepositoryOverrideNotAllowed)))
+			_, err := cronJob(m)()
+			Expect(notFound(err)).To(BeTrue())
+		})
+
+		It("accepts an override equal to the default path", func() {
+			m := shared(teamA, "override-default")
+			m.Spec.Target.Repository = "registry.k8s.io/pause"
+			createMirror(m)
+			Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
+		})
+
+		It("accepts an override in a project that allows it", func() {
+			m := newMirror(teamA, "override-allowed")
+			createMirror(m)
+			Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
+		})
+
+		It("keeps a default path for its source when an older mirror squats it", func() {
+			squatter := shared(teamA, "squat-a")
+			squatter.Spec.Source = mirrorv1alpha1.Source{Registry: ghcrRegistry, Repository: "someone/nginx"}
+			squatter.Spec.Target.Repository = "docker.io/library/nginx"
+			createMirror(squatter)
+			Eventually(mirrorReady(squatter)).Should(HaveField("Reason", ReasonRepositoryOverrideNotAllowed))
+
+			nginx := shared(teamB, "squat-b")
+			nginx.Spec.Source = mirrorv1alpha1.Source{Registry: "docker.io", Repository: "nginx"}
+			nginx.Spec.Target.Repository = ""
+			createMirror(nginx)
+			Eventually(mirrorReady(nginx)).Should(HaveField("Status", metav1.ConditionTrue))
+			Eventually(func() error { _, err := cronJob(nginx)(); return err }).Should(Succeed())
+			_, err := cronJob(squatter)()
+			Expect(notFound(err)).To(BeTrue())
+		})
+
+		It("removes the CronJob when the project stops allowing overrides", func() {
+			t := createReadyTarget("override-target")
+			m := newMirror(teamA, "override-toggle")
+			m.Spec.TargetRef = t.Name
+			createMirror(m)
+			Eventually(func() error { _, err := cronJob(m)(); return err }).Should(Succeed())
+
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(t), t); err != nil {
+					return err
+				}
+				t.Spec.Projects[0].AllowRepositoryOverride = false
+				return k8sClient.Update(ctx, t)
+			})).To(Succeed())
+			Eventually(mirrorReady(m)).Should(HaveField("Reason", ReasonRepositoryOverrideNotAllowed))
+			_, err := cronJob(m)()
+			Expect(notFound(err)).To(BeTrue())
+		})
 	})
 
 	It("removes the CronJob and ConfigMap when the mirror is deleted", func() {
