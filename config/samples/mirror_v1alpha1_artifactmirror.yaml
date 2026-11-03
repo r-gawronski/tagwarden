@@ -1,0 +1,9 @@
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata:
+  labels:
+    app.kubernetes.io/name: tagwarden
+    app.kubernetes.io/managed-by: kustomize
+  name: artifactmirror-sample
+spec:
+  # TODO(user): Add fields here
