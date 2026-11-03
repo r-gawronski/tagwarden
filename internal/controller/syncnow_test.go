@@ -40,12 +40,9 @@ var _ = Describe("sync-now", Ordered, func() {
 		})
 	})
 
-	readyMirror := func(name string, mutate ...func(*mirrorv1alpha1.ArtifactMirror)) *mirrorv1alpha1.ArtifactMirror {
+	readyMirror := func(name string) *mirrorv1alpha1.ArtifactMirror {
 		m := newMirror(teamA, name)
 		m.Spec.TargetRef = syncNowTarget
-		for _, f := range mutate {
-			f(m)
-		}
 		createMirror(m)
 		EventuallyWithOffset(1, func() error { _, err := cronJob(m)(); return err }).Should(Succeed())
 		return m
@@ -108,6 +105,9 @@ var _ = Describe("sync-now", Ordered, func() {
 	}
 	completeJob := func(job *batchv1.Job) {
 		now := metav1.Now()
+		if job.Status.StartTime == nil {
+			job.Status.StartTime = &now
+		}
 		job.Status.Succeeded = 1
 		job.Status.CompletionTime = &now
 		job.Status.Conditions = []batchv1.JobCondition{
@@ -192,6 +192,30 @@ var _ = Describe("sync-now", Ordered, func() {
 		Eventually(lastRequest(m), 15*time.Second).Should(HaveField("Result", mirrorv1alpha1.SyncRequestStarted))
 		Expect(manualJobs(m)()).To(HaveLen(1))
 		Expect(countEvents(m, "SyncDeferred")).To(Equal(1))
+	})
+
+	It("counts a Job that the status does not know about yet", func() {
+		m := readyMirror("sync-unknown-job")
+		// A Job of an earlier request whose status update was lost, not
+		// started yet.
+		labels, annotations := mirrorMeta(m)
+		annotations[AnnotationTrigger] = TriggerManual
+		job := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: manualJobName(m, "earlier"), Namespace: operatorNamespace,
+				Labels: labels, Annotations: annotations},
+			Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever,
+				Containers: []corev1.Container{{Name: syncContainer, Image: syncImage}}}}},
+		}
+		Expect(k8sClient.Create(ctx, job)).To(Succeed())
+		request(m, "later")
+
+		Eventually(lastRequest(m)).Should(And(Not(BeNil()), HaveField("Value", "later"),
+			HaveField("Result", mirrorv1alpha1.SyncRequestDeferred), HaveField("Message", ContainSubstring("is running"))))
+		Expect(status(m)().LastSyncStartTime).To(BeNil())
+
+		completeJob(job)
+		Eventually(lastRequest(m)).Should(HaveField("Message", ContainSubstring("minSyncInterval 5m0s")))
+		Expect(manualJobs(m)()).To(HaveLen(1))
 	})
 
 	DescribeTable("refuses a request",

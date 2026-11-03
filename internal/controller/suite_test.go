@@ -178,6 +178,7 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&ArtifactMirrorReconciler{
 		Client:      mgr.GetClient(),
+		APIReader:   mgr.GetAPIReader(),
 		Scheme:      mgr.GetScheme(),
 		Recorder:    recorder,
 		Namespace:   operatorNamespace,
