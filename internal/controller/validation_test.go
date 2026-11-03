@@ -48,7 +48,7 @@ func validTarget(name string) *mirrorv1alpha1.ClusterMirrorTarget {
 				CABundleSecretRef:    &mirrorv1alpha1.SecretKeyRef{Name: "proxy-ca", Key: caKey},
 				CredentialsSecretRef: &mirrorv1alpha1.SecretRef{Name: "proxy-auth"},
 			},
-			AllowedSources: []mirrorv1alpha1.RegistryHost{"registry.k8s.io", "ghcr.io"},
+			AllowedSources: []mirrorv1alpha1.RegistryHost{k8sHost, "ghcr.io"},
 			Projects: []mirrorv1alpha1.TargetProject{
 				// The controller tests set target.repository in this project.
 				{Name: "mirror", NamespaceSelector: &metav1.LabelSelector{}, AllowRepositoryOverride: true},
@@ -69,7 +69,7 @@ func validMirror(name string) *mirrorv1alpha1.ArtifactMirror {
 			Schedule:  "0 3 * * *",
 			Type:      mirrorv1alpha1.ArtifactTypeImage,
 			Source: mirrorv1alpha1.Source{
-				Registry:   "registry.k8s.io",
+				Registry:   k8sHost,
 				Repository: "pause",
 			},
 			Target: mirrorv1alpha1.Target{Project: "mirror", Repository: "k8s/pause"},

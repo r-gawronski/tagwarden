@@ -116,7 +116,7 @@ func createMirrorFixtures() {
 		Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: labels}})).To(Succeed())
 	}
 	createReadyTarget(mirrorTarget, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
-		t.Spec.AllowedSources = append(t.Spec.AllowedSources, "docker.io", "169.254.169.254", "10.96.0.10")
+		t.Spec.AllowedSources = append(t.Spec.AllowedSources, dockerHubHost, "169.254.169.254", "10.96.0.10")
 		t.Spec.Projects = append(t.Spec.Projects, mirrorv1alpha1.TargetProject{
 			Name: sharedProject, NamespaceSelector: &metav1.LabelSelector{}})
 	})
@@ -140,7 +140,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		Expect(spec.Mirror).To(Equal(syncspec.Mirror{Namespace: teamA, Name: "render"}))
 		Expect(spec.Source).To(Equal("registry.k8s.io/pause"))
 		Expect(spec.Target).To(Equal("registry.example.internal:8443/mirror/k8s/pause"))
-		Expect(spec.AllowedSources).To(ContainElements("registry.k8s.io", "ghcr.io"))
+		Expect(spec.AllowedSources).To(ContainElements(k8sHost, "ghcr.io"))
 		Expect(spec.DeniedCIDRs).To(Equal([]string{deniedCIDR}))
 		Expect(spec.MaxTags).To(Equal(10000))
 		Expect(spec.OnTagMutation).To(Equal(mirrorv1alpha1.OnTagMutationFail))
@@ -208,7 +208,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		}
 		Expect(volumes["spec"].ConfigMap.Name).To(Equal(cm.Name))
 		Expect(volumes["target-auth"].Secret.SecretName).To(Equal(mirrorTarget + "-push"))
-		Expect(volumes["target-auth"].Secret.Items).To(Equal([]corev1.KeyToPath{{Key: ".dockerconfigjson", Path: ".dockerconfigjson"}}))
+		Expect(volumes["target-auth"].Secret.Items).To(Equal([]corev1.KeyToPath{{Key: dockerCfgFile, Path: dockerCfgFile}}))
 		Expect(volumes["target-ca"].Secret.SecretName).To(Equal(mirrorTarget + "-ca"))
 		Expect(volumes["proxy-ca"].Secret.SecretName).To(Equal(mirrorTarget + "-proxy-ca"))
 		Expect(volumes["client-cert"].Secret.SecretName).To(Equal(mirrorTarget + "-client-tls"))
@@ -220,7 +220,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		}
 		Expect(env["HTTPS_PROXY"].Value).To(Equal("http://proxy.example.internal:3128"))
 		Expect(env["NO_PROXY"].Value).To(Equal(".example.internal,10.0.0.0/8"))
-		for k, key := range map[string]string{syncspec.ProxyUserEnv: "username", syncspec.ProxyPasswordEnv: "password"} {
+		for k, key := range map[string]string{syncspec.ProxyUserEnv: usernameKey, syncspec.ProxyPasswordEnv: passwordKey} {
 			Expect(env[k].Value).To(BeEmpty())
 			Expect(env[k].ValueFrom.SecretKeyRef.Name).To(Equal(mirrorTarget + "-proxy-auth"))
 			Expect(env[k].ValueFrom.SecretKeyRef.Key).To(Equal(key))
@@ -551,7 +551,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 			Eventually(mirrorReady(squatter)).Should(HaveField("Reason", ReasonRepositoryOverrideNotAllowed))
 
 			nginx := shared(teamB, "squat-b")
-			nginx.Spec.Source = mirrorv1alpha1.Source{Registry: "docker.io", Repository: "nginx"}
+			nginx.Spec.Source = mirrorv1alpha1.Source{Registry: dockerHubHost, Repository: "nginx"}
 			nginx.Spec.Target.Repository = ""
 			createMirror(nginx)
 			Eventually(mirrorReady(nginx)).Should(HaveField("Status", metav1.ConditionTrue))
@@ -742,9 +742,9 @@ var _ = Describe("naming", func() {
 			}}
 			Expect(targetPath(m)).To(Equal(want))
 		},
-		Entry("plain", "registry.k8s.io", "pause", "registry.k8s.io/pause"),
+		Entry("plain", k8sHost, "pause", "registry.k8s.io/pause"),
 		Entry("nested", "ghcr.io", "org/team/app", "ghcr.io/org/team/app"),
-		Entry("docker hub official image", "docker.io", "nginx", "docker.io/library/nginx"),
+		Entry("docker hub official image", dockerHubHost, "nginx", "docker.io/library/nginx"),
 		Entry("docker hub index alias", "index.docker.io", "nginx", "docker.io/library/nginx"),
 		Entry("docker hub registry alias", "registry-1.docker.io", "library/nginx", "docker.io/library/nginx"),
 		Entry("docker hub user image", "Docker.IO", "bitnami/redis", "docker.io/bitnami/redis"),

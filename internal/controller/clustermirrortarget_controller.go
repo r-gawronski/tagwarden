@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -67,6 +66,9 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	reason, msg := ambiguousSources(&t)
 	if reason == "" {
+		reason, msg = duplicateSourceRegistries(&t)
+	}
+	if reason == "" {
 		var err error
 		if reason, msg, err = r.check(ctx, &t); err != nil {
 			return ctrl.Result{}, err
@@ -105,6 +107,53 @@ func ambiguousSources(t *mirrorv1alpha1.ClusterMirrorTarget) (string, string) {
 	return "", ""
 }
 
+// duplicateSourceRegistries refuses two sourceCredentials or two
+// sourceCABundles entries for one registry. The CRD keys the lists by the
+// literal host, so the controller compares the canonical form (case, Docker
+// Hub names).
+func duplicateSourceRegistries(t *mirrorv1alpha1.ClusterMirrorTarget) (string, string) {
+	dup := func(field string, hosts []mirrorv1alpha1.RegistryHost) (string, string) {
+		seen := map[string]mirrorv1alpha1.RegistryHost{}
+		for _, h := range hosts {
+			c := syncspec.CanonicalRegistry(string(h))
+			if prev, ok := seen[c]; ok {
+				return ReasonInvalidSpec, fmt.Sprintf("%s has two entries for registry %s: %s and %s", field, c, prev, h)
+			}
+			seen[c] = h
+		}
+		return "", ""
+	}
+	creds := make([]mirrorv1alpha1.RegistryHost, 0, len(t.Spec.SourceCredentials))
+	cas := make([]mirrorv1alpha1.RegistryHost, 0, len(t.Spec.SourceCABundles))
+	for _, c := range t.Spec.SourceCredentials {
+		creds = append(creds, c.Registry)
+	}
+	for _, c := range t.Spec.SourceCABundles {
+		cas = append(cas, c.Registry)
+	}
+	if reason, msg := dup("sourceCredentials", creds); reason != "" {
+		return reason, msg
+	}
+	return dup("sourceCABundles", cas)
+}
+
+// sourceRefs returns the credentials and CA entries for a source
+// registry, or nil. The first entry wins; duplicates make the target not Ready.
+func sourceRefs(t *mirrorv1alpha1.ClusterMirrorTarget, registry string) (cred *mirrorv1alpha1.SecretRef, ca *mirrorv1alpha1.SecretKeyRef) {
+	c := syncspec.CanonicalRegistry(registry)
+	for i := range t.Spec.SourceCredentials {
+		if e := &t.Spec.SourceCredentials[i]; cred == nil && syncspec.CanonicalRegistry(string(e.Registry)) == c {
+			cred = &e.SecretRef
+		}
+	}
+	for i := range t.Spec.SourceCABundles {
+		if e := &t.Spec.SourceCABundles[i]; ca == nil && syncspec.CanonicalRegistry(string(e.Registry)) == c {
+			ca = &e.SecretRef
+		}
+	}
+	return cred, ca
+}
+
 // check returns a reason and message for the first invalid Secret, or an
 // empty reason. Messages name Secrets and keys, never their content.
 func (r *ClusterMirrorTargetReconciler) check(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget) (string, string, error) {
@@ -118,7 +167,21 @@ func (r *ClusterMirrorTargetReconciler) check(ctx context.Context, t *mirrorv1al
 	if !hasAuth(s.Data[corev1.DockerConfigJsonKey], string(t.Spec.Registry)) {
 		return ReasonInvalidSecret, fmt.Sprintf("Secret %s has no auths entry for %s", s.Name, t.Spec.Registry), nil
 	}
+	for _, c := range t.Spec.SourceCredentials {
+		if s, reason, msg, err = r.secret(ctx, c.SecretRef.Name); s == nil {
+			return reason, msg, err
+		}
+		if s.Type != corev1.SecretTypeDockerConfigJson {
+			return ReasonInvalidSecret, fmt.Sprintf("Secret %s is of type %s, want %s", s.Name, s.Type, corev1.SecretTypeDockerConfigJson), nil
+		}
+		if !hasAuth(s.Data[corev1.DockerConfigJsonKey], string(c.Registry)) {
+			return ReasonInvalidSecret, fmt.Sprintf("Secret %s has no auths entry for %s", s.Name, c.Registry), nil
+		}
+	}
 	cas := []*mirrorv1alpha1.SecretKeyRef{t.Spec.CABundleSecretRef}
+	for i := range t.Spec.SourceCABundles {
+		cas = append(cas, &t.Spec.SourceCABundles[i].SecretRef)
+	}
 	if p := t.Spec.Proxy; p != nil {
 		cas = append(cas, p.CABundleSecretRef)
 	}
@@ -178,7 +241,7 @@ func hasAuth(data []byte, host string) bool {
 		return false
 	}
 	for k := range cfg.Auths {
-		if strings.EqualFold(syncspec.AuthKeyHost(k), host) {
+		if syncspec.CanonicalRegistry(syncspec.AuthKeyHost(k)) == syncspec.CanonicalRegistry(host) {
 			return true
 		}
 	}
@@ -193,6 +256,12 @@ func referencesSecret(t *mirrorv1alpha1.ClusterMirrorTarget, name string) bool {
 	}
 	if r := t.Spec.ClientCertSecretRef; r != nil {
 		names = append(names, r.Name)
+	}
+	for _, c := range t.Spec.SourceCredentials {
+		names = append(names, c.SecretRef.Name)
+	}
+	for _, c := range t.Spec.SourceCABundles {
+		names = append(names, c.SecretRef.Name)
 	}
 	if p := t.Spec.Proxy; p != nil {
 		if p.CABundleSecretRef != nil {
