@@ -130,10 +130,12 @@ func (r *ArtifactMirrorReconciler) syncNow(ctx context.Context, t *mirrorv1alpha
 			Name: name, Namespace: cj.Namespace,
 			Labels:      maps.Clone(tmpl.Labels),
 			Annotations: maps.Clone(tmpl.Annotations),
-			// Not a controller reference: the CronJob controller would warn
-			// about a Job it did not create. Garbage collection still
-			// deletes the Job with the CronJob.
-			OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "CronJob", Name: cj.Name, UID: cj.UID}},
+			// As with kubectl create job --from=cronjob, the CronJob
+			// controls the Job: its history limits and garbage collection
+			// cover it. The CronJob controller does not add it to
+			// status.active, so concurrencyPolicy does not see it, and it
+			// records an UnexpectedJob Event while the Job runs.
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cj, batchv1.SchemeGroupVersion.WithKind("CronJob"))},
 		},
 		Spec: *tmpl.Spec.DeepCopy(),
 	}
