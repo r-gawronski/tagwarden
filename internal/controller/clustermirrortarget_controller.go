@@ -69,6 +69,9 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 		reason, msg = duplicateSourceRegistries(&t)
 	}
 	if reason == "" {
+		reason, msg = missingIdentity(&t)
+	}
+	if reason == "" {
 		var err error
 		if reason, msg, err = r.check(ctx, &t); err != nil {
 			return ctrl.Result{}, err
@@ -135,6 +138,17 @@ func duplicateSourceRegistries(t *mirrorv1alpha1.ClusterMirrorTarget) (string, s
 		return reason, msg
 	}
 	return dup("sourceCABundles", cas)
+}
+
+// missingIdentity refuses Azure workload identity auth without
+// spec.workloadIdentity.azure.
+func missingIdentity(t *mirrorv1alpha1.ClusterMirrorTarget) (string, string) {
+	uses := t.Spec.Auth != nil && t.Spec.Auth.AzureWorkloadIdentity != nil ||
+		slices.ContainsFunc(t.Spec.SourceCredentials, func(c mirrorv1alpha1.SourceCredential) bool { return c.AzureWorkloadIdentity != nil })
+	if uses && (t.Spec.WorkloadIdentity == nil || t.Spec.WorkloadIdentity.Azure == nil) {
+		return ReasonInvalidSpec, "azureWorkloadIdentity requires spec.workloadIdentity.azure"
+	}
+	return "", ""
 }
 
 // sourceRefs returns the credentials and CA entries for a source

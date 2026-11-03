@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -58,7 +59,8 @@ const (
 	EgressProxy  = "proxy"
 	EgressDirect = "direct"
 
-	// SyncServiceAccount runs the sync pods. It has no RBAC bindings.
+	// SyncServiceAccount runs the sync pods unless a pod uses cloud auth
+	// with spec.workloadIdentity.serviceAccountName. It has no RBAC bindings.
 	SyncServiceAccount = "tagwarden-sync"
 	syncContainer      = "sync"
 	specKey            = "spec.json"
@@ -163,6 +165,14 @@ func targetRepo(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.Artifac
 	return string(t.Spec.Registry) + "/" + string(m.Spec.Target.Project) + "/" + targetPath(m)
 }
 
+// azureAuth reports whether the target push and the mirror's source pull
+// use Azure workload identity.
+func azureAuth(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (target, source bool) {
+	target = t.Spec.Auth != nil && t.Spec.Auth.AzureWorkloadIdentity != nil
+	cred, _ := sourceRefs(t, string(m.Spec.Source.Registry))
+	return target, cred != nil && cred.AzureWorkloadIdentity != nil
+}
+
 // syncSpec renders the spec the sync Job reads. It holds no secret values.
 func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, denied []string) syncspec.Spec {
 	mutation := t.Spec.Policy.OnTagMutation
@@ -177,7 +187,7 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 	if l := t.Spec.Limits; l != nil && l.MaxArtifactSize != nil {
 		maxSize = l.MaxArtifactSize.Value()
 	}
-	return syncspec.Spec{
+	s := syncspec.Spec{
 		Mirror:            syncspec.Mirror{Namespace: m.Namespace, Name: m.Name},
 		Source:            canonicalSource(m.Spec.Source),
 		Target:            targetRepo(t, m),
@@ -189,6 +199,23 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 		AllowedSources:    allowed,
 		DeniedCIDRs:       denied,
 	}
+	target, source := azureAuth(t, m)
+	if target {
+		s.TargetAuth = syncspec.AuthAzureWorkloadIdentity
+	}
+	if source {
+		s.SourceAuth = syncspec.AuthAzureWorkloadIdentity
+	}
+	// A target that uses Azure auth without an Azure identity is not Ready.
+	if wi := t.Spec.WorkloadIdentity; (target || source) && wi != nil && wi.Azure != nil {
+		s.Azure = &syncspec.Azure{
+			ClientID:      wi.Azure.ClientID,
+			TenantID:      wi.Azure.TenantID,
+			AuthorityHost: cmp.Or(wi.Azure.AuthorityHost, syncspec.DefaultAzureAuthorityHost),
+			Scope:         cmp.Or(wi.Azure.Scope, syncspec.DefaultAzureScope),
+		}
+	}
+	return s
 }
 
 func tagPolicy(sel mirrorv1alpha1.TagSelector) tags.Policy {
@@ -284,6 +311,23 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 		mounts = append(mounts, readOnly("source-auth", filepath.Dir(syncspec.SourceAuthFile)))
 	}
 	addCA("source-ca", srcCA, syncspec.SourceCAFile)
+	// Cloud auth gets a projected token for the cloud audience only, never
+	// a Kubernetes API token.
+	serviceAccount := SyncServiceAccount
+	if target, source := azureAuth(t, m); target || source {
+		if wi := t.Spec.WorkloadIdentity; wi != nil && wi.ServiceAccountName != "" {
+			serviceAccount = wi.ServiceAccountName
+		}
+		volumes = append(volumes, corev1.Volume{Name: "azure-token", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+			Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+				Audience:          syncspec.AzureTokenAudience,
+				ExpirationSeconds: ptr.To[int64](3600),
+				Path:              filepath.Base(syncspec.AzureTokenFile),
+			}}},
+			DefaultMode: ptr.To[int32](0o440),
+		}}})
+		mounts = append(mounts, readOnly("azure-token", filepath.Dir(syncspec.AzureTokenFile)))
+	}
 	var env []corev1.EnvVar
 	if p := t.Spec.Proxy; p != nil {
 		addCA("proxy-ca", p.CABundleSecretRef, syncspec.ProxyCAFile)
@@ -328,7 +372,7 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: podAnnotations},
 					Spec: corev1.PodSpec{
-						ServiceAccountName:           SyncServiceAccount,
+						ServiceAccountName:           serviceAccount,
 						AutomountServiceAccountToken: new(false),
 						EnableServiceLinks:           new(false),
 						RestartPolicy:                corev1.RestartPolicyNever,
