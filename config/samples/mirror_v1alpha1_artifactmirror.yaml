@@ -4,6 +4,21 @@ metadata:
   labels:
     app.kubernetes.io/name: tagwarden
     app.kubernetes.io/managed-by: kustomize
-  name: artifactmirror-sample
+  name: pause
 spec:
-  # TODO(user): Add fields here
+  targetRef: default
+  schedule: "0 3 * * *"
+  type: Image
+  source:
+    registry: registry.k8s.io
+    repository: pause
+  # Lands at registry.example.internal/mirror/registry.k8s.io/pause.
+  target:
+    project: mirror
+  tags:
+    include:
+      - ^\d+\.\d+$
+    keepLatest: 3
+  platforms:
+    - linux/amd64
+    - linux/arm64

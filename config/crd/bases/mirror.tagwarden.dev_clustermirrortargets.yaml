@@ -14,11 +14,21 @@ spec:
     singular: clustermirrortarget
   scope: Cluster
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.registry
+      name: Registry
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ClusterMirrorTarget is the Schema for the clustermirrortargets
-          API
+        description: ClusterMirrorTarget is a target registry owned by the platform
+          team.
         properties:
           apiVersion:
             description: |-
@@ -40,25 +50,214 @@ spec:
           spec:
             description: spec defines the desired state of ClusterMirrorTarget
             properties:
-              foo:
-                description: foo is an example field of ClusterMirrorTarget. Edit
-                  clustermirrortarget_types.go to remove/update
+              allowedNamespaces:
+                description: |-
+                  allowedNamespaces selects the namespaces whose ArtifactMirrors may use this target.
+                  It is required so that access is always an explicit decision.
+                  An empty selector ({}) allows all namespaces.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              allowedSources:
+                description: allowedSources lists the upstream registry hosts that
+                  mirrors may pull from.
+                items:
+                  description: RegistryHost is a registry host with an optional port,
+                    without a scheme or path.
+                  maxLength: 253
+                  minLength: 1
+                  type: string
+                  x-kubernetes-validations:
+                  - message: must be host[:port] without a scheme
+                    rule: '!self.contains(''://'')'
+                  - message: must be host[:port] without a path
+                    rule: '!self.contains(''/'')'
+                maxItems: 100
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              caBundleSecretRef:
+                description: caBundleSecretRef holds the CA bundle for the target
+                  registry.
+                properties:
+                  key:
+                    default: ca.crt
+                    description: key in the Secret that holds the PEM data.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  name:
+                    description: name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              clientCertSecretRef:
+                description: |-
+                  clientCertSecretRef holds a client certificate for mTLS to the target registry
+                  (a kubernetes.io/tls Secret).
+                properties:
+                  name:
+                    description: name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              credentialsSecretRef:
+                description: |-
+                  credentialsSecretRef holds the push credentials for the target registry
+                  (a kubernetes.io/dockerconfigjson Secret in the operator namespace).
+                properties:
+                  name:
+                    description: name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              policy:
+                default: {}
+                description: policy holds the default policy for mirrors that use
+                  this target.
+                properties:
+                  onTagMutation:
+                    default: Fail
+                    description: onTagMutation is the action taken when an upstream
+                      tag points to a new digest.
+                    enum:
+                    - Fail
+                    - Overwrite
+                    - Ignore
+                    type: string
+                type: object
+              proxy:
+                description: proxy configures the proxy for upstream traffic.
+                properties:
+                  caBundleSecretRef:
+                    description: |-
+                      caBundleSecretRef holds the CA that signs the proxy certificates, for example a TLS-inspection CA.
+                      It is trusted only by the sync Job.
+                    properties:
+                      key:
+                        default: ca.crt
+                        description: key in the Secret that holds the PEM data.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        description: name of the Secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  credentialsSecretRef:
+                    description: |-
+                      credentialsSecretRef holds the proxy username and password
+                      (a kubernetes.io/basic-auth Secret).
+                    properties:
+                      name:
+                        description: name of the Secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  httpsProxy:
+                    description: |-
+                      httpsProxy is the proxy URL, for example http://proxy.example.internal:3128.
+                      Credentials must not be part of the URL. Use credentialsSecretRef.
+                    maxLength: 2048
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be an http or https URL
+                      rule: isURL(self) && (self.startsWith('http://') || self.startsWith('https://'))
+                    - message: must not contain credentials, use credentialsSecretRef
+                      rule: '!self.contains(''@'')'
+                  noProxy:
+                    description: noProxy lists hosts, domains and CIDRs that bypass
+                      the proxy.
+                    items:
+                      maxLength: 253
+                      type: string
+                    maxItems: 100
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - httpsProxy
+                type: object
+              registry:
+                description: registry is the target registry as host[:port], without
+                  a scheme.
+                maxLength: 253
+                minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: must be host[:port] without a scheme
+                  rule: '!self.contains(''://'')'
+                - message: must be host[:port] without a path
+                  rule: '!self.contains(''/'')'
+            required:
+            - allowedNamespaces
+            - allowedSources
+            - credentialsSecretRef
+            - registry
             type: object
           status:
             description: status defines the observed state of ClusterMirrorTarget
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the ClusterMirrorTarget resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                  conditions represent the current state. The Ready condition reports
+                  whether the resource is usable.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

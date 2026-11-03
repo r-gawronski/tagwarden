@@ -21,38 +21,168 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// ArtifactType is the kind of artifact to mirror.
+// +kubebuilder:validation:Enum=Image;HelmOCI;HelmRepo
+type ArtifactType string
 
-// ArtifactMirrorSpec defines the desired state of ArtifactMirror
-type ArtifactMirrorSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+const (
+	// ArtifactTypeImage is a container image.
+	ArtifactTypeImage ArtifactType = "Image"
+	// ArtifactTypeHelmOCI is a Helm chart stored in an OCI registry.
+	ArtifactTypeHelmOCI ArtifactType = "HelmOCI"
+	// ArtifactTypeHelmRepo is a Helm chart in a classic Helm repository.
+	ArtifactTypeHelmRepo ArtifactType = "HelmRepo"
+)
 
-	// foo is an example field of ArtifactMirror. Edit artifactmirror_types.go to remove/update
+// Source is the upstream artifact. Phase 2 extends it with the fields
+// a classic Helm repository needs.
+type Source struct {
+	// registry is the upstream registry as host[:port], without a scheme.
+	// It must be listed in the target's allowedSources.
+	// +required
+	Registry RegistryHost `json:"registry"`
+
+	// repository is the path in the upstream registry, for example library/nginx.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +required
+	Repository string `json:"repository"`
+}
+
+// Target is where the artifact lands in the target registry.
+type Target struct {
+	// project is the top-level project or namespace in the target registry.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +required
+	Project string `json:"project"`
+
+	// repository overrides the path inside the project.
+	// Defaults to <source registry>/<source repository>.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Repository string `json:"repository,omitempty"`
+}
+
+// TagSelector selects the upstream tags to mirror. At least one of include,
+// semverRange, keepLatest or tags must be set, so that a mirror never copies
+// every tag by accident.
+// +kubebuilder:validation:XValidation:rule="has(self.include) || has(self.semverRange) || has(self.keepLatest) || has(self.tags)",message="set at least one of include, semverRange, keepLatest or tags"
+type TagSelector struct {
+	// include keeps a tag if any pattern matches. Patterns are Go RE2
+	// regular expressions and are not anchored: use ^...$ for a full match.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=set
+	// +optional
+	Include []string `json:"include,omitempty"`
+
+	// exclude drops a tag if any pattern matches.
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=set
+	// +optional
+	Exclude []string `json:"exclude,omitempty"`
+
+	// semverRange keeps semver tags within the constraint, for example ">=1.10.0 <2.0.0".
+	// Tags that are not semver are dropped.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	// +optional
+	SemverRange string `json:"semverRange,omitempty"`
+
+	// keepLatest keeps only the N highest semver tags after filtering.
+	// Tags that are not semver are dropped.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	KeepLatest *int32 `json:"keepLatest,omitempty"`
+
+	// tags lists exact tags to mirror in addition to the selected ones.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +kubebuilder:validation:items:Pattern=`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`
+	// +listType=set
+	// +optional
+	Tags []string `json:"tags,omitempty"`
+}
+
+// ArtifactMirrorSpec defines what to mirror, where and when.
+type ArtifactMirrorSpec struct {
+	// targetRef is the name of the ClusterMirrorTarget to mirror into.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	TargetRef string `json:"targetRef"`
+
+	// schedule is a cron expression with 5 fields, or one of @hourly, @daily, @weekly.
+	// +kubebuilder:validation:MaxLength=100
+	// +kubebuilder:validation:XValidation:rule="self.matches('^(@(hourly|daily|weekly)|[^ ]+( +[^ ]+){4})$')",message="must be a 5-field cron expression or @hourly, @daily, @weekly"
+	// +required
+	Schedule string `json:"schedule"`
+
+	// type is the kind of artifact to mirror.
+	// +kubebuilder:default=Image
+	// +optional
+	Type ArtifactType `json:"type,omitempty"`
+
+	// source is the upstream artifact.
+	// +required
+	Source Source `json:"source"`
+
+	// target is where the artifact lands in the target registry.
+	// +required
+	Target Target `json:"target"`
+
+	// tags selects the upstream tags to mirror.
+	// +required
+	Tags TagSelector `json:"tags"`
+
+	// platforms limits multi-platform images to these platforms, as os/arch[/variant].
+	// Empty mirrors all platforms.
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?$`
+	// +listType=set
+	// +optional
+	Platforms []string `json:"platforms,omitempty"`
+
+	// suspend stops scheduling new syncs.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
+}
+
+// SyncedTag records a mirrored tag and its digest.
+type SyncedTag struct {
+	// tag is the mirrored tag.
+	Tag string `json:"tag"`
+	// digest is the manifest digest the tag was copied by.
+	Digest string `json:"digest"`
 }
 
 // ArtifactMirrorStatus defines the observed state of ArtifactMirror.
 type ArtifactMirrorStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// lastSyncTime is when the last sync finished.
+	// +optional
+	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// lastSuccessfulSyncTime is when the last successful sync finished.
+	// +optional
+	LastSuccessfulSyncTime *metav1.Time `json:"lastSuccessfulSyncTime,omitempty"`
 
-	// conditions represent the current state of the ArtifactMirror resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// synced lists the mirrored tags and their digests.
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=atomic
+	// +optional
+	Synced []SyncedTag `json:"synced,omitempty"`
+
+	// observedGeneration is the spec generation the status refers to.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// conditions represent the current state. The Ready condition reports
+	// whether the resource is usable.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -61,8 +191,12 @@ type ArtifactMirrorStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.source.repository`
+// +kubebuilder:printcolumn:name="Last Sync",type=date,JSONPath=`.status.lastSyncTime`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 
-// ArtifactMirror is the Schema for the artifactmirrors API
+// ArtifactMirror is a tenant request to mirror an artifact into a ClusterMirrorTarget.
 type ArtifactMirror struct {
 	metav1.TypeMeta `json:",inline"`
 

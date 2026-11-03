@@ -14,10 +14,24 @@ spec:
     singular: artifactmirror
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.source.repository
+      name: Source
+      type: string
+    - jsonPath: .status.lastSyncTime
+      name: Last Sync
+      type: date
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ArtifactMirror is the Schema for the artifactmirrors API
+        description: ArtifactMirror is a tenant request to mirror an artifact into
+          a ClusterMirrorTarget.
         properties:
           apiVersion:
             description: |-
@@ -39,25 +53,152 @@ spec:
           spec:
             description: spec defines the desired state of ArtifactMirror
             properties:
-              foo:
-                description: foo is an example field of ArtifactMirror. Edit artifactmirror_types.go
-                  to remove/update
+              platforms:
+                description: |-
+                  platforms limits multi-platform images to these platforms, as os/arch[/variant].
+                  Empty mirrors all platforms.
+                items:
+                  pattern: ^[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?$
+                  type: string
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: set
+              schedule:
+                description: schedule is a cron expression with 5 fields, or one of
+                  @hourly, @daily, @weekly.
+                maxLength: 100
                 type: string
+                x-kubernetes-validations:
+                - message: must be a 5-field cron expression or @hourly, @daily, @weekly
+                  rule: self.matches('^(@(hourly|daily|weekly)|[^ ]+( +[^ ]+){4})$')
+              source:
+                description: source is the upstream artifact.
+                properties:
+                  registry:
+                    description: |-
+                      registry is the upstream registry as host[:port], without a scheme.
+                      It must be listed in the target's allowedSources.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be host[:port] without a scheme
+                      rule: '!self.contains(''://'')'
+                    - message: must be host[:port] without a path
+                      rule: '!self.contains(''/'')'
+                  repository:
+                    description: repository is the path in the upstream registry,
+                      for example library/nginx.
+                    maxLength: 255
+                    minLength: 1
+                    type: string
+                required:
+                - registry
+                - repository
+                type: object
+              suspend:
+                description: suspend stops scheduling new syncs.
+                type: boolean
+              tags:
+                description: tags selects the upstream tags to mirror.
+                properties:
+                  exclude:
+                    description: exclude drops a tag if any pattern matches.
+                    items:
+                      maxLength: 256
+                      type: string
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: set
+                  include:
+                    description: |-
+                      include keeps a tag if any pattern matches. Patterns are Go RE2
+                      regular expressions and are not anchored: use ^...$ for a full match.
+                    items:
+                      maxLength: 256
+                      type: string
+                    maxItems: 20
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                  keepLatest:
+                    description: |-
+                      keepLatest keeps only the N highest semver tags after filtering.
+                      Tags that are not semver are dropped.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  semverRange:
+                    description: |-
+                      semverRange keeps semver tags within the constraint, for example ">=1.10.0 <2.0.0".
+                      Tags that are not semver are dropped.
+                    maxLength: 256
+                    minLength: 1
+                    type: string
+                  tags:
+                    description: tags lists exact tags to mirror in addition to the
+                      selected ones.
+                    items:
+                      pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
+                      type: string
+                    maxItems: 100
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
+                x-kubernetes-validations:
+                - message: set at least one of include, semverRange, keepLatest or
+                    tags
+                  rule: has(self.include) || has(self.semverRange) || has(self.keepLatest)
+                    || has(self.tags)
+              target:
+                description: target is where the artifact lands in the target registry.
+                properties:
+                  project:
+                    description: project is the top-level project or namespace in
+                      the target registry.
+                    maxLength: 255
+                    minLength: 1
+                    type: string
+                  repository:
+                    description: |-
+                      repository overrides the path inside the project.
+                      Defaults to <source registry>/<source repository>.
+                    maxLength: 255
+                    minLength: 1
+                    type: string
+                required:
+                - project
+                type: object
+              targetRef:
+                description: targetRef is the name of the ClusterMirrorTarget to mirror
+                  into.
+                maxLength: 253
+                minLength: 1
+                type: string
+              type:
+                default: Image
+                description: type is the kind of artifact to mirror.
+                enum:
+                - Image
+                - HelmOCI
+                - HelmRepo
+                type: string
+            required:
+            - schedule
+            - source
+            - tags
+            - target
+            - targetRef
             type: object
           status:
             description: status defines the observed state of ArtifactMirror
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the ArtifactMirror resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                  conditions represent the current state. The Ready condition reports
+                  whether the resource is usable.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +257,39 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastSuccessfulSyncTime:
+                description: lastSuccessfulSyncTime is when the last successful sync
+                  finished.
+                format: date-time
+                type: string
+              lastSyncTime:
+                description: lastSyncTime is when the last sync finished.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: observedGeneration is the spec generation the status
+                  refers to.
+                format: int64
+                type: integer
+              synced:
+                description: synced lists the mirrored tags and their digests.
+                items:
+                  description: SyncedTag records a mirrored tag and its digest.
+                  properties:
+                    digest:
+                      description: digest is the manifest digest the tag was copied
+                        by.
+                      type: string
+                    tag:
+                      description: tag is the mirrored tag.
+                      type: string
+                  required:
+                  - digest
+                  - tag
+                  type: object
+                maxItems: 100
+                type: array
+                x-kubernetes-list-type: atomic
             type: object
         required:
         - spec
