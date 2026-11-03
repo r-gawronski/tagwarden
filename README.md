@@ -125,7 +125,20 @@ spec:
 Artifacts land at `<registry>/<project>/<source registry>/<source
 repository>`, for example
 `registry.example.internal/mirror/registry.k8s.io/ingress-nginx/controller:v1.11.3`.
-Set `target.repository` to pick a different path.
+Set `target.repository` to pick a different path. That works only in
+projects with `allowRepositoryOverride: true`, so a team cannot take over
+the path of another source in a shared project. Enable it only for a
+project owned by a single team, for example:
+
+```yaml
+  projects:
+    - name: mirror
+      namespaceSelector: {}          # shared: default paths only
+    - name: team-net
+      namespaceSelector:
+        matchLabels: {example.com/team: net}
+      allowRepositoryOverride: true  # one team picks its own paths
+```
 
 ## Use cases
 
