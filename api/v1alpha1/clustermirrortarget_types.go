@@ -91,8 +91,9 @@ type ProxySpec struct {
 
 // SourceCredential holds the pull credentials for one source registry:
 // a Secret or a cloud workload identity.
-// +kubebuilder:validation:XValidation:rule="has(self.secretRef) != has(self.azureWorkloadIdentity)",message="set exactly one of secretRef or azureWorkloadIdentity"
+// +kubebuilder:validation:XValidation:rule="[has(self.secretRef), has(self.azureWorkloadIdentity), has(self.awsWorkloadIdentity)].filter(x, x).size() == 1",message="set exactly one of secretRef, azureWorkloadIdentity or awsWorkloadIdentity"
 // +kubebuilder:validation:XValidation:rule=`!has(self.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
+// +kubebuilder:validation:XValidation:rule=`!has(self.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$')`,message="awsWorkloadIdentity needs an Amazon ECR private registry host (<account>.dkr.ecr.<region>.amazonaws.com)"
 type SourceCredential struct {
 	// registry is the source registry these credentials are for. The Docker
 	// Hub names docker.io, index.docker.io and registry-1.docker.io count as
@@ -109,7 +110,17 @@ type SourceCredential struct {
 	// the identity in spec.workloadIdentity.azure.
 	// +optional
 	AzureWorkloadIdentity *AzureWorkloadIdentityAuth `json:"azureWorkloadIdentity,omitempty"`
+
+	// awsWorkloadIdentity pulls from an Amazon ECR private registry with
+	// the role in spec.workloadIdentity.aws.
+	// +optional
+	AWSWorkloadIdentity *AWSWorkloadIdentityAuth `json:"awsWorkloadIdentity,omitempty"`
 }
+
+// AWSWorkloadIdentityAuth selects AWS IAM roles for service accounts
+// (IRSA) for a registry. It has no fields: the role is
+// spec.workloadIdentity.aws.
+type AWSWorkloadIdentityAuth struct{}
 
 // AzureWorkloadIdentityAuth selects Azure workload identity for a
 // registry. It has no fields: the identity is spec.workloadIdentity.azure.
@@ -117,12 +128,17 @@ type AzureWorkloadIdentityAuth struct{}
 
 // RegistryAuth selects how the sync Job authenticates to the target
 // registry when it has no credentialsSecretRef.
-// +kubebuilder:validation:XValidation:rule="has(self.azureWorkloadIdentity)",message="set exactly one provider"
+// +kubebuilder:validation:XValidation:rule="has(self.azureWorkloadIdentity) != has(self.awsWorkloadIdentity)",message="set exactly one provider"
 type RegistryAuth struct {
 	// azureWorkloadIdentity pushes to an Azure Container Registry with
 	// the identity in spec.workloadIdentity.azure.
 	// +optional
 	AzureWorkloadIdentity *AzureWorkloadIdentityAuth `json:"azureWorkloadIdentity,omitempty"`
+
+	// awsWorkloadIdentity pushes to an Amazon ECR private registry with
+	// the role in spec.workloadIdentity.aws.
+	// +optional
+	AWSWorkloadIdentity *AWSWorkloadIdentityAuth `json:"awsWorkloadIdentity,omitempty"`
 }
 
 // WorkloadIdentity is the cloud identity of the sync pods that use cloud
@@ -142,6 +158,32 @@ type WorkloadIdentity struct {
 	// identity with a federated credential for the ServiceAccount.
 	// +optional
 	Azure *AzureIdentity `json:"azure,omitempty"`
+
+	// aws is the IAM role that trusts the cluster's OIDC provider for the
+	// ServiceAccount (IAM roles for service accounts).
+	// +optional
+	AWS *AWSIdentity `json:"aws,omitempty"`
+}
+
+// AWSIdentity is an IAM role assumed with the projected ServiceAccount
+// token. The STS and ECR API endpoints are derived from the region:
+// https://sts.<region>.amazonaws.com and
+// https://api.ecr.<region>.amazonaws.com (amazonaws.com.cn in China).
+// +kubebuilder:validation:XValidation:rule="self.roleARN.startsWith('arn:aws-cn:') == self.region.startsWith('cn-') && self.roleARN.startsWith('arn:aws-us-gov:') == self.region.startsWith('us-gov-')",message="roleARN and region must be in the same AWS partition"
+type AWSIdentity struct {
+	// roleARN is the IAM role, for example
+	// arn:aws:iam::123456789012:role/tagwarden-sync.
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,576}$`
+	// +required
+	RoleARN string `json:"roleARN"`
+
+	// region is the AWS Region of the STS and ECR API endpoints, for
+	// example eu-west-1. Registries that use this role must be in it.
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^((us|eu|ap|sa|ca|me|af|il|mx|cn)-[a-z]+|us-gov-[a-z]+)-[0-9]{1,2}$`
+	// +required
+	Region string `json:"region"`
 }
 
 // AzureIdentity is a Microsoft Entra workload identity.
@@ -266,7 +308,8 @@ type TargetLimits struct {
 
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
 // +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
-// +kubebuilder:validation:XValidation:rule=`!has(self.auth) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
+// +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
+// +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$')`,message="auth.awsWorkloadIdentity needs an Amazon ECR private registry host (<account>.dkr.ecr.<region>.amazonaws.com)"
 type ClusterMirrorTargetSpec struct {
 	// registry is the target registry as host[:port], without a scheme.
 	// +required

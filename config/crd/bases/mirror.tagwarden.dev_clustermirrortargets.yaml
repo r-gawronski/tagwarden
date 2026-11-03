@@ -74,6 +74,11 @@ spec:
                   auth pushes to the target registry with a cloud workload identity
                   instead of credentialsSecretRef.
                 properties:
+                  awsWorkloadIdentity:
+                    description: |-
+                      awsWorkloadIdentity pushes to an Amazon ECR private registry with
+                      the role in spec.workloadIdentity.aws.
+                    type: object
                   azureWorkloadIdentity:
                     description: |-
                       azureWorkloadIdentity pushes to an Azure Container Registry with
@@ -82,7 +87,7 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: set exactly one provider
-                  rule: has(self.azureWorkloadIdentity)
+                  rule: has(self.azureWorkloadIdentity) != has(self.awsWorkloadIdentity)
               caBundleSecretRef:
                 description: caBundleSecretRef holds the CA bundle for the target
                   registry.
@@ -412,6 +417,11 @@ spec:
                     SourceCredential holds the pull credentials for one source registry:
                     a Secret or a cloud workload identity.
                   properties:
+                    awsWorkloadIdentity:
+                      description: |-
+                        awsWorkloadIdentity pulls from an Amazon ECR private registry with
+                        the role in spec.workloadIdentity.aws.
+                      type: object
                     azureWorkloadIdentity:
                       description: |-
                         azureWorkloadIdentity pulls from an Azure Container Registry with
@@ -446,11 +456,16 @@ spec:
                   - registry
                   type: object
                   x-kubernetes-validations:
-                  - message: set exactly one of secretRef or azureWorkloadIdentity
-                    rule: has(self.secretRef) != has(self.azureWorkloadIdentity)
+                  - message: set exactly one of secretRef, azureWorkloadIdentity or
+                      awsWorkloadIdentity
+                    rule: '[has(self.secretRef), has(self.azureWorkloadIdentity),
+                      has(self.awsWorkloadIdentity)].filter(x, x).size() == 1'
                   - message: azureWorkloadIdentity needs an Azure Container Registry
                       host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)
                     rule: '!has(self.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$'')'
+                  - message: awsWorkloadIdentity needs an Amazon ECR private registry
+                      host (<account>.dkr.ecr.<region>.amazonaws.com)
+                    rule: '!has(self.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$'')'
                 maxItems: 50
                 type: array
                 x-kubernetes-list-map-keys:
@@ -462,6 +477,33 @@ spec:
                   sourceCredentials entries that name a cloud provider. Required when
                   any of them does.
                 properties:
+                  aws:
+                    description: |-
+                      aws is the IAM role that trusts the cluster's OIDC provider for the
+                      ServiceAccount (IAM roles for service accounts).
+                    properties:
+                      region:
+                        description: |-
+                          region is the AWS Region of the STS and ECR API endpoints, for
+                          example eu-west-1. Registries that use this role must be in it.
+                        maxLength: 32
+                        pattern: ^((us|eu|ap|sa|ca|me|af|il|mx|cn)-[a-z]+|us-gov-[a-z]+)-[0-9]{1,2}$
+                        type: string
+                      roleARN:
+                        description: |-
+                          roleARN is the IAM role, for example
+                          arn:aws:iam::123456789012:role/tagwarden-sync.
+                        maxLength: 2048
+                        pattern: ^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,576}$
+                        type: string
+                    required:
+                    - region
+                    - roleARN
+                    type: object
+                    x-kubernetes-validations:
+                    - message: roleARN and region must be in the same AWS partition
+                      rule: self.roleARN.startsWith('arn:aws-cn:') == self.region.startsWith('cn-')
+                        && self.roleARN.startsWith('arn:aws-us-gov:') == self.region.startsWith('us-gov-')
                   azure:
                     description: |-
                       azure is the Microsoft Entra application or user-assigned managed
@@ -514,7 +556,10 @@ spec:
               rule: has(self.credentialsSecretRef) != has(self.auth)
             - message: auth.azureWorkloadIdentity needs an Azure Container Registry
                 host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)
-              rule: '!has(self.auth) || self.registry.lowerAscii().matches(r''^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$'')'
+              rule: '!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$'')'
+            - message: auth.awsWorkloadIdentity needs an Amazon ECR private registry
+                host (<account>.dkr.ecr.<region>.amazonaws.com)
+              rule: '!has(self.auth) || !has(self.auth.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$'')'
           status:
             description: status defines the observed state of ClusterMirrorTarget
             properties:
