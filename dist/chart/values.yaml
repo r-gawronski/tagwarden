@@ -27,6 +27,8 @@ manager:
     - --leader-elect={{ .Values.leaderElection.enabled }}
     - --sync-image={{ include "tagwarden.syncImage" . }}
     - --denied-cidrs={{ join "," .Values.deniedCIDRs }}
+    - --argocd-tracking={{ .Values.argocd.tracking }}
+    - --argocd-instance-label={{ .Values.argocd.instanceLabel }}
 
   healthProbe:
     port: 8081
@@ -74,6 +76,13 @@ manager:
 
   ## Also available: labels, annotations, strategy, priorityClassName,
   ## topologySpreadConstraints.
+
+## Show sync CronJobs in the Argo CD app of their mirror. See docs/argocd.md.
+argocd:
+  ## "" (off) or "inherit".
+  tracking: ""
+  ## Label of Argo CD's label tracking mode.
+  instanceLabel: app.kubernetes.io/instance
 
 ## Image of the sync Jobs. An empty repository means the manager image; an
 ## empty tag means manager.image.tag.
