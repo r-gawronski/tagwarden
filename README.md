@@ -321,8 +321,8 @@ A sync Job gets only the Secrets of its own source. The
 
 Push to or pull from a cloud registry with the cluster's workload
 identity instead of a static Secret: Azure Container Registry with
-workload identity and Amazon ECR with IRSA. Google Artifact Registry is
-planned.
+workload identity, Amazon ECR with IRSA and Google Artifact Registry
+with Workload Identity Federation.
 
 ```yaml
 spec:
@@ -353,11 +353,26 @@ spec:
       region: eu-west-1
 ```
 
+For Google Artifact Registry:
+
+```yaml
+spec:
+  registry: europe-west1-docker.pkg.dev
+  auth:
+    gcpWorkloadIdentity: {}
+  workloadIdentity:
+    serviceAccountName: tagwarden-sync-gcp
+    gcp:
+      audience: //iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster
+```
+
 Only the sync pods that need it get a projected token for the cloud
 audience; they still get no Kubernetes API token. The install guide
 covers the
-[Azure](docs/install.md#azure-container-registry-with-workload-identity)
-and [AWS](docs/install.md#amazon-ecr-with-irsa) side.
+[Azure](docs/install.md#azure-container-registry-with-workload-identity),
+[AWS](docs/install.md#amazon-ecr-with-irsa) and
+[Google](docs/install.md#google-artifact-registry-with-workload-identity-federation)
+side.
 
 ### Staying under Docker Hub pull limits
 
@@ -492,8 +507,9 @@ in `ImagePullBackOff` for a minute. Design notes: [docs/design/auto-mirror.md](d
   your registry.
 - **Private sources:** pull credentials and extra CAs per source
   registry, held by the platform team (see [Private sources](#private-sources)).
-- **Cloud registries:** Azure Container Registry with workload identity
-  and Amazon ECR with IRSA, no static Secret (see
+- **Cloud registries:** Azure Container Registry with workload identity,
+  Amazon ECR with IRSA and Google Artifact Registry with Workload Identity
+  Federation, no static Secret (see
   [Cloud registries](#cloud-registries)).
 - **Moving tags:** when an upstream tag points to a new digest, the
   target decides: `Fail` (default), `Overwrite` or `Ignore`.
