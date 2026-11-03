@@ -104,6 +104,12 @@ func TestValues(t *testing.T) {
 		{name: "args without denied CIDRs", args: []string{"--set", "manager.args={--leader-elect,--sync-image=x}"}},
 		{name: "args without sync image", args: []string{"--set", "manager.args={--denied-cidrs=}"}},
 		{name: "args with both flags", ok: true, args: []string{"--set", "manager.args={--sync-image=x,--denied-cidrs=}"}},
+		{name: "pod annotation", ok: true, args: []string{"--set-string", `manager.pod.annotations.k8s\.grafana\.com/scrape=true`},
+			want: "        k8s.grafana.com/scrape: \"true\"\n"},
+		{name: "pod label", ok: true, args: []string{"--set", `manager.pod.labels.example\.com/team=platform`},
+			want: "        example.com/team: platform\n"},
+		{name: "non-string pod annotation", args: []string{"--set", `manager.pod.annotations.k8s\.grafana\.com/scrape=true`}},
+		{name: "unknown pod key", args: []string{"--set", "manager.pod.extra=1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := render(t, tc.args...)
