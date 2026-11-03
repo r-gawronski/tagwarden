@@ -97,14 +97,15 @@ type PolicyError struct{ Err error }
 func (e *PolicyError) Error() string { return e.Err.Error() }
 func (e *PolicyError) Unwrap() error { return e.Err }
 
-// backoff is the wait before each retry of a failed dial, about 30 s in
-// total: long enough for a NetworkPolicy to be programmed for a new pod.
-var backoff = []time.Duration{
+// Backoff is the wait before each retry of a failed dial or DNS lookup,
+// about 30 s in total: long enough for a NetworkPolicy to be programmed
+// for a new pod.
+var Backoff = []time.Duration{
 	500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second,
 }
 
-// wait sleeps for d or until ctx is done. Tests replace it.
-var wait = func(ctx context.Context, d time.Duration) error {
+// Wait sleeps for d or until ctx is done. Tests replace it.
+var Wait = func(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
@@ -123,10 +124,10 @@ type retryTransport struct{ next http.RoundTripper }
 func (rt retryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	for i := 0; ; i++ {
 		resp, err := rt.next.RoundTrip(r)
-		if err == nil || i == len(backoff) || !dialFailed(err) || (r.Body != nil && r.GetBody == nil) {
+		if err == nil || i == len(Backoff) || !dialFailed(err) || (r.Body != nil && r.GetBody == nil) {
 			return resp, err
 		}
-		if err := wait(r.Context(), backoff[i]); err != nil {
+		if err := Wait(r.Context(), Backoff[i]); err != nil {
 			return nil, err
 		}
 		if r.GetBody != nil {
