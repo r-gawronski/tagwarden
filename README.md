@@ -139,36 +139,7 @@ PR. After the merge, GitOps rolls it out and the image is already
 there. Renovate can only ever propose a version that came in through
 Tagwarden, and your registry holds only the window you picked.
 
-```mermaid
----
-config:
-  look: handDrawn
-  theme: base
-  themeVariables:
-    actorBkg: "#EDE9FE"
-    actorBorder: "#8B5CF6"
-    actorTextColor: "#4C1D95"
-    actorLineColor: "#8B95A5"
-    signalColor: "#8B95A5"
-    signalTextColor: "#8B95A5"
-    sequenceNumberColor: "#1E293B"
----
-sequenceDiagram
-  autonumber
-  participant U as Upstream
-  participant T as Tagwarden
-  participant R as Your registry
-  participant Ren as Renovate
-  participant G as Git
-  participant C as Cluster
-
-  T->>U: list tags, fetch 1.31.7
-  T->>R: push 1.31.7 by digest
-  Ren->>R: list tags
-  Ren->>G: PR: nginx 1.31.6 -> 1.31.7
-  G->>C: merge, GitOps sync
-  C->>R: pull 1.31.7
-```
+<p align="center"><img src="docs/assets/renovate-flow.png" alt="Renovate flow: Tagwarden fetches nginx 1.31.7 from upstream and pushes it by digest to your registry; Renovate lists tags in your registry and opens a PR from 1.31.6 to 1.31.7; after the merge GitOps syncs and the cluster pulls 1.31.7 from your registry" width="900"></p>
 
 The mirror keeps the three newest nginx releases from 1.30 up:
 
