@@ -38,27 +38,40 @@ other change.
 ---
 config:
   look: handDrawn
+  theme: base
+  themeVariables:
+    lineColor: "#8B95A5"
+    primaryTextColor: "#1E293B"
+    textColor: "#1E293B"
+    edgeLabelBackground: "#F1F5F9"
+    clusterBkg: "rgba(139, 149, 165, 0.08)"
+    clusterBorder: "#8B95A5"
+    titleColor: "#8B95A5"
 ---
 flowchart LR
   subgraph cluster [Kubernetes cluster]
     direction TB
-    AM([ArtifactMirror])
-    T([ClusterMirrorTarget])
-    C(Controller)
-    J(Sync Job)
+    AM([ArtifactMirror]):::res
+    T([ClusterMirrorTarget]):::res
+    C(Controller):::ctl
+    J(Sync Job):::ctl
     AM -- team --> C
     T -- platform --> C
     C -- CronJob --> J
     J -. result .-> C
   end
-  P(HTTPS proxy)
-  U[(Upstream)]
-  R[(Your registry)]
+  P(HTTPS proxy):::ext
+  U[(Upstream)]:::ext
+  R[(Your registry)]:::reg
   J -- list, fetch --> P
   P --> U
   J == push by digest ==> R
 
-  linkStyle default stroke-width:2px
+  classDef res fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,stroke-width:2px
+  classDef ctl fill:#EDE9FE,stroke:#8B5CF6,color:#4C1D95,stroke-width:2px
+  classDef ext fill:#FEF3C7,stroke:#F59E0B,color:#78350F,stroke-width:2px
+  classDef reg fill:#DCFCE7,stroke:#22C55E,color:#14532D,stroke-width:2px
+  linkStyle default stroke:#8B95A5,stroke-width:2px
 ```
 
 There are two resources:
@@ -81,6 +94,18 @@ status.
 ---
 config:
   look: handDrawn
+  theme: base
+  themeVariables:
+    actorBkg: "#EDE9FE"
+    actorBorder: "#8B5CF6"
+    actorTextColor: "#4C1D95"
+    actorLineColor: "#8B95A5"
+    signalColor: "#8B95A5"
+    signalTextColor: "#8B95A5"
+    noteBkgColor: "#FEF3C7"
+    noteBorderColor: "#F59E0B"
+    noteTextColor: "#78350F"
+    sequenceNumberColor: "#1E293B"
 ---
 sequenceDiagram
   autonumber
