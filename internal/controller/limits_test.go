@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -223,3 +224,55 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 		Expect(spec.MaxArtifactSize).To(BeEquivalentTo(1 << 30))
 	})
 })
+
+var _ = Describe("cachedMinGap", func() {
+	day1 := time.Date(2030, 1, 2, 3, 0, 0, 0, time.UTC)
+	day2 := day1.Add(24 * time.Hour)
+
+	BeforeEach(func() { resetGapCache() })
+
+	It("serves the second call from the cache", func() {
+		got, err := cachedMinGap("0 * * * *", day1, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(Equal(time.Hour))
+
+		// A planted value is returned only if the key is a cache hit.
+		gapCacheMu.Lock()
+		gapCache[gapKey{"0 * * * *", time.Hour, "2030-01-02"}] = 7 * time.Minute
+		gapCacheMu.Unlock()
+		got, err = cachedMinGap("0 * * * *", day1.Add(time.Hour), time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(Equal(7 * time.Minute))
+	})
+
+	It("keys on limit and date, and purges other dates", func() {
+		_, _ = cachedMinGap("0 * * * *", day1, time.Hour)
+		_, _ = cachedMinGap("0 * * * *", day1, 5*time.Minute)
+		Expect(gapCache).To(HaveLen(2))
+
+		_, _ = cachedMinGap("0 * * * *", day2, time.Hour)
+		Expect(gapCache).To(HaveLen(1))
+		Expect(gapCache).To(HaveKey(gapKey{"0 * * * *", time.Hour, "2030-01-03"}))
+	})
+
+	It("does not cache errors", func() {
+		_, err := cachedMinGap("61 * * * *", day1, 0)
+		Expect(err).To(HaveOccurred())
+		Expect(gapCache).To(BeEmpty())
+	})
+})
+
+func BenchmarkMinGap(b *testing.B) {
+	now := time.Date(2030, 1, 2, 3, 0, 0, 0, time.UTC)
+	b.Run("uncached", func(b *testing.B) {
+		for range b.N {
+			_, _ = minGap("*/5 * * * *", now, 5*time.Minute)
+		}
+	})
+	b.Run("cached", func(b *testing.B) {
+		resetGapCache()
+		for range b.N {
+			_, _ = cachedMinGap("*/5 * * * *", now, 5*time.Minute)
+		}
+	})
+}
