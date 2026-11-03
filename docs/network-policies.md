@@ -56,11 +56,12 @@ spec:
     ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
 ```
 
-Targets with Azure workload identity also reach the Microsoft Entra
-authority host (`login.microsoftonline.com` by default), and targets
-with AWS IRSA reach `sts.<region>.amazonaws.com`,
-`api.ecr.<region>.amazonaws.com` and the region's S3 endpoints for ECR
-layers, through the same path as the registry. Allow them at the proxy,
+Targets with cloud workload identity also reach the token endpoints
+through the same path as the registry: the Microsoft Entra authority
+host (`login.microsoftonline.com` by default) for Azure,
+`sts.<region>.amazonaws.com`, `api.ecr.<region>.amazonaws.com` and the
+region's S3 endpoints for ECR layers for AWS, and `sts.googleapis.com`
+and `iamcredentials.googleapis.com` for Google. Allow them at the proxy,
 or in the `direct` policy.
 
 Add your pod and service CIDRs to `except` when they are outside these

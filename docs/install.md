@@ -392,6 +392,161 @@ address, and the sync Job refuses link-local addresses by design (T16).
 - China and GovCloud are untested. Real-cloud tests are manual; CI uses
   fakes for STS, ECR and the registry.
 
+## Google Artifact Registry with Workload Identity Federation
+
+The sync Job can push to and pull from Google Artifact Registry with
+Workload Identity Federation instead of a Secret. It sends a projected
+ServiceAccount token to the Security Token Service
+(`https://sts.googleapis.com/v1/token`) for a federated access token.
+With `serviceAccountEmail` it then exchanges that token at
+`https://iamcredentials.googleapis.com` (`generateAccessToken`, one hour)
+for an access token of a Google service account. The registry gets the
+access token as the password of user `oauth2accesstoken`. All calls are
+plain HTTPS through the target's proxy; there is no Google SDK. The
+cluster needs an OIDC issuer: any Kubernetes cluster has one, GKE
+included.
+
+The GKE metadata server (`169.254.169.254`, `metadata.google.internal`)
+is not used on purpose: it is link-local, and the sync Job refuses
+link-local addresses by design (T16). Workload Identity Federation for
+GKE does not need to be enabled on the cluster or node pool.
+
+1. Create a workload identity pool and an OIDC provider for the
+   cluster's issuer, mapping the token subject:
+
+   ```sh
+   kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+   kubectl get --raw /openid/v1/jwks > cluster-jwks.json
+
+   gcloud iam workload-identity-pools create tagwarden --location=global
+   gcloud iam workload-identity-pools providers create-oidc cluster \
+     --location=global --workload-identity-pool=tagwarden \
+     --issuer-uri=<issuer> \
+     --attribute-mapping=google.subject=assertion.sub \
+     --jwk-json-path=cluster-jwks.json
+   ```
+
+   `--jwk-json-path` uploads the cluster's signing keys, so Google never
+   needs to reach the cluster; update them when the cluster rotates its
+   keys. Leave it out when the issuer serves its discovery document
+   publicly. Keep the provider's default allowed audience: the projected
+   token is issued for
+   `https://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`.
+
+2. Grant the registry roles. Artifact Registry accepts federated
+   principals directly, so a Google service account is optional. The
+   principal of the sync ServiceAccount is:
+
+   ```text
+   principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/subject/system:serviceaccount:tagwarden-system:tagwarden-sync-gcp
+   ```
+
+   ```sh
+   gcloud artifacts repositories add-iam-policy-binding mirror \
+     --location=europe-west1 --role=roles/artifactregistry.writer \
+     --member=principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/subject/system:serviceaccount:tagwarden-system:tagwarden-sync-gcp
+   gcloud artifacts repositories add-iam-policy-binding upstream \
+     --location=europe-west1 --role=roles/artifactregistry.reader \
+     --member=principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/subject/system:serviceaccount:tagwarden-system:tagwarden-sync-gcp
+   ```
+
+   To impersonate a service account instead (for example when policy
+   requires service accounts in IAM bindings), grant the roles above to
+   the service account, allow the principal to mint its tokens, and set
+   `serviceAccountEmail`:
+
+   ```sh
+   gcloud iam service-accounts add-iam-policy-binding \
+     tagwarden-sync@example-project.iam.gserviceaccount.com \
+     --role=roles/iam.serviceAccountTokenCreator \
+     --member=principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/subject/system:serviceaccount:tagwarden-system:tagwarden-sync-gcp
+   ```
+
+   Artifact Registry refuses pushes to repositories that do not exist:
+   create the Artifact Registry repository (the first path segment after
+   the host) first.
+
+3. Create the ServiceAccount in the operator namespace. Tagwarden does not
+   create it and needs no RBAC for it. The `iam.gke.io/gcp-service-account`
+   annotation is not needed.
+
+   ```yaml
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata:
+     name: tagwarden-sync-gcp
+     namespace: tagwarden-system
+   automountServiceAccountToken: false
+   ```
+
+4. Point the target at the provider:
+
+   ```yaml
+   apiVersion: mirror.tagwarden.dev/v1alpha1
+   kind: ClusterMirrorTarget
+   metadata:
+     name: gar
+   spec:
+     registry: europe-west1-docker.pkg.dev
+     auth:
+       gcpWorkloadIdentity: {}         # instead of credentialsSecretRef
+     workloadIdentity:
+       serviceAccountName: tagwarden-sync-gcp
+       gcp:
+         audience: //iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster
+         # serviceAccountEmail: tagwarden-sync@example-project.iam.gserviceaccount.com
+     sourceCredentials:
+       - registry: us-docker.pkg.dev
+         gcpWorkloadIdentity: {}       # pull with the same identity
+     allowedSources: [us-docker.pkg.dev, registry.k8s.io]
+     projects:
+       - name: example-project
+         namespaceSelector: {}
+     proxy:
+       httpsProxy: http://proxy.example.internal:3128
+   ```
+
+   Artifact Registry paths are `<host>/<project ID>/<repository>/<image>`,
+   so the Tagwarden project is the Google Cloud project ID and the
+   mirror's target path starts with the repository.
+
+- Allow `sts.googleapis.com`, `iamcredentials.googleapis.com` (only with
+  `serviceAccountEmail`) and every registry host in the proxy allowlist
+  and in NetworkPolicies. Google does not document other hosts for
+  Artifact Registry, and layer downloads observed for `pkg.dev` and
+  `gcr.io` redirect to `/artifacts-downloads/` on the registry host
+  itself.
+- The STS and IAM Credentials endpoints are fixed; there is no endpoint
+  field. Regional STS endpoints are not used.
+- Only pods that use GCP auth run as `serviceAccountName` and mount the
+  projected token (the provider audience, one hour). The other pods keep
+  `tagwarden-sync`. No pod gets a Kubernetes API token. A pod that needs
+  several providers gets one token per provider, each with its own
+  audience and file.
+- GCP auth works only with Artifact Registry Docker hosts
+  (`<location>-docker.pkg.dev`, and `gcr.io`, `us.gcr.io`, `eu.gcr.io`,
+  `asia.gcr.io`, which Artifact Registry serves for `gcr.io`
+  repositories), port 443 at most. The CRD refuses other hosts, and the
+  sync Job checks again before it sends a token. `mirror.gcr.io` and
+  other `*.gcr.io` names are refused.
+- The access token uses the `cloud-platform` scope, the only one Artifact
+  Registry documents; the IAM roles limit what it can do. A federated
+  token lasts up to an hour, an impersonated one exactly one hour, as long
+  as a sync Job may run.
+- Use one ServiceAccount per identity, and always set
+  `serviceAccountName`. The principal is the Kubernetes ServiceAccount, so
+  two targets that share one ServiceAccount share every role granted to
+  it. Every mirror of a target shares its identity.
+- A missing ServiceAccount leaves the target `Ready`; the Job's pod is not
+  created and only a `FailedCreate` Event shows it.
+- STS and IAM errors show the HTTP status and the OAuth error or Google
+  API status (for example `HTTP 400 invalid_grant` or
+  `HTTP 403 PERMISSION_DENIED`), never a token. `invalid_grant` from STS
+  usually means the audience, the issuer or the uploaded keys do not
+  match the cluster.
+- Real-cloud tests are manual; CI uses fakes for STS, IAM Credentials and
+  the registry.
+
 ## Tenant limits
 
 `ClusterMirrorTarget.spec.limits` caps schedules, mirrors per namespace,
