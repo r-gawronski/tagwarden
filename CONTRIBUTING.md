@@ -49,8 +49,10 @@ internet access beyond pulling images.
 
 `E2E_INTERNET=1 make test-e2e` also mirrors `registry.k8s.io/pause`
 through the proxy. `E2E_SKIP_IMAGE_BUILD=1` skips `make docker-build` and
-loads an image you built as `example.com/tagwarden:v0.0.1`; CI uses it to
-build the image with a layer cache first.
+loads an image you built as `example.com/tagwarden:v0.0.1`. CI uses it to
+build the image with a layer cache first. That cache only helps when the Go
+sources are unchanged: BuildKit cache mounts are not exported, so a code
+change recompiles the manager (about 3 minutes).
 
 ## CI
 
@@ -59,8 +61,8 @@ Changes that touch only Markdown, `docs/`, `LICENSE` or
 
 On pull requests the e2e workflow runs only when the pull request has the
 `e2e` label: when the label is added and on every push after that. Without
-the label the job shows as skipped. It always runs on pushes to `main` and
-nightly.
+the label the job is skipped, and a skipped check shows as success in the
+pull request. It always runs on pushes to `main` and weekly.
 
 Add the `e2e` label before merge when a change touches the controller, the
 sync code, the registry transport, the chart or the e2e tests. Leave it off
@@ -71,7 +73,9 @@ push.
 
 - CI, CodeQL and DCO are green.
 - A pull request that touches the controller, sync, registry, chart or e2e
-  code has a green e2e run on its last commit.
+  code has a green e2e run on its last commit. A skipped e2e check does not
+  count. Until branch protection exists, this checklist is the only thing
+  that enforces it.
 
 ## Security
 
