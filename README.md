@@ -140,6 +140,29 @@ project owned by a single team, for example:
       allowRepositoryOverride: true  # one team picks its own paths
 ```
 
+### Limits
+
+One team shouldn't be able to hog a shared target. Every target has
+limits, and you get the defaults without writing anything: schedules at
+most hourly, 50 mirrors per namespace, `keepLatest` up to 20 and 50
+explicit tags. Artifact size has no cap until you set one.
+
+Go over a limit and your mirror gets `Ready=False` with reason
+`ScheduleTooFrequent` or `LimitExceeded`, and Tagwarden removes its
+CronJob. With too many mirrors in a namespace, the oldest keep running.
+An artifact over `maxArtifactSize` fails in the sync run: Tagwarden
+copies none of it and moves on to the other tags.
+
+```yaml
+spec:
+  limits:
+    minSyncInterval: 6h          # 5m at the lowest
+    maxMirrorsPerNamespace: 20
+    maxKeepLatest: 10            # up to 100
+    maxExplicitTags: 20          # up to 100
+    maxArtifactSize: 5Gi         # config plus layers, all platforms
+```
+
 ## Use cases
 
 ### Upgrades with Renovate
@@ -313,7 +336,8 @@ The project's `namespaceSelector` has to match both teams' namespaces.
   target decides: `Fail` (default), `Overwrite` or `Ignore`.
 - **Multi-tenancy:** teams can only push to projects the platform team
   opened for their namespace, and only from allowed registries. Two
-  mirrors can't write different sources to the same path.
+  mirrors can't write different sources to the same path. Per-target
+  [limits](#limits) cap schedules, mirrors, tags and artifact size.
 - **Locked-down sync Jobs:** they run only in the operator namespace,
   get no ServiceAccount token, and run distroless, non-root and
   read-only with all capabilities dropped. They refuse source hosts and
