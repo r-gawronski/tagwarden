@@ -41,6 +41,52 @@ pull the same data twice. The CronJob controller records an
 A value works once while its Job still exists (24 h after it finishes),
 so always send a fresh one, like the timestamp above.
 
+## Show sync Jobs in the app tree
+
+Sync CronJobs live in the operator namespace, outside any Argo CD app, so
+the UI hides them unless "orphaned resources" is on. With tracking turned
+on, the CronJob of a mirror appears in the app that owns the mirror, and
+you see its Jobs and pods there, including the Jobs of **Sync now**.
+
+Turn it on with the manager flag or the chart value:
+
+```yaml
+argocd:
+  tracking: inherit
+  instanceLabel: app.kubernetes.io/instance   # default
+```
+
+The flags are `--argocd-tracking=inherit` (empty means off) and
+`--argocd-instance-label`. The controller reads the tracking info of the
+`ArtifactMirror`:
+
+- **Annotation tracking** (Argo CD default): the mirror carries
+  `argocd.argoproj.io/tracking-id: <app>:mirror.tagwarden.dev/ArtifactMirror:<ns>/<name>`.
+  The CronJob gets the same app with its own identity,
+  `<app>:batch/CronJob:<operator-ns>/<cronjob-name>`.
+- **Label tracking**: the mirror has no tracking-id annotation but has the
+  instance label. The CronJob gets the same label value.
+
+Both modes also set `argocd.argoproj.io/compare-options: IgnoreExtraneous`
+and `argocd.argoproj.io/sync-options: Prune=false,Delete=false` on the
+CronJob.
+
+- `Prune=false,Delete=false` keeps Argo CD from pruning the CronJob or
+  deleting it with the app. Tagwarden owns it: it removes the CronJob
+  when the mirror goes away.
+- `IgnoreExtraneous` keeps the CronJob, which is not in Git, from showing
+  the app as `OutOfSync`.
+
+Jobs and pods already have owner references to the CronJob, so Argo CD
+shows them as its children. You don't need `orphaned-resources` for this.
+
+A mirror without tracking info gets nothing. A tracking id that names
+another object, for example a copied annotation, is ignored and the
+controller records a Warning Event `ArgoCDTrackingMismatch` on the mirror,
+once per value. If the flag is turned off or the mirror loses its tracking
+info, the next reconcile removes the annotations and label again. The
+controller also restores them after a hand edit.
+
 ## Health
 
 | Resource | Status | When |
