@@ -573,7 +573,7 @@ func TestRetryStopsOnCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+freeAddr(t)+"/v2/", nil)
-	if _, err := rt.RoundTrip(req); !errors.Is(err, context.Canceled) {
+	if _, err := rt.RoundTrip(req); !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("err = %v, want canceled", err)
 	}
 	if retries != 1 {
@@ -637,5 +637,87 @@ func TestRetryProxyRefused(t *testing.T) {
 	}
 	if len(p.auth) != 1 {
 		t.Fatalf("%d CONNECT requests", len(p.auth))
+	}
+}
+
+func TestRetryOnlyInWindow(t *testing.T) {
+	noRetry(t)
+	w := NewWindow()
+	w.now = func() time.Time { return time.Now().Add(StartupWindow) }
+	rt, err := NewTransport(Options{Window: w})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := get(t, rt, "http://"+freeAddr(t)+"/v2/"); err == nil {
+		t.Fatal("want error")
+	}
+}
+
+// The first successful request ends the window for every transport that
+// shares it.
+func TestRetryWindowEndsOnSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	w := NewWindow()
+	ok, err := NewTransport(Options{Window: w})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewTransport(Options{Window: w})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := get(t, ok, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	noRetry(t)
+	if err := get(t, other, "http://"+freeAddr(t)+"/v2/"); err == nil {
+		t.Fatal("want error")
+	}
+}
+
+// A proxy that accepts the connection and closes it has seen the CONNECT
+// request, so it is not retried.
+func TestNoRetryProxyClosed(t *testing.T) {
+	noRetry(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	proxy, _ := url.Parse("http://" + l.Addr().String())
+	rt, err := NewTransport(Options{ProxyURL: proxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := get(t, rt, "https://example.com/v2/"); err == nil {
+		t.Fatal("want error")
+	}
+}
+
+func TestTemporaryDNS(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{&net.DNSError{Err: "timeout", IsTimeout: true}, true},
+		{&net.DNSError{Err: "connection refused", IsTemporary: true}, true},
+		{&net.OpError{Op: "dial", Err: &net.DNSError{Err: "server misbehaving", IsTemporary: true}}, true},
+		{&net.DNSError{Err: "no such host", IsNotFound: true}, false},
+		{&net.DNSError{Err: "no such host", IsNotFound: true, IsTemporary: true}, false},
+		{errRefused, false},
+	} {
+		if got := TemporaryDNS(tc.err); got != tc.want {
+			t.Errorf("%v: got %v", tc.err, got)
+		}
 	}
 }

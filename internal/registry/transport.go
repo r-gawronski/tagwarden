@@ -29,6 +29,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -60,6 +61,9 @@ type Options struct {
 	// CheckDial runs on the resolved address of every direct connection
 	// before it connects. Connections to the proxy are not checked.
 	CheckDial func(netip.Addr) error
+	// Window bounds connection retries. Transports of one run share it.
+	// When nil, NewTransport starts its own.
+	Window *Window
 }
 
 // NewTransport returns a transport based on http.DefaultTransport. It trusts
@@ -85,10 +89,13 @@ func NewTransport(o Options) (http.RoundTripper, error) {
 	if o.CheckDial != nil {
 		t.DialContext = checkedDial(t.DialContext, o)
 	}
-	if o.CheckHost != nil {
-		return retryTransport{&checkedTransport{t, o.CheckHost}}, nil
+	if o.Window == nil {
+		o.Window = NewWindow()
 	}
-	return retryTransport{t}, nil
+	if o.CheckHost != nil {
+		return retryTransport{&checkedTransport{t, o.CheckHost}, o.Window}, nil
+	}
+	return retryTransport{t, o.Window}, nil
 }
 
 // PolicyError wraps an error from CheckHost or CheckDial. It is never retried.
@@ -97,14 +104,69 @@ type PolicyError struct{ Err error }
 func (e *PolicyError) Error() string { return e.Err.Error() }
 func (e *PolicyError) Unwrap() error { return e.Err }
 
+// StartupWindow is how long after the start of a run failed dials and
+// DNS lookups are retried. Some CNIs reject a new pod's packets until its
+// NetworkPolicy is programmed, usually for about a second.
+const StartupWindow = 35 * time.Second
+
+// Window is the start of a run, during which connections and lookups may
+// fail only because the pod's NetworkPolicy is not yet programmed. It
+// ends after StartupWindow or at the first successful request.
+type Window struct {
+	mu    sync.Mutex
+	until time.Time
+	now   func() time.Time
+}
+
+// NewWindow starts a window of StartupWindow.
+func NewWindow() *Window {
+	return &Window{until: time.Now().Add(StartupWindow), now: time.Now}
+}
+
+// Open reports whether a failure may still be retried.
+func (w *Window) Open() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.now().Before(w.until)
+}
+
+func (w *Window) end() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.until = time.Time{}
+}
+
+// Retry runs f until it succeeds, retry(err) is false, Backoff is used up
+// or the window closes. On cancel it returns the last error joined with
+// the context error.
+func Retry(ctx context.Context, w *Window, retry func(error) bool, f func() error) error {
+	for i := 0; ; i++ {
+		err := f()
+		if err == nil || i == len(Backoff) || !retry(err) || !w.Open() {
+			return err
+		}
+		if werr := Wait(ctx, Backoff[i]); werr != nil {
+			return errors.Join(err, werr)
+		}
+	}
+}
+
+// TemporaryDNS reports whether err holds a DNS error that may pass when
+// tried again: a timeout or a temporary failure, which includes a query
+// the network refused. A missing name is final.
+func TemporaryDNS(err error) bool {
+	var d *net.DNSError
+	return errors.As(err, &d) && !d.IsNotFound && (d.IsTemporary || d.IsTimeout)
+}
+
 // Backoff is the wait before each retry of a failed dial or DNS lookup,
-// about 30 s in total: long enough for a NetworkPolicy to be programmed
-// for a new pod.
+// about 30 s in total. Backoff and Wait are hooks for tests only; changing
+// them is not safe while requests run, so such tests must not be parallel.
 var Backoff = []time.Duration{
 	500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second,
 }
 
-// Wait sleeps for d or until ctx is done. Tests replace it.
+// Wait sleeps for d or until ctx is done.
 var Wait = func(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -119,27 +181,35 @@ var Wait = func(ctx context.Context, d time.Duration) error {
 // retryTransport retries requests whose connection could not be set up,
 // for example while a NetworkPolicy for a new pod is not yet programmed
 // and the CNI rejects its packets. Status codes are left to the caller.
-type retryTransport struct{ next http.RoundTripper }
+type retryTransport struct {
+	next   http.RoundTripper
+	window *Window
+}
 
 func (rt retryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	for i := 0; ; i++ {
-		resp, err := rt.next.RoundTrip(r)
-		if err == nil || i == len(Backoff) || !dialFailed(err) || (r.Body != nil && r.GetBody == nil) {
-			return resp, err
-		}
-		if err := Wait(r.Context(), Backoff[i]); err != nil {
-			return nil, err
-		}
-		if r.GetBody != nil {
+	var resp *http.Response
+	rewindable := r.Body == nil || r.GetBody != nil
+	first := true
+	err := Retry(r.Context(), rt.window, func(err error) bool { return rewindable && dialFailed(err) }, func() error {
+		if !first && r.GetBody != nil {
 			body, err := r.GetBody()
 			if err != nil {
-				return nil, err
+				return err
 			}
 			c := *r
 			c.Body = body
 			r = &c
 		}
+		first = false
+		var err error
+		resp, err = rt.next.RoundTrip(r)
+		return err
+	})
+	if err != nil {
+		return nil, err
 	}
+	rt.window.end()
+	return resp, nil
 }
 
 // dialFailed reports whether err comes from dialing the registry or the
@@ -149,13 +219,13 @@ func (rt retryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // Errors after the TCP connect (TLS, a CONNECT refused with 407, a reset
 // while reading the response) have other Ops or none and are not retried.
 // Neither are policy refusals from CheckDial, which also surface as dial
-// errors, nor a name that does not exist.
+// errors, nor DNS errors other than TemporaryDNS ones.
 func dialFailed(err error) bool {
 	if errors.As(err, new(*PolicyError)) {
 		return false
 	}
-	if dns := new(net.DNSError); errors.As(err, &dns) && dns.IsNotFound {
-		return false
+	if errors.As(err, new(*net.DNSError)) {
+		return TemporaryDNS(err)
 	}
 	for {
 		var op *net.OpError

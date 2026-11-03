@@ -139,11 +139,11 @@ ranges. NetworkPolicies are a second layer: the sync Job checks every
 source address itself (threat model T16).
 
 Some CNIs reject the packets of a new pod until its policy is programmed,
-usually for a second or so. The sync Job retries connections that fail at
-dial time (for example `proxyconnect tcp: ... connection refused`) and
-temporary DNS errors for about 30 s. If a sync still fails with such an
-error, check that the policy allows DNS and the proxy or registry address
-and port.
+usually for a second or so. Only during the first ~35 s of a run, the sync
+Job retries connections that fail at dial time (for example
+`proxyconnect tcp: ... connection refused`) and temporary DNS errors. If a
+sync still fails with such an error, check that the policy allows DNS and
+the proxy or registry address and port.
 
 ## Project Distribution
 
