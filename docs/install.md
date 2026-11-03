@@ -222,9 +222,11 @@ not needed: the controller renders the token volume itself.
   disconnected or on-premises Azure, needs a code change in two places:
   the CEL rule on `authorityHost` and `syncspec.AzureAuthority`.
 - The registry token is always requested for
-  `https://containerregistry.azure.net/.default`, the ACR audience the
-  Azure SDKs and CLI use in every cloud. A Resource Manager scope is never
-  used, so no management token reaches the registry.
+  `https://containerregistry.azure.net/.default`, the documented
+  public-cloud ACR audience. US Government and China clouds are untested
+  and may need another audience; there the token request fails closed
+  with an Entra error and no token leaks. A Resource Manager scope is
+  never used, so no management token reaches the registry.
 - A missing ServiceAccount does not change the target: it stays `Ready`
   and so do its mirrors. The Job cannot create its pod, and the only sign
   is a `FailedCreate` Event on the Job
