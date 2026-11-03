@@ -153,13 +153,15 @@ type ArtifactMirrorSpec struct {
 	// +required
 	Tags TagSelector `json:"tags"`
 
-	// platforms limits multi-platform images to these platforms, as os/arch[/variant].
-	// Empty mirrors all platforms.
+	// requiredPlatforms lists platforms, as os/arch[/variant], that must
+	// exist in the source. A tag missing any of them fails and is not
+	// mirrored. The whole index is always mirrored so digests and
+	// signatures stay valid.
 	// +kubebuilder:validation:MaxItems=20
 	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?$`
 	// +listType=set
 	// +optional
-	Platforms []string `json:"platforms,omitempty"`
+	RequiredPlatforms []string `json:"requiredPlatforms,omitempty"`
 
 	// suspend stops scheduling new syncs.
 	// +optional

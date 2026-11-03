@@ -19,6 +19,6 @@ spec:
     include:
       - ^\d+\.\d+$
     keepLatest: 3
-  platforms:
+  requiredPlatforms:
     - linux/amd64
     - linux/arm64

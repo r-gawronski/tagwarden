@@ -319,8 +319,8 @@ func TestRunMissingPlatform(t *testing.T) {
 
 	res, err := Run(context.Background(), Request{
 		Source: src.repo, Target: dst.repo,
-		Policy:    tags.Policy{Include: []string{"."}},
-		Platforms: []string{"linux/arm64", "linux/amd64"},
+		Policy:            tags.Policy{Include: []string{"."}},
+		RequiredPlatforms: []string{"linux/arm64", "linux/amd64"},
 	})
 	if err == nil {
 		t.Fatal("want error for failed tags")
