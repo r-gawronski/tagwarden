@@ -153,7 +153,9 @@ CronJob. With too many mirrors in a namespace, the oldest keep running.
 An artifact over `maxArtifactSize` fails in the sync run: Tagwarden
 copies none of it and moves on to the other tags. Signatures, SBOMs and
 other referrers get their own budget of the same size; if they go over
-it, the tag fails and stays where it was.
+it, the tag fails and stays where it was. A layer shared by several
+platforms of an index counts once per platform, so the check errs on the
+strict side.
 
 ```yaml
 spec:
