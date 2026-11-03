@@ -100,6 +100,14 @@
         }
       }
     },
+    "argocd": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tracking": { "enum": ["", "inherit"] },
+        "instanceLabel": { "type": "string", "minLength": 1, "maxLength": 317 }
+      }
+    },
     "syncImage": {
       "type": "object",
       "additionalProperties": false,
