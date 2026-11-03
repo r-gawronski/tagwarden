@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -140,16 +141,16 @@ func (f *azureFakes) azureEnv(t *testing.T, e *env, source name.Repository, auth
 	e.opts.proxyCA = filepath.Join(e.dir, "proxy-ca.crt")
 	e.write(t, e.opts.proxyCA, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.entra.Certificate().Raw})))
 	e.writeSpec(t, source.String(), fmt.Sprintf(`"allowedSources":[%s],%q:%q,
-		"azure":{"clientID":%q,"tenantID":%q,"authorityHost":%q,"scope":%q}`,
+		"azure":{"clientID":%q,"tenantID":%q,"authorityHost":%q}`,
 		strconv.Quote(source.RegistryStr()), auth, syncspec.AuthAzureWorkloadIdentity,
-		clientID, tenantID, f.entra.URL+"/", syncspec.DefaultAzureScope))
+		clientID, tenantID, f.entra.URL+"/"))
 }
 
 func (f *azureFakes) assertRequests(t *testing.T) {
 	t.Helper()
 	ef, _ := f.entraForm.Load().(url.Values)
 	want := url.Values{
-		"grant_type": {"client_credentials"}, "client_id": {clientID}, "scope": {syncspec.DefaultAzureScope},
+		"grant_type": {"client_credentials"}, "client_id": {clientID}, "scope": {syncspec.AzureScope},
 		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"}, "client_assertion": {saToken},
 	}
 	if ef.Encode() != want.Encode() {
@@ -257,6 +258,40 @@ func TestRunAzureErrors(t *testing.T) {
 				t.Fatal("the token request followed the redirect")
 			}
 			assertNoTokens(t, out, msg)
+		})
+	}
+}
+
+// Tokens go only to ACR hosts and known authorities: anything else is a
+// config error before any token request.
+func TestRunAzureRefusesHosts(t *testing.T) {
+	cases := map[string]func(f *azureFakes, e *env, src name.Repository){
+		"non-ACR target": func(f *azureFakes, e *env, src name.Repository) {
+			e.target = "registry.example.internal/team/app"
+			f.azureEnv(t, e, src, "targetAuth")
+		},
+		"unknown authority": func(f *azureFakes, e *env, src name.Repository) {
+			f.azureEnv(t, e, src, "targetAuth")
+			b, err := os.ReadFile(e.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.write(t, e.spec, strings.Replace(string(b), f.entra.URL+"/", "https://login.example.internal/", 1))
+		},
+	}
+	for tcName, setup := range cases {
+		t.Run(tcName, func(t *testing.T) {
+			f := newAzureFakes(t)
+			src := newRegistry(t, false)
+			e := newEnv(t, src, f.repo, password)
+			setup(f, e, src)
+			code, out, msg := e.run(t)
+			if code != syncspec.ExitConfig || !strings.Contains(msg, "target credentials: ") {
+				t.Fatalf("exit %d: %s\n%s", code, msg, out)
+			}
+			if f.entraForm.Load() != nil || f.acrHits.Load() != 0 {
+				t.Fatal("a token request was sent")
+			}
 		})
 	}
 }
