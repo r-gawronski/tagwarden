@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
@@ -68,6 +69,18 @@ func newMirror(namespace, name string) *mirrorv1alpha1.ArtifactMirror {
 func createMirror(m *mirrorv1alpha1.ArtifactMirror) {
 	ExpectWithOffset(1, k8sClient.Create(ctx, m)).To(Succeed())
 	DeferCleanup(deleteAndWait, m)
+}
+
+// updateMirror reads m, applies mutate and writes it back, retrying on
+// conflicts with the controller's status updates.
+func updateMirror(m *mirrorv1alpha1.ArtifactMirror, mutate func(*mirrorv1alpha1.ArtifactMirror)) {
+	ExpectWithOffset(1, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(m), m); err != nil {
+			return err
+		}
+		mutate(m)
+		return k8sClient.Update(ctx, m)
+	})).To(Succeed())
 }
 
 func mirrorReady(m *mirrorv1alpha1.ArtifactMirror) func() *metav1.Condition {
@@ -218,23 +231,22 @@ var _ = Describe("ArtifactMirror Controller", func() {
 	It("updates the CronJob when the mirror changes", func() {
 		m := newMirror(teamA, "update")
 		createMirror(m)
+		Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
 		Eventually(cronJob(m)).Should(HaveField("Spec.Schedule", "0 3 * * *"))
 		cj, _ := cronJob(m)()
 		sum := cj.Spec.JobTemplate.Spec.Template.Annotations[annotationSpecChecksum]
 		Expect(sum).NotTo(BeEmpty())
 
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(m), m)).To(Succeed())
-		m.Spec.Schedule = "@hourly"
-		m.Spec.Suspend = true
-		Expect(k8sClient.Update(ctx, m)).To(Succeed())
+		updateMirror(m, func(m *mirrorv1alpha1.ArtifactMirror) {
+			m.Spec.Schedule = "@hourly"
+			m.Spec.Suspend = true
+		})
 		Eventually(cronJob(m)).Should(And(
 			HaveField("Spec.Schedule", "@hourly"), HaveField("Spec.Suspend", HaveValue(BeTrue()))))
 		cj, _ = cronJob(m)()
 		Expect(cj.Spec.JobTemplate.Spec.Template.Annotations[annotationSpecChecksum]).To(Equal(sum))
 
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(m), m)).To(Succeed())
-		m.Spec.Tags.Tags = []string{"3.9"}
-		Expect(k8sClient.Update(ctx, m)).To(Succeed())
+		updateMirror(m, func(m *mirrorv1alpha1.ArtifactMirror) { m.Spec.Tags.Tags = []string{"3.9"} })
 		Eventually(func() string {
 			cj, _ := cronJob(m)()
 			return cj.Spec.JobTemplate.Spec.Template.Annotations[annotationSpecChecksum]
@@ -251,9 +263,9 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		updates := writes.Load()
 
 		// A metadata change reconciles the mirror without changing its spec.
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(m), m)).To(Succeed())
-		m.Labels = map[string]string{"example.com/touch": "1"}
-		Expect(k8sClient.Update(ctx, m)).To(Succeed())
+		updateMirror(m, func(m *mirrorv1alpha1.ArtifactMirror) {
+			m.Labels = map[string]string{"example.com/touch": "1"}
+		})
 		Consistently(func() []string {
 			got, _ := cronJob(m)()
 			var gotCM corev1.ConfigMap
@@ -471,9 +483,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		createMirror(newer)
 		Eventually(mirrorReady(newer)).Should(HaveField("Status", metav1.ConditionTrue))
 
-		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(older), older)).To(Succeed())
-		older.Spec.Target.Repository = "moved/app"
-		Expect(k8sClient.Update(ctx, older)).To(Succeed())
+		updateMirror(older, func(m *mirrorv1alpha1.ArtifactMirror) { m.Spec.Target.Repository = "moved/app" })
 		Eventually(mirrorReady(newer)).Should(HaveField("Reason", ReasonTargetConflict))
 		_, err := cronJob(newer)()
 		Expect(notFound(err)).To(BeTrue())
