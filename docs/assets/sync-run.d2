@@ -1,0 +1,29 @@
+# Source of sync-run-light.svg and sync-run-dark.svg.
+# Render:
+#   d2 --theme 0 --pad 20 sync-run.d2 sync-run-light.svg
+#   d2 --theme 200 --pad 20 sync-run.d2 sync-run-dark.svg
+shape: sequence_diagram
+
+team: Team
+c: Controller
+j: Sync Job
+p: Proxy
+u: Upstream
+r: Your registry
+
+on apply: {
+  team -> c: ArtifactMirror
+  c -> c: check against target
+  c -> j: CronJob
+}
+
+on schedule: {
+  j -> p: list tags
+  p -> u: list tags
+  j -> j: select tags
+  j -> p: fetch new digests
+  p -> u: fetch
+  j -> r: push by digest, with signatures
+  j -> c: result
+  c -> team: mirror status
+}
