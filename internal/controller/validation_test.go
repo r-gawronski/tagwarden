@@ -98,7 +98,7 @@ var _ = Describe("API validation", func() {
 				obj.SetNamespace("default")
 			}
 			Expect(k8sClient.Create(ctx, obj)).To(Succeed(), file)
-			Expect(k8sClient.Delete(ctx, obj)).To(Succeed(), file)
+			deleteAndWait(obj)
 		}
 	})
 
@@ -136,7 +136,7 @@ var _ = Describe("API validation", func() {
 			obj := validMirror("valid-mirror")
 			mutate(obj)
 			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
+			deleteAndWait(obj)
 		},
 		Entry("full example", func(*mirrorv1alpha1.ArtifactMirror) {}),
 		Entry("@daily", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Schedule = "@daily" }),
