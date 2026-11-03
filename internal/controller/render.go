@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"path/filepath"
 	"strings"
 
@@ -191,14 +192,17 @@ func renderConfigMap(cm *corev1.ConfigMap, m *mirrorv1alpha1.ArtifactMirror, spe
 // renderCronJob sets the CronJob spec. Only fixed paths, the sync image and
 // Secret references go into the pod; tenant fields reach the Job only
 // through the spec file.
-func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, image string, spec []byte) {
+func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, image string, spec []byte, trackLabels, trackAnnotations map[string]string) {
 	labels, annotations := mirrorMeta(m)
 	labels[LabelTarget] = targetLabel(t.Name)
 	labels[LabelEgress] = EgressDirect
 	if t.Spec.Proxy != nil && t.Spec.Proxy.HTTPSProxy != "" {
 		labels[LabelEgress] = EgressProxy
 	}
-	cj.Labels, cj.Annotations = labels, annotations
+	// Argo CD tracking goes on the CronJob only, not on Jobs and pods.
+	cj.Labels, cj.Annotations = maps.Clone(labels), maps.Clone(annotations)
+	maps.Copy(cj.Labels, trackLabels)
+	maps.Copy(cj.Annotations, trackAnnotations)
 	sum := sha256.Sum256(spec)
 	podAnnotations := map[string]string{
 		AnnotationMirrorNamespace: m.Namespace,

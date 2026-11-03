@@ -27,6 +27,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -83,6 +84,14 @@ type ArtifactMirrorReconciler struct {
 	SyncImage string
 	// DeniedCIDRs are the cluster pod and service CIDRs, refused as sources.
 	DeniedCIDRs []string
+	// ArgoCDTracking is "inherit" to show sync CronJobs in the Argo CD app of
+	// their mirror, or empty.
+	ArgoCDTracking string
+	// ArgoCDInstanceLabel is Argo CD's label for label tracking mode.
+	ArgoCDInstanceLabel string
+
+	// trackingMismatch holds the tracking id last reported per mirror.
+	trackingMismatch sync.Map
 }
 
 // +kubebuilder:rbac:groups=mirror.tagwarden.dev,resources=artifactmirrors,verbs=get;list;watch;update
@@ -233,10 +242,13 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		return nil
 	})
 	var op controllerutil.OperationResult
+	var mismatch string
 	cj := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}
 	if err == nil {
 		desired := cj.DeepCopy()
-		renderCronJob(desired, &t, m, r.SyncImage, spec)
+		var trackLabels, trackAnnotations map[string]string
+		trackLabels, trackAnnotations, mismatch = argoTracking(r.ArgoCDTracking, r.ArgoCDInstanceLabel, m, key.Namespace, key.Name)
+		renderCronJob(desired, &t, m, r.SyncImage, spec, trackLabels, trackAnnotations)
 		op, err = controllerutil.CreateOrUpdate(ctx, r.Client, cj, func() error {
 			if err := checkOwner("CronJob", cj, m); err != nil {
 				return err
@@ -245,7 +257,8 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 			// compare checksums instead of specs to avoid no-op updates, and
 			// restore hand edits of the pod labels and security-relevant fields.
 			if cj.Annotations[annotationCronJobChecksum] != desired.Annotations[annotationCronJobChecksum] ||
-				securityDrift(&cj.Spec.JobTemplate.Spec.Template, &desired.Spec.JobTemplate.Spec.Template) {
+				securityDrift(&cj.Spec.JobTemplate.Spec.Template, &desired.Spec.JobTemplate.Spec.Template) ||
+				trackingDrift(cj.Annotations, desired.Annotations, cj.Labels, desired.Labels, r.ArgoCDInstanceLabel) {
 				cj.Labels, cj.Annotations, cj.Spec = desired.Labels, desired.Annotations, desired.Spec
 			}
 			return nil
@@ -260,6 +273,7 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	case err != nil:
 		return ctrl.Result{}, err
 	}
+	r.reportTrackingMismatch(m, mismatch, ev)
 	if op == controllerutil.OperationResultCreated {
 		ev.add(corev1.EventTypeNormal, "Created", "Reconcile", fmt.Sprintf("Created CronJob %s/%s", key.Namespace, key.Name))
 	}
@@ -268,6 +282,20 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		return ctrl.Result{}, err
 	}
 	return r.syncNow(ctx, &t, m, cj, ev)
+}
+
+// reportTrackingMismatch queues a Warning Event when the tracking id of a
+// mirror names another object, once per id.
+func (r *ArtifactMirrorReconciler) reportTrackingMismatch(m *mirrorv1alpha1.ArtifactMirror, id string, ev *pending) {
+	k := client.ObjectKeyFromObject(m)
+	if id == "" {
+		r.trackingMismatch.Delete(k)
+		return
+	}
+	if prev, _ := r.trackingMismatch.Swap(k, id); prev != id {
+		ev.add(corev1.EventTypeWarning, reasonTrackingMismatch, "Reconcile",
+			fmt.Sprintf("Annotation %s %q does not name this ArtifactMirror; the sync CronJob is not tracked", annotationArgoTrackingID, id))
+	}
 }
 
 func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, status metav1.ConditionStatus, reason, msg string) {
@@ -380,6 +408,7 @@ func older(a, b *mirrorv1alpha1.ArtifactMirror) bool {
 // cleanup removes the CronJob, with its Jobs, and the ConfigMap of a
 // mirror. It deletes only objects whose annotations name the mirror.
 func (r *ArtifactMirrorReconciler) cleanup(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror) error {
+	r.trackingMismatch.Delete(client.ObjectKeyFromObject(m))
 	opts := []client.ListOption{
 		client.InNamespace(r.Namespace),
 		client.MatchingLabels{LabelMirror: mirrorHash(m.Namespace, m.Name)},
