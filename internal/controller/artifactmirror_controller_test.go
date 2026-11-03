@@ -18,6 +18,8 @@ package controller
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -284,6 +286,54 @@ var _ = Describe("ArtifactMirror Controller", func() {
 			g.Expect(*p.SecurityContext.RunAsNonRoot).To(BeTrue())
 			g.Expect(p.HostAliases).To(BeEmpty())
 		}).Should(Succeed())
+	})
+
+	It("labels sync pods with the target and its egress mode", func() {
+		expectLabels := func(m *mirrorv1alpha1.ArtifactMirror, target, egress string) {
+			EventuallyWithOffset(1, func(g Gomega) {
+				cj, err := cronJob(m)()
+				g.Expect(err).NotTo(HaveOccurred())
+				for _, l := range []map[string]string{cj.Labels, cj.Spec.JobTemplate.Labels, cj.Spec.JobTemplate.Spec.Template.Labels} {
+					g.Expect(l).To(And(HaveKeyWithValue(LabelTarget, target), HaveKeyWithValue(LabelEgress, egress)))
+				}
+			}).Should(Succeed())
+		}
+		proxied := newMirror(teamA, "egress-proxy")
+		createMirror(proxied)
+		expectLabels(proxied, mirrorTarget, EgressProxy)
+
+		// NetworkPolicies select by these labels, so a hand edit is reverted.
+		cj, _ := cronJob(proxied)()
+		podLabels := cj.Spec.JobTemplate.Spec.Template.Labels
+		delete(podLabels, LabelEgress)
+		podLabels[LabelTarget] = "other-target"
+		Expect(k8sClient.Update(ctx, cj)).To(Succeed())
+		expectLabels(proxied, mirrorTarget, EgressProxy)
+
+		t := createReadyTarget("direct-target", func(t *mirrorv1alpha1.ClusterMirrorTarget) { t.Spec.Proxy = nil })
+		direct := newMirror(teamA, "egress-direct")
+		direct.Spec.TargetRef = t.Name
+		createMirror(direct)
+		expectLabels(direct, t.Name, EgressDirect)
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(t), t)).To(Succeed())
+		t.Spec.Proxy = newTarget(t.Name).Spec.Proxy
+		Expect(k8sClient.Update(ctx, t)).To(Succeed())
+		expectLabels(direct, t.Name, EgressProxy)
+	})
+
+	It("hashes a target name that is not a valid label value", func() {
+		long := strings.Repeat("t", 64) + ".example"
+		createReadyTarget(long)
+		m := newMirror(teamA, "long-target")
+		m.Spec.TargetRef = long
+		createMirror(m)
+		sum := sha256.Sum256([]byte(long))
+		want := "h-" + hex.EncodeToString(sum[:])[:20]
+		Eventually(func() map[string]string {
+			cj, _ := cronJob(m)()
+			return cj.Spec.JobTemplate.Spec.Template.Labels
+		}).Should(HaveKeyWithValue(LabelTarget, want))
 	})
 
 	It("never touches a CronJob or ConfigMap that names another mirror", func() {
