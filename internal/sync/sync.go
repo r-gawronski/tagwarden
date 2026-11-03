@@ -74,6 +74,9 @@ type Artifact struct {
 // its referrers cannot be listed or copied; the image itself is untouched. A tag deleted upstream is not selected, so
 // its target tag stays untouched; prune and reporting come in phase 4.
 type Result struct {
+	// Selected lists the selected tags in the order tags.Select returns
+	// them, newest version first.
+	Selected                         []string
 	Copied, Skipped, Mutated, Failed []Artifact
 	Errors                           []string
 }
@@ -106,7 +109,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 		return Result{}, err
 	}
 
-	var res Result
+	res := Result{Selected: selected}
 	var mutated bool
 	for _, tag := range selected {
 		if err := ctx.Err(); err != nil {
