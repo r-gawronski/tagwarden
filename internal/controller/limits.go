@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -69,6 +70,56 @@ func minGap(schedule string, from time.Time, stop time.Duration) (time.Duration,
 	return gap, nil
 }
 
+type gapKey struct {
+	schedule string
+	limit    time.Duration
+	day      string // UTC date, YYYY-MM-DD
+}
+
+var (
+	gapCacheMu  sync.Mutex
+	gapCache    = map[gapKey]time.Duration{}
+	gapCacheDay string
+)
+
+// cachedMinGap is minGap memoized per schedule, limit and UTC date. A
+// result changes negligibly within a day, and conflict ranking asks for
+// the same schedule once per mirror on a target path.
+// ponytail: one entry per distinct key, so the map grows with distinct
+// schedules until the date changes and the purge below empties it.
+// Upgrade path: a small LRU if one day of schedules ever gets large.
+func cachedMinGap(schedule string, now time.Time, stop time.Duration) (time.Duration, error) {
+	day := now.UTC().Format(time.DateOnly)
+	key := gapKey{schedule, stop, day}
+	gapCacheMu.Lock()
+	if gapCacheDay != day {
+		clear(gapCache)
+		gapCacheDay = day
+	}
+	if g, ok := gapCache[key]; ok {
+		gapCacheMu.Unlock()
+		return g, nil
+	}
+	gapCacheMu.Unlock()
+	g, err := minGap(schedule, now, stop)
+	if err != nil {
+		return 0, err
+	}
+	gapCacheMu.Lock()
+	if gapCacheDay == day {
+		gapCache[key] = g
+	}
+	gapCacheMu.Unlock()
+	return g, nil
+}
+
+func resetGapCache() {
+	gapCacheMu.Lock()
+	defer gapCacheMu.Unlock()
+	clear(gapCache)
+	gapCacheDay = ""
+}
+
 // minSyncInterval is limits.minSyncInterval of t or its default.
 func minSyncInterval(t *mirrorv1alpha1.ClusterMirrorTarget) time.Duration {
 	if l := t.Spec.Limits; l != nil && l.MinSyncInterval != nil {
@@ -93,7 +144,7 @@ func (r *ArtifactMirrorReconciler) checkLimits(ctx context.Context, t *mirrorv1a
 		l = &mirrorv1alpha1.TargetLimits{}
 	}
 	interval := minSyncInterval(t)
-	gap, err := minGap(m.Spec.Schedule, time.Now().UTC(), interval)
+	gap, err := cachedMinGap(m.Spec.Schedule, time.Now().UTC(), interval)
 	if err != nil {
 		return ReasonInvalidSpec, fmt.Sprintf("schedule %q: %v", m.Spec.Schedule, err), nil
 	}
