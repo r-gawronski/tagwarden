@@ -35,25 +35,31 @@ other change.
 ## How it works
 
 ```mermaid
-sequenceDiagram
-  actor Team
-  participant C as Controller
-  participant J as Sync Job
-  participant P as Proxy
-  participant U as Upstream
-  participant R as Your registry
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'Inter, Helvetica, Arial, sans-serif', 'fontSize': '15px', 'lineColor': '#8b949e', 'primaryTextColor': '#1f2328', 'clusterBkg': '#f6f8fa', 'clusterBorder': '#8b949e', 'titleColor': '#1f2328', 'edgeLabelBackground': '#ffffff'}}}%%
+flowchart LR
+  subgraph cluster [Kubernetes cluster]
+    direction TB
+    AM([ArtifactMirror]):::res
+    T([ClusterMirrorTarget]):::res
+    C[Controller]:::ctl
+    J[Sync Job]:::ctl
+    AM -- team --> C
+    T -- platform --> C
+    C -- CronJob --> J
+    J -. result .-> C
+  end
+  P[HTTPS proxy]:::ext
+  U[(Upstream)]:::ext
+  R[(Your registry)]:::reg
+  J -- list, fetch --> P
+  P --> U
+  J == push by digest ==> R
 
-  Team->>C: apply ArtifactMirror
-  C->>C: check against ClusterMirrorTarget
-  C->>J: create CronJob
-  Note over J: on schedule
-  J->>P: list tags
-  P->>U: list tags
-  J->>P: fetch manifests and blobs
-  P->>U: fetch
-  J->>R: push by digest, with signatures
-  J->>C: report result
-  C->>Team: update mirror status
+  classDef res fill:#ddf4ff,stroke:#0969da,stroke-width:2px,color:#0a3069
+  classDef ctl fill:#fbefff,stroke:#8250df,stroke-width:2px,color:#3e1f79
+  classDef ext fill:#fff8c5,stroke:#9a6700,stroke-width:2px,color:#4d2d00
+  classDef reg fill:#dafbe1,stroke:#1a7f37,stroke-width:2px,color:#044f1e
+  linkStyle default stroke-width:2px
 ```
 
 There are two resources:
