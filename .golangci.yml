@@ -10,6 +10,7 @@ linters:
     - errcheck
     - ginkgolinter
     - goconst
+    - gosec
     - gocyclo
     - govet
     - ineffassign
@@ -52,6 +53,11 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # e2e helpers shell out to kubectl/kind with test-controlled args.
+      - linters:
+          - gosec
+        text: G204
+        path: test/utils/
     paths:
       - third_party$
       - builtin$
