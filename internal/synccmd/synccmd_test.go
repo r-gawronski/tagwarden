@@ -94,8 +94,14 @@ func TestEncodeReportTruncates(t *testing.T) {
 
 	t.Run("errors and synced", func(t *testing.T) {
 		b := encode(r)
-		if len(b) > maxTermination {
-			t.Fatalf("%d bytes", len(b))
+		var got report
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatal(err)
+		}
+		// The first errors are kept, cut short, before any synced tag.
+		if len(b) > maxTermination || !got.Truncated || !got.ErrorsTruncated || len(got.Errors) != 3 ||
+			len(got.Errors[0]) != 200 || len(got.Synced) == 0 {
+			t.Fatalf("%d bytes: %s", len(b), b)
 		}
 		golden(t, "report_truncated.golden", b)
 	})
@@ -108,7 +114,7 @@ func TestEncodeReportTruncates(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(b) > maxTermination || got.Truncated || !got.ErrorsTruncated || len(got.Synced) != 10 ||
-			len(got.Errors) == 0 || len(got.Errors) == 10 {
+			len(got.Errors) <= 3 || len(got.Errors) == 10 || len(got.Errors[0]) != 200 || len(got.Errors[3]) <= 200 {
 			t.Fatalf("%d bytes: %s", len(b), b)
 		}
 	})
