@@ -9,10 +9,11 @@ targets:
       proxy:
         httpsProxy: http://proxy.e2e-infra.svc.cluster.local:3128
         noProxy: [target.e2e-infra.svc.cluster.local]
-        # The source has a private CA. The source transport trusts only the
-        # system roots and the proxy CA bundle, so the test CA goes here.
-        caBundleSecretRef: {name: e2e-ca}
         credentialsSecretRef: {name: proxy-auth}
+      # The source has a private CA.
+      sourceCABundles:
+        - registry: source.example.internal:5000
+          secretRef: {name: e2e-ca}
       allowedSources: [source.example.internal:5000, registry.k8s.io]
       projects:
         - name: mirror
