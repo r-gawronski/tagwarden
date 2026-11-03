@@ -35,20 +35,24 @@ other change.
 ## How it works
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'Inter, Helvetica, Arial, sans-serif', 'fontSize': '15px', 'lineColor': '#8b949e', 'primaryTextColor': '#1f2328', 'clusterBkg': '#f6f8fa', 'clusterBorder': '#8b949e', 'titleColor': '#1f2328', 'edgeLabelBackground': '#ffffff'}}}%%
+---
+config:
+  look: handDrawn
+  theme: neutral
+---
 flowchart LR
   subgraph cluster [Kubernetes cluster]
     direction TB
     AM([ArtifactMirror]):::res
     T([ClusterMirrorTarget]):::res
-    C[Controller]:::ctl
-    J[Sync Job]:::ctl
+    C(Controller):::ctl
+    J(Sync Job):::ctl
     AM -- team --> C
     T -- platform --> C
     C -- CronJob --> J
     J -. result .-> C
   end
-  P[HTTPS proxy]:::ext
+  P(HTTPS proxy):::ext
   U[(Upstream)]:::ext
   R[(Your registry)]:::reg
   J -- list, fetch --> P
@@ -59,6 +63,7 @@ flowchart LR
   classDef ctl fill:#fbefff,stroke:#8250df,stroke-width:2px,color:#3e1f79
   classDef ext fill:#fff8c5,stroke:#9a6700,stroke-width:2px,color:#4d2d00
   classDef reg fill:#dafbe1,stroke:#1a7f37,stroke-width:2px,color:#044f1e
+  style cluster fill:transparent,stroke:#8b949e,color:#8b949e
   linkStyle default stroke-width:2px
 ```
 
@@ -79,7 +84,11 @@ status.
 ### What happens during a sync run
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'Inter, Helvetica, Arial, sans-serif', 'fontSize': '15px', 'actorBkg': '#fbefff', 'actorBorder': '#8250df', 'actorTextColor': '#3e1f79', 'actorLineColor': '#8b949e', 'signalColor': '#57606a', 'signalTextColor': '#1f2328', 'noteBkgColor': '#fff8c5', 'noteBorderColor': '#9a6700', 'noteTextColor': '#4d2d00', 'sequenceNumberColor': '#ffffff'}}}%%
+---
+config:
+  look: handDrawn
+  theme: neutral
+---
 sequenceDiagram
   autonumber
   participant Team
