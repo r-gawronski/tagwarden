@@ -21,14 +21,17 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/r-gawronski/tagwarden/internal/registry"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
@@ -57,6 +60,9 @@ func (g gcpProvider) Authenticator(ctx context.Context, reg name.Registry) (auth
 	}
 	subject, err := readToken(g.tokenFile)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkRealm(ctx, g.client, host); err != nil {
 		return nil, err
 	}
 	const sts = "Google STS token exchange"
@@ -89,7 +95,7 @@ func (g gcpProvider) Authenticator(ctx context.Context, reg name.Registry) (auth
 		err = postJSON(ctx, g.client, iam, endpoint, token, struct {
 			Scope    []string `json:"scope"`
 			Lifetime string   `json:"lifetime"`
-		}{[]string{syncspec.GCPScope}, "3600s"}, &sa)
+		}{[]string{syncspec.GCPImpersonatedScope}, "3600s"}, &sa)
 		if err != nil {
 			return nil, err
 		}
@@ -99,6 +105,63 @@ func (g gcpProvider) Authenticator(ctx context.Context, reg name.Registry) (auth
 		token = sa.AccessToken
 	}
 	return authn.FromConfig(authn.AuthConfig{Username: garUser, Password: token}), nil
+}
+
+// bearerRealm finds the token realm of a bearer challenge.
+var bearerRealm = regexp.MustCompile(`(?i)^bearer\s.*\brealm="([^"]*)"`)
+
+// checkRealm refuses a registry whose bearer token realm is on another
+// host: the registry library would send the access token there as basic
+// auth (threat model T32). sameHostAuth enforces it on every request.
+func checkRealm(ctx context.Context, c *http.Client, host string) error {
+	const what = "registry ping"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+"/v2/", nil)
+	if err != nil {
+		return fmt.Errorf("%s: invalid registry host", what)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		err = fmt.Errorf("%s: %w", what, err)
+		if errors.As(err, new(*registry.PolicyError)) {
+			return err
+		}
+		return transientError{err}
+	}
+	_ = resp.Body.Close()
+	m := bearerRealm.FindStringSubmatch(resp.Header.Get("WWW-Authenticate"))
+	if m == nil {
+		return nil
+	}
+	if u, err := url.Parse(m[1]); err != nil || u.Scheme != "https" || !sameHost(u.Host, host) {
+		return fmt.Errorf("registry token realm is not on %s", host)
+	}
+	return nil
+}
+
+// sameHost compares host[:port] values, ignoring the default port and
+// the case of ASCII letters.
+func sameHost(a, b string) bool {
+	norm := func(h string) string { return strings.TrimSuffix(strings.ToLower(h), ":443") }
+	return norm(a) == norm(b)
+}
+
+// sameHostAuth refuses requests with an Authorization header to any host
+// but the registry, so a token realm or redirect elsewhere never gets the
+// Google access token (threat model T32). Requests without credentials,
+// such as followed blob redirects, pass.
+type sameHostAuth struct {
+	rt   http.RoundTripper
+	host string
+}
+
+func (s sameHostAuth) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Header.Get("Authorization") != "" && !sameHost(r.URL.Host, s.host) {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, &registry.PolicyError{Err: fmt.Errorf("credentials for %s refused for %s", s.host, r.URL.Host)}
+	}
+	return s.rt.RoundTrip(r)
 }
 
 // stsRequest is the JSON body of an STS token exchange.

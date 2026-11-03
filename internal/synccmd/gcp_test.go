@@ -70,7 +70,9 @@ type gcpFakes struct {
 	stsBody, iamBody     atomic.Value
 	iamAuth              atomic.Value
 	stsHits, iamHits     atomic.Int32
-	garHits              atomic.Int32
+	garHits, stolenHits  atomic.Int32
+	// realm, when set, makes the registry ask for a bearer token there.
+	realm atomic.Value
 	// want is the password the registry accepts.
 	want string
 }
@@ -128,8 +130,15 @@ func newGCPFakes(t *testing.T, impersonate bool) *gcpFakes {
 	h := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
 	f.gar = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.garHits.Add(1)
+		if r.URL.Path == "/stolen" {
+			f.stolenHits.Add(1)
+		}
 		if u, p, ok := r.BasicAuth(); !ok || u != garUser || p != f.want {
-			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			if realm, _ := f.realm.Load().(string); realm != "" {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="`+realm+`",service="registry"`)
+			} else {
+				w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			}
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -191,7 +200,7 @@ func (f *gcpFakes) assertRequests(t *testing.T) {
 		return
 	}
 	iam, _ := f.iamBody.Load().(string)
-	if iam != `{"scope":["https://www.googleapis.com/auth/cloud-platform"],"lifetime":"3600s"}` ||
+	if iam != `{"scope":["https://www.googleapis.com/auth/devstorage.read_write"],"lifetime":"3600s"}` ||
 		f.iamAuth.Load() != "Bearer "+federatedToken {
 		t.Fatalf("IAM request %v with %v", iam, f.iamAuth.Load())
 	}
@@ -303,7 +312,7 @@ func TestRunGCPErrors(t *testing.T) {
 			if code != tc.code || !strings.Contains(msg, tc.want) {
 				t.Fatalf("exit %d: %s\n%s", code, msg, out)
 			}
-			if tcName == tcSTSRedirect && f.garHits.Load() != 0 {
+			if tcName == tcSTSRedirect && f.stolenHits.Load() != 0 {
 				t.Fatal("the token request followed the redirect")
 			}
 			assertNoGCPTokens(t, out, msg)
@@ -335,5 +344,65 @@ func TestRunGCPRefusesHosts(t *testing.T) {
 				t.Fatal("a token request was sent")
 			}
 		})
+	}
+}
+
+// A token realm on another host would receive the access token: the Job
+// refuses it before any token request.
+func TestRunGCPRefusesForeignRealm(t *testing.T) {
+	var seen atomic.Int32
+	other := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			seen.Add(1)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(other.Close)
+	f := newGCPFakes(t, true)
+	f.realm.Store(other.URL + "/token")
+	src := newRegistry(t, false)
+	e := newEnv(t, src, f.repo, password)
+	f.gcpEnv(t, e, src, "targetAuth")
+	code, out, msg := e.run(t)
+	if code != syncspec.ExitConfig || !strings.Contains(msg, "target credentials: registry token realm is not on ") {
+		t.Fatalf("exit %d: %s\n%s", code, msg, out)
+	}
+	if seen.Load() != 0 || f.stsHits.Load() != 0 {
+		t.Fatal("a token left the registry host")
+	}
+	assertNoGCPTokens(t, out, msg)
+}
+
+func TestSameHostAuth(t *testing.T) {
+	var sent []string
+	rt := sameHostAuth{rt: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		sent = append(sent, r.URL.Host)
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	}), host: "Europe-West1-docker.pkg.dev:443"}
+	for _, tc := range []struct {
+		url  string
+		auth bool
+		ok   bool
+	}{
+		{"https://europe-west1-docker.pkg.dev/v2/", true, true},
+		{"https://europe-west1-docker.pkg.dev:443/v2/token", true, true},
+		{"https://storage.googleapis.com/blob", false, true},
+		{"https://storage.googleapis.com/blob", true, false},
+		{"https://europe-west1-docker.pkg.dev:5000/v2/", true, false},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+		if tc.auth {
+			req.Header.Set("Authorization", "Bearer x")
+		}
+		resp, err := rt.RoundTrip(req)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s auth=%v: %v", tc.url, tc.auth, err)
+		}
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}
+	if len(sent) != 3 {
+		t.Fatalf("sent %v", sent)
 	}
 }

@@ -165,6 +165,9 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	var auth authn.Authenticator
 	if spec.TargetAuth != "" {
 		auth, err = cloudAuth(ctx, spec.TargetAuth, spec, p, dstT, spec.TargetRepo.Registry, "target")
+		if spec.TargetAuth == syncspec.AuthGCPWorkloadIdentity {
+			dstT = sameHostAuth{dstT, spec.TargetRepo.RegistryStr()}
+		}
 	} else {
 		auth, err = dockerAuth(p.targetAuth, spec.TargetRepo.RegistryStr(), "target")
 	}
@@ -174,6 +177,9 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	srcAuth := authn.Anonymous
 	if spec.SourceAuth != "" {
 		srcAuth, err = cloudAuth(ctx, spec.SourceAuth, spec, p, srcT, spec.SourceRepo.Registry, "source")
+		if spec.SourceAuth == syncspec.AuthGCPWorkloadIdentity {
+			srcT = sameHostAuth{srcT, spec.SourceRepo.RegistryStr()}
+		}
 	} else if _, serr := os.Stat(p.sourceAuth); !errors.Is(serr, fs.ErrNotExist) {
 		srcAuth, err = dockerAuth(p.sourceAuth, spec.SourceRepo.RegistryStr(), "source")
 	}
