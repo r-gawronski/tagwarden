@@ -59,6 +59,7 @@ const (
 	v110          = "v1.1.0"
 	user          = "pusher"
 	password      = "s3cret-push-pass"
+	sourcePass    = "s3cret-source-pull"
 	proxyPassword = "s3cret-proxy-pass"
 	dnsTimeout    = "timeout"
 	dnsNotFound   = "no such host"
@@ -130,9 +131,18 @@ func TestEncodeReportTruncates(t *testing.T) {
 
 func newRegistry(t *testing.T, auth bool) name.Repository {
 	t.Helper()
+	if auth {
+		return newRegistryPass(t, password)
+	}
+	return newRegistryPass(t, "")
+}
+
+// newRegistryPass requires basic auth with pass; an empty pass means none.
+func newRegistryPass(t *testing.T, pass string) name.Repository {
+	t.Helper()
 	h := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if u, p, ok := r.BasicAuth(); auth && (!ok || u != user || p != password) {
+		if u, p, ok := r.BasicAuth(); pass != "" && (!ok || u != user || p != pass) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -245,8 +255,9 @@ func auditLines(t *testing.T, out string) []auditLine {
 func assertNoSecrets(t *testing.T, outputs ...string) {
 	t.Helper()
 	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+	srcAuth := base64.StdEncoding.EncodeToString([]byte(user + ":" + sourcePass))
 	for _, o := range outputs {
-		for _, s := range []string{password, proxyPassword, auth} {
+		for _, s := range []string{password, proxyPassword, auth, sourcePass, srcAuth} {
 			if strings.Contains(o, s) {
 				t.Fatalf("secret in output: %s", o)
 			}
@@ -613,13 +624,13 @@ func TestTargetAuthKeyChoice(t *testing.T) {
 // The source needs basic auth: it syncs with the mounted credentials and
 // fails without them; the password never reaches the outputs.
 func TestRunSourceCredentials(t *testing.T) {
-	src, dst := newRegistry(t, true), newRegistry(t, true)
+	src, dst := newRegistryPass(t, sourcePass), newRegistry(t, true)
 	img, err := random.Image(64, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tag := range []string{"v1.0.0", v110} {
-		if err := remote.Write(src.Tag(tag), img, remote.WithAuth(&authn.Basic{Username: user, Password: password})); err != nil {
+		if err := remote.Write(src.Tag(tag), img, remote.WithAuth(&authn.Basic{Username: user, Password: sourcePass})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -632,13 +643,67 @@ func TestRunSourceCredentials(t *testing.T) {
 	assertNoSecrets(t, out, msg)
 
 	e.opts.sourceAuth = filepath.Join(e.dir, "source.json")
-	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + sourcePass))
 	e.write(t, e.opts.sourceAuth, fmt.Sprintf(`{"auths":{"https://%s/v1/":{"auth":%q}}}`, src.RegistryStr(), auth))
 	code, out, msg = e.run(t)
 	if code != syncspec.ExitOK || !strings.Contains(msg, `"copied":2`) {
 		t.Fatalf("with credentials: exit %d: %s\n%s", code, msg, out)
 	}
 	assertNoSecrets(t, out, msg)
+}
+
+// The source redirects blobs to a host that records the Authorization
+// header: the source credentials must not follow the redirect.
+func TestRunSourceCredentialsNotSentOnRedirect(t *testing.T) {
+	h := registry.New(registry.Logger(log.New(io.Discard, "", 0)))
+	var hits atomic.Int32
+	var leaked atomic.Value
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if a := r.Header.Get("Authorization"); a != "" {
+			leaked.Store(a)
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(other.Close)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, ok := r.BasicAuth(); !ok || u != user || p != sourcePass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/blobs/") {
+			http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect) //nolint:gosec // test redirect
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	src, err := name.NewRepository(strings.TrimPrefix(srv.URL, "http://")+"/team/app", name.StrictValidation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Write(src.Tag("v1.0.0"), img, remote.WithAuth(&authn.Basic{Username: user, Password: sourcePass})); err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t, src, newRegistry(t, true), password)
+	e.opts.sourceAuth = filepath.Join(e.dir, "source.json")
+	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + sourcePass))
+	e.write(t, e.opts.sourceAuth, fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, src.RegistryStr(), auth))
+	code, out, msg := e.run(t)
+	if code != syncspec.ExitOK {
+		t.Fatalf("exit %d: %s\n%s", code, msg, out)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("no blob request reached the redirect target")
+	}
+	if a := leaked.Load(); a != nil {
+		t.Fatalf("Authorization sent to the redirect host: %v", a)
+	}
 }
 
 func TestSourceAuthDockerHub(t *testing.T) {
@@ -684,6 +749,15 @@ func TestRunSourceCA(t *testing.T) {
 	code, out, msg := e.run(t)
 	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, "list source tags") {
 		t.Fatalf("without CA: exit %d: %s\n%s", code, msg, out)
+	}
+
+	// The target transport does not trust the source CA.
+	_, dstT, err := transports(e.opts, nil, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&http.Client{Transport: dstT}).Get(srv.URL + "/v2/"); err == nil || !strings.Contains(err.Error(), "certificate") {
+		t.Fatalf("target transport must reject the source certificate, got %v", err)
 	}
 
 	e.opts.sourceCA = filepath.Join(e.dir, "source-ca.crt")
