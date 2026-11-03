@@ -394,11 +394,13 @@ func (s *syncer) ensure(ctx context.Context, desc *remote.Descriptor) error {
 }
 
 // resolve returns the descriptor of ref. Like crane digest, it falls back to
-// GET when HEAD fails for any reason but 404, for registries that omit
-// Docker-Content-Digest on HEAD.
+// GET when HEAD fails without a registry error, for registries that omit
+// Docker-Content-Digest on HEAD. Registry errors such as 401, 404 or 429 are
+// returned as is, so a free HEAD never turns into a counted GET.
 func resolve(ctx context.Context, p *remote.Puller, ref name.Reference) (*v1.Descriptor, error) {
 	d, err := p.Head(ctx, ref)
-	if err == nil || notFound(err) {
+	var terr *transport.Error
+	if err == nil || errors.As(err, &terr) {
 		return d, err
 	}
 	desc, err := p.Get(ctx, ref)
