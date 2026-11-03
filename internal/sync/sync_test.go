@@ -59,7 +59,9 @@ type testRegistry struct {
 	writes atomic.Int32
 	// manifestGets counts GET requests for manifests.
 	manifestGets atomic.Int32
-	mu           stdsync.Mutex
+	// headStatus, when set, answers every manifest HEAD with this status.
+	headStatus atomic.Int32
+	mu         stdsync.Mutex
 	// puts lists the paths of manifest PUT requests.
 	puts []string
 }
@@ -93,6 +95,10 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 		}
 		if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/manifests/") {
 			r.manifestGets.Add(1)
+		}
+		if code := r.headStatus.Load(); code != 0 && req.Method == http.MethodHead && strings.Contains(req.URL.Path, "/manifests/") {
+			w.WriteHeader(int(code))
+			return
 		}
 		if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/manifests/") {
 			r.mu.Lock()
@@ -488,6 +494,27 @@ func TestRunWithoutHeadDigest(t *testing.T) {
 		if len(got) != 1 || got[0].Digest != d.String() {
 			t.Fatalf("skipped=%v: %+v", wantSkipped, res)
 		}
+	}
+}
+
+// A rate-limited HEAD is returned as is, never retried as a counted GET.
+func TestRunHeadRateLimitedNoGet(t *testing.T) {
+	src := newRegistry(t, regOpts{})
+	dst := newRegistry(t, regOpts{})
+	push(t, src.repo, v100, image(t))
+	src.headStatus.Store(http.StatusTooManyRequests)
+	gets := src.manifestGets.Load()
+
+	res, err := Run(context.Background(), Request{
+		Source: src.repo, Target: dst.repo,
+		Policy:     tags.Policy{Tags: []string{v100}},
+		SourceOpts: []remote.Option{remote.WithRetryBackoff(remote.Backoff{Steps: 1})},
+	})
+	if err == nil || !slices.Equal(tagsOf(res.Failed), []string{v100}) {
+		t.Fatalf("err %v, result %+v", err, res)
+	}
+	if n := src.manifestGets.Load() - gets; n != 0 {
+		t.Fatalf("%d manifest GETs after a 429 HEAD", n)
 	}
 }
 
