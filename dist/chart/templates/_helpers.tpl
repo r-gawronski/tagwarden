@@ -78,10 +78,12 @@ Image reference from a dict with repository, tag and digest. Takes a dict with
 
 {{/*
 Sync Job image: syncImage when its repository is set, else the manager image.
+An empty syncImage.tag falls back to manager.image.tag, then appVersion.
 */}}
 {{- define "tagwarden.syncImage" -}}
 {{- if .Values.syncImage.repository }}
-{{- include "tagwarden.image" (dict "image" .Values.syncImage "context" .) }}
+{{- $image := merge (dict "tag" (.Values.syncImage.tag | default .Values.manager.image.tag)) .Values.syncImage }}
+{{- include "tagwarden.image" (dict "image" $image "context" .) }}
 {{- else }}
 {{- include "tagwarden.managerImage" . }}
 {{- end }}

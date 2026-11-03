@@ -92,6 +92,9 @@ func TestValues(t *testing.T) {
 	}{
 		{name: "defaults", ok: true, want: "- --sync-image=registry.example.internal/tagwarden/tagwarden:0.1.0\n"},
 		{name: "empty denied CIDRs", ok: true, want: "- --denied-cidrs=\n"},
+		{name: "sync image tag from manager", ok: true,
+			args: []string{"--set", "manager.image.tag=1.2.3,syncImage.repository=registry.example.internal/sync"},
+			want: "- --sync-image=registry.example.internal/sync:1.2.3\n"},
 		{name: "unknown top-level key", args: []string{"--set", "bogus=1"}},
 		{name: "unknown nested key", args: []string{"--set", "manager.image.registry=x"}},
 		{name: "unknown mirror key", args: []string{"--set", "mirrors[0].name=a,mirrors[0].namespace=b,mirrors[0].spec.x=1,mirrors[0].extra=1"}},

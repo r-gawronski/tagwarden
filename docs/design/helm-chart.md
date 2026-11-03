@@ -67,7 +67,7 @@ server validates them against the Kubernetes and CRD schemas.
 | Value | Default | Notes |
 |-------|---------|-------|
 | `manager.image.repository`, `.tag`, `.digest`, `.pullPolicy` | `registry.example.internal/tagwarden/tagwarden`, appVersion, none, `IfNotPresent` | the digest is appended as `repo:tag@sha256:...` |
-| `syncImage.repository`, `.tag`, `.digest` | empty | empty repository means the manager image |
+| `syncImage.repository`, `.tag`, `.digest` | empty | empty repository means the manager image; empty tag means `manager.image.tag` |
 | `deniedCIDRs` | `[]` | rendered as `--denied-cidrs`; set the pod and service CIDRs |
 | `leaderElection.enabled` | `true` | |
 | `metrics.enabled`, `.port`, `.secure` | `true`, `8443`, `true` | |
