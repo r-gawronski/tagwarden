@@ -40,8 +40,12 @@ type Options struct {
 	// CAPEM is added to the system roots, for example a TLS-inspecting proxy CA.
 	CAPEM []byte
 	// ProxyURL is used for every request except NoProxy hosts. When nil, the
-	// HTTPS_PROXY, HTTP_PROXY and NO_PROXY environment variables apply.
+	// HTTPS_PROXY, HTTP_PROXY and NO_PROXY environment variables apply,
+	// unless NoEnvProxy is set.
 	ProxyURL *url.URL
+	// NoEnvProxy ignores the proxy environment variables: without ProxyURL
+	// every request goes direct.
+	NoEnvProxy bool
 	// NoProxy uses NO_PROXY syntax: a host, a ".suffix" domain or a CIDR,
 	// each with an optional port.
 	NoProxy []string
@@ -93,7 +97,11 @@ type checkedTransport struct {
 }
 
 func (c *checkedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	p, err := c.Proxy(r)
+	var p *url.URL
+	var err error
+	if c.Proxy != nil {
+		p, err = c.Proxy(r)
+	}
 	if err == nil {
 		err = c.check(r.Context(), r.URL.Hostname(), p != nil)
 	}
@@ -133,9 +141,11 @@ func checkedDial(plain func(context.Context, string, string) (net.Conn, error), 
 // as the transport dials it.
 func proxyAddrs(o Options) map[string]bool {
 	urls := []string{}
-	if o.ProxyURL != nil {
+	switch {
+	case o.ProxyURL != nil:
 		urls = append(urls, o.ProxyURL.String())
-	} else {
+	case o.NoEnvProxy:
+	default:
 		env := httpproxy.FromEnvironment()
 		urls = append(urls, env.HTTPProxy, env.HTTPSProxy)
 	}
@@ -162,6 +172,9 @@ func proxyAddrs(o Options) map[string]bool {
 
 func proxyFunc(o Options) (func(*http.Request) (*url.URL, error), error) {
 	if o.ProxyURL == nil {
+		if o.NoEnvProxy {
+			return nil, nil
+		}
 		return http.ProxyFromEnvironment, nil
 	}
 	if (o.ProxyURL.Scheme != "http" && o.ProxyURL.Scheme != "https") || o.ProxyURL.Host == "" {
