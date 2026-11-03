@@ -146,10 +146,10 @@ var _ = Describe("sync-now", Ordered, func() {
 		Expect(job.Spec.ActiveDeadlineSeconds).To(Equal(tmpl.Spec.ActiveDeadlineSeconds))
 		Expect(job.Spec.TTLSecondsAfterFinished).To(Equal(tmpl.Spec.TTLSecondsAfterFinished))
 		Expect(job.Spec.PodFailurePolicy).To(Equal(tmpl.Spec.PodFailurePolicy))
-		// Deleting the CronJob deletes the Job; the CronJob controller does
-		// not adopt it.
-		Expect(job.OwnerReferences).To(ConsistOf(And(HaveField("Kind", "CronJob"), HaveField("Name", cj.Name),
-			HaveField("UID", cj.UID), HaveField("Controller", BeNil()))))
+		// Like kubectl create job --from=cronjob: the CronJob controls it.
+		Expect(job.OwnerReferences).To(ConsistOf(And(HaveField("APIVersion", "batch/v1"), HaveField("Kind", "CronJob"),
+			HaveField("Name", cj.Name), HaveField("UID", cj.UID),
+			HaveField("Controller", HaveValue(BeTrue())), HaveField("BlockOwnerDeletion", HaveValue(BeTrue())))))
 		Expect(status(m)().LastSyncStartTime).NotTo(BeNil())
 		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Normal SyncRequested Created Job " +
 			operatorNamespace + "/" + job.Name)))
