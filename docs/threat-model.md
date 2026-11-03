@@ -93,3 +93,4 @@ These are requirements of regulated environments, not threat mitigations.
 
 - Distribution format of the offline trusted root: bundled in the image, a Secret, or both.
 - Whether tenants may add stricter signer identities on top of those in `ClusterMirrorTarget`.
+
