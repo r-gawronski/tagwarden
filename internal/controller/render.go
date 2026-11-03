@@ -174,6 +174,8 @@ func targetAuth(t *mirrorv1alpha1.ClusterMirrorTarget) string {
 		return syncspec.AuthAzureWorkloadIdentity
 	case a.AWSWorkloadIdentity != nil:
 		return syncspec.AuthAWSWorkloadIdentity
+	case a.GCPWorkloadIdentity != nil:
+		return syncspec.AuthGCPWorkloadIdentity
 	}
 	return ""
 }
@@ -187,6 +189,8 @@ func sourceAuth(c *mirrorv1alpha1.SourceCredential) string {
 		return syncspec.AuthAzureWorkloadIdentity
 	case c.AWSWorkloadIdentity != nil:
 		return syncspec.AuthAWSWorkloadIdentity
+	case c.GCPWorkloadIdentity != nil:
+		return syncspec.AuthGCPWorkloadIdentity
 	}
 	return ""
 }
@@ -237,6 +241,9 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 	}
 	if wi != nil && wi.AWS != nil && uses(syncspec.AuthAWSWorkloadIdentity) {
 		s.AWS = &syncspec.AWS{RoleARN: wi.AWS.RoleARN, Region: wi.AWS.Region}
+	}
+	if wi != nil && wi.GCP != nil && uses(syncspec.AuthGCPWorkloadIdentity) {
+		s.GCP = &syncspec.GCP{Audience: wi.GCP.Audience, ServiceAccountEmail: wi.GCP.ServiceAccountEmail}
 	}
 	return s
 }
@@ -340,6 +347,13 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	tokens := []struct{ provider, volume, audience, file string }{
 		{syncspec.AuthAzureWorkloadIdentity, "azure-token", syncspec.AzureTokenAudience, syncspec.AzureTokenFile},
 		{syncspec.AuthAWSWorkloadIdentity, "aws-token", syncspec.AWSTokenAudience, syncspec.AWSTokenFile},
+	}
+	// An empty audience would mint a Kubernetes API token: without the
+	// GCP identity the target is not Ready and the pod gets no GCP token.
+	if wi := t.Spec.WorkloadIdentity; wi != nil && wi.GCP != nil {
+		tokens = append(tokens, struct{ provider, volume, audience, file string }{
+			syncspec.AuthGCPWorkloadIdentity, "gcp-token", (&syncspec.GCP{Audience: wi.GCP.Audience}).TokenAudience(), syncspec.GCPTokenFile,
+		})
 	}
 	target, source := cloudAuth(t, m)
 	for _, tok := range tokens {
