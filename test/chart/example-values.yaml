@@ -1,0 +1,54 @@
+# Example values for the chart checks in CI: one target and one mirror.
+manager:
+  image:
+    repository: registry.example.internal/platform/tagwarden
+    tag: 0.1.0
+    digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  imagePullSecrets:
+    - name: registry-pull
+  nodeSelector:
+    kubernetes.io/os: linux
+syncImage:
+  repository: registry.example.internal/platform/tagwarden-sync
+  tag: 0.1.0
+deniedCIDRs:
+  - 10.244.0.0/16
+  - 10.96.0.0/12
+targets:
+  - name: default
+    spec:
+      registry: registry.example.internal
+      credentialsSecretRef:
+        name: registry-push
+      caBundleSecretRef:
+        name: registry-ca
+        key: ca.crt
+      proxy:
+        httpsProxy: http://proxy.example.internal:3128
+        noProxy:
+          - .example.internal
+      allowedSources:
+        - registry.k8s.io
+      projects:
+        - name: mirror
+          namespaceSelector: {}
+      policy:
+        onTagMutation: Fail
+mirrors:
+  - name: pause
+    namespace: team-a
+    spec:
+      targetRef: default
+      schedule: "0 3 * * *"
+      type: Image
+      source:
+        registry: registry.k8s.io
+        repository: pause
+      target:
+        project: mirror
+      tags:
+        include:
+          - ^\d+\.\d+$
+        keepLatest: 3
+      requiredPlatforms:
+        - linux/amd64
