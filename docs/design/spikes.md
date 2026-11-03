@@ -1,6 +1,6 @@
 # Phase 0 spike results
 
-Status: spikes 1, 2 and 3 finished.
+Status: spikes 1, 2 and 3 finished. Vulnerability gate spike (#21) finished, see the last section.
 
 ## Environment
 
@@ -202,3 +202,150 @@ Phase 2 Helm:
 - Expect digests to differ from a manual `helm push` of the same chart. Document it; compare on chart `.tgz` digest when matching against charts pushed by other tools.
 - Fetch `<chart url>.prov` for every version; 404 means unsigned. Push it as the provenance layer. Optionally verify it before push with a per-source keyring (`helm verify` semantics: OpenPGP, binary or armored keyring).
 - Add `release-assets.githubusercontent.com` and `objects.githubusercontent.com` to the allowlist table for GitHub-hosted classic repos.
+
+## Vulnerability gate: Trivy client/server -- WORKS, with caveats
+
+Step 0 of `docs/design/vulnerability-gate.md` (#21), run 2026-11-03.
+
+Environment: Docker 27.5.1, linux/arm64 VM (8 GiB, 10 CPUs). One scan repeated
+as linux/amd64 under emulation gave the same output. A throwaway CA, `registry:2`
+with TLS and htpasswd (separate push and pull accounts) as the platform mirror,
+`trivy-db:2` and `trivy-java-db:1` copied in with `crane copy`. Clients ran on an
+internal Docker network that could reach only the Trivy server. Timings are
+local-network numbers, so DB downloads are optimistic.
+
+Pinned image: `ghcr.io/aquasecurity/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c`
+(index, version 0.76.1, 4 platforms plus 4 attestation manifests, `USER` empty,
+entrypoint `trivy`).
+
+### Server
+
+Worked as uid 65532, read-only root FS, all capabilities dropped,
+no-new-privileges:
+
+    trivy server --listen 0.0.0.0:4954 --cache-dir /cache \
+      --token-header Trivy-Token \
+      --db-repository registry.example.internal/platform/ghcr.io/aquasecurity/trivy-db:2
+    # env: TRIVY_TOKEN, SSL_CERT_FILE=/ca.crt, DOCKER_CONFIG=/dockercfg,
+    #      HOME=/tmp, TMPDIR=/tmp
+
+| Check | Result |
+|---|---|
+| `--listen` | required; default is `localhost:4954` |
+| DB pull from a private registry | works with a docker config (`{"auths":{"<host>":{"auth":"<base64>"}}}`) or `TRIVY_USERNAME`/`TRIVY_PASSWORD`; CA via `SSL_CERT_FILE`. DB pull 6 s. |
+| Wrong password or missing CA | FATAL `failed to download vulnerability DB`, server exits |
+| `--cache-dir` | `db/trivy.db` 1,690,918,912 B, `fanal/fanal.db` 3 MiB after ~10 images. Must be owned by 65532 (`fsGroup`), else `mkdir /cache/fanal: permission denied` |
+| `/tmp` | holds the DB tarball during download. 256 MiB tmpfs failed (`no space left on device`); peak seen 265 MiB. Read-only: `failed to create a temp dir` |
+| DB refresh (source, v0.76.1) | hourly ticker; downloads when `now > NextUpdate` (24 h after `UpdatedAt`) and the last download is over 1 h old. Swap waits for running requests. A failed refresh logs and keeps the old DB. Not observed live. |
+| TLS | none. `trivy server` has no TLS flags; it serves plain HTTP. |
+
+Memory:
+
+| State | Value |
+|---|---|
+| idle | ~83 MiB, RSS ~106 MB after restart |
+| after an alpine, nginx, JVM or tomcat scan | VmHWM 110 to 151 MB |
+| after a python image (13,642 findings) | VmHWM 373 MB, cgroup peak 205 MiB |
+
+The DB is memory-mapped, so most of it is page cache.
+
+### Client
+
+Worked as uid 65532, read-only root FS, layout mounted read-only, no upstream
+network:
+
+    trivy image --server http://<server>:4954 \
+      --input /work/<layout>@sha256:<manifest digest> \
+      --scanners vuln --format json \
+      --skip-version-check --disable-telemetry --skip-java-db-update \
+      --skip-files '**/*.jar,**/*.war,**/*.ear,**/*.par'
+    # env: TRIVY_TOKEN, TMPDIR=<writable dir>; https: --cacert or SSL_CERT_FILE
+
+- No DB download in server mode; the cache dir stays empty. Only a writable
+  `TMPDIR` is needed (a 1 MiB tmpfs was enough for a 419 MiB image). Without
+  it: FATAL `failed to create a cache layers temp dir`.
+- Wire: Twirp over HTTP, protobuf, header `Trivy-Token`. `PutBlob` carries
+  per-layer analysis (OS, package records, history lines, diff IDs), no file
+  content. `Scan` carries the `--input` string, so the layout path reaches the
+  server. Sent: python 419 MiB layout 1.55 MB, tomcat 0.64 MB, nginx 0.24 MB.
+- Wrong token: exit 1, `twirp error unauthenticated: invalid token`. Exit 0 with
+  findings, 1 on any error. Stdout is clean JSON, progress on stderr.
+- UNKNOWN is `"Severity": "UNKNOWN"`. The Debian DLA entries checked had no
+  `SeveritySource`.
+- An EOSL OS is flagged (`Metadata.OS.EOSL: true`); the scan still succeeds.
+
+### Java DB
+
+JAR detection runs on the client. The server has no Java DB.
+
+| Mode | Result |
+|---|---|
+| no flags, no upstream | tries `mirror.gcr.io/aquasec/trivy-java-db:1`, FATAL |
+| `--skip-java-db-update`, no Java DB | FATAL `The first run cannot skip downloading Java DB` on any image with a JAR, WAR, EAR or PAR, including nginx (`libintl.jar` from gettext). `--offline-scan` does not help. |
+| plus `--skip-files '**/*.jar,**/*.war,**/*.ear,**/*.par'` | works; JAR findings silently missing |
+| Java DB in `<cache-dir>/java-db` | tomcat 9.0.50: 547 findings vs 500 without (47 in JARs: 8 CRITICAL, 20 HIGH, 14 MEDIUM, 5 LOW) |
+
+Cost of the Java DB per Job: 948 MiB compressed download (13 s from a local
+mirror, much longer over a WAN), 1.5 GiB unpacked, about 2.5 GiB of ephemeral
+disk with the tarball. Scan time unchanged; client peak 531 MiB vs 395 MiB on
+tomcat.
+
+### Version and `/version`
+
+    GET /version   (no token)
+    {"Version":"0.76.1","VulnerabilityDB":{"Version":2,"NextUpdate":"...",
+     "UpdatedAt":"2026-11-03T19:16:30Z","DownloadedAt":"..."}}
+    GET /healthz -> 200 ok
+    POST /twirp/... with a bad token -> 401 unauthenticated
+
+Clients 0.75.0 and 0.60.0 against a 0.76.1 server: exit 0, same findings, no
+warning. Nothing enforces a version match.
+
+### Multi-arch layouts
+
+| Layout and `--input` | Result |
+|---|---|
+| nested index (`crane pull --format oci`), no digest | first child (amd64) only |
+| same, `--platform linux/arm64` | `--platform` ignored, amd64 |
+| same, `@<child digest>` | FATAL, not in `index.json` |
+| one top-level `index.json` entry per child, `@sha256:<child>` | that child scanned |
+| same, `@sha256:<attestation child>` | FATAL `archive/tar: invalid tar header` |
+
+Blobs are copied as they are, so digests round-trip unchanged.
+
+### Report size
+
+| Image | Findings | Full JSON | `--list-all-pkgs=false` | Minimal template |
+|---|---|---|---|---|
+| alpine 3.19 | 10 | 46 KB | 25 KB | 1.2 KB |
+| nginx 1.25 | 836 | 3.7 MB | 3.2 MB | - |
+| tomcat 9.0.50 | 500 | 3.2 MB | 2.4 MB | - |
+| python 3.9 | 13,642 | 59.2 MB | 57.3 MB | 1.67 MB |
+
+`--format template` output is valid JSON with one entry per finding (template
+in the design). A template sees only the results, not `Trivy.Server`.
+
+### Scan time and memory
+
+Cold server cache per row, DB loaded. Client peak is the cgroup peak and
+includes page cache.
+
+| Image | Layout | Findings (no Java DB / Java DB) | Wall | Client peak | Server RSS |
+|---|---|---|---|---|---|
+| alpine 3.19 | 22 MiB | 10 / 10 | 0.5 s | 37 MiB | 110 MB |
+| nginx 1.25 (all platforms) | 541 MiB | 836 / 836 | 1.1 s | 148 MiB | 151 MB |
+| eclipse-temurin 17 jre | 107 MiB | 57 / 57 | 1.0 s | 153 MiB | 121 MB |
+| tomcat 9.0.50 | 342 MiB | 500 / 547 | 2.1 s | 395 / 531 MiB | 141 MB |
+| python 3.9 | 419 MiB | 13,642 / 13,642 | 4.7 s | 927 / 941 MiB | 373 MB |
+
+Warm server cache: alpine 0.5 s, tomcat 0.6 s. Concurrency not measured.
+
+### Corrections to the design
+
+- The design's client flags crash on any image with a JAR. Disabled mode needs
+  `--skip-files`.
+- Full JSON can exceed the 32 MiB report cap. Use the minimal template.
+- `--platform` does not select a child of a layout; write one top-level
+  descriptor per child and scan by digest.
+- No in-process TLS on the server.
+- A version mismatch is not detected by Trivy.
