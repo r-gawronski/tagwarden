@@ -1,0 +1,18 @@
+{{- if .Values.trivy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tagwarden.trivyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tagwarden.trivyLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "tagwarden.trivySelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 4954
+      targetPort: http
+      protocol: TCP
+{{- end }}

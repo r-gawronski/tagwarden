@@ -1,0 +1,11 @@
+# Gate enabled with the in-chart Trivy server, for the chart checks in CI.
+networkPolicy: {enabled: true}
+trivy:
+  enabled: true
+  image: {repository: registry.example.internal/platform/trivy, tag: "0.76.1", digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+  db:
+    repository: registry.example.internal/platform/ghcr.io/aquasecurity/trivy-db:2
+    credentialsSecretRef: {name: trivy-db-pull}
+    caBundleSecretRef: {name: registry-ca, key: ca.crt}
+  networkPolicy:
+    registryEgress: [{cidr: 10.0.0.0/24, port: 443}]
