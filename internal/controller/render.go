@@ -165,12 +165,37 @@ func targetRepo(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.Artifac
 	return string(t.Spec.Registry) + "/" + string(m.Spec.Target.Project) + "/" + targetPath(m)
 }
 
-// azureAuth reports whether the target push and the mirror's source pull
-// use Azure workload identity.
-func azureAuth(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (target, source bool) {
-	target = t.Spec.Auth != nil && t.Spec.Auth.AzureWorkloadIdentity != nil
+// targetAuth names the cloud provider of the target push, or "".
+func targetAuth(t *mirrorv1alpha1.ClusterMirrorTarget) string {
+	switch a := t.Spec.Auth; {
+	case a == nil:
+		return ""
+	case a.AzureWorkloadIdentity != nil:
+		return syncspec.AuthAzureWorkloadIdentity
+	case a.AWSWorkloadIdentity != nil:
+		return syncspec.AuthAWSWorkloadIdentity
+	}
+	return ""
+}
+
+// sourceAuth names the cloud provider of a source entry, or "".
+func sourceAuth(c *mirrorv1alpha1.SourceCredential) string {
+	switch {
+	case c == nil:
+		return ""
+	case c.AzureWorkloadIdentity != nil:
+		return syncspec.AuthAzureWorkloadIdentity
+	case c.AWSWorkloadIdentity != nil:
+		return syncspec.AuthAWSWorkloadIdentity
+	}
+	return ""
+}
+
+// cloudAuth names the cloud providers of the target push and of the
+// mirror's source pull, "" for none.
+func cloudAuth(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (target, source string) {
 	cred, _ := sourceRefs(t, string(m.Spec.Source.Registry))
-	return target, cred != nil && cred.AzureWorkloadIdentity != nil
+	return targetAuth(t), sourceAuth(cred)
 }
 
 // syncSpec renders the spec the sync Job reads. It holds no secret values.
@@ -199,20 +224,19 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 		AllowedSources:    allowed,
 		DeniedCIDRs:       denied,
 	}
-	target, source := azureAuth(t, m)
-	if target {
-		s.TargetAuth = syncspec.AuthAzureWorkloadIdentity
-	}
-	if source {
-		s.SourceAuth = syncspec.AuthAzureWorkloadIdentity
-	}
-	// A target that uses Azure auth without an Azure identity is not Ready.
-	if wi := t.Spec.WorkloadIdentity; (target || source) && wi != nil && wi.Azure != nil {
+	s.TargetAuth, s.SourceAuth = cloudAuth(t, m)
+	uses := func(p string) bool { return s.TargetAuth == p || s.SourceAuth == p }
+	// A target that uses cloud auth without its identity is not Ready.
+	wi := t.Spec.WorkloadIdentity
+	if wi != nil && wi.Azure != nil && uses(syncspec.AuthAzureWorkloadIdentity) {
 		s.Azure = &syncspec.Azure{
 			ClientID:      wi.Azure.ClientID,
 			TenantID:      wi.Azure.TenantID,
 			AuthorityHost: cmp.Or(wi.Azure.AuthorityHost, syncspec.DefaultAzureAuthorityHost),
 		}
+	}
+	if wi != nil && wi.AWS != nil && uses(syncspec.AuthAWSWorkloadIdentity) {
+		s.AWS = &syncspec.AWS{RoleARN: wi.AWS.RoleARN, Region: wi.AWS.Region}
 	}
 	return s
 }
@@ -313,19 +337,27 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	// Cloud auth gets a projected token for the cloud audience only, never
 	// a Kubernetes API token.
 	serviceAccount := SyncServiceAccount
-	if target, source := azureAuth(t, m); target || source {
+	tokens := []struct{ provider, volume, audience, file string }{
+		{syncspec.AuthAzureWorkloadIdentity, "azure-token", syncspec.AzureTokenAudience, syncspec.AzureTokenFile},
+		{syncspec.AuthAWSWorkloadIdentity, "aws-token", syncspec.AWSTokenAudience, syncspec.AWSTokenFile},
+	}
+	target, source := cloudAuth(t, m)
+	for _, tok := range tokens {
+		if target != tok.provider && source != tok.provider {
+			continue
+		}
 		if wi := t.Spec.WorkloadIdentity; wi != nil && wi.ServiceAccountName != "" {
 			serviceAccount = wi.ServiceAccountName
 		}
-		volumes = append(volumes, corev1.Volume{Name: "azure-token", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+		volumes = append(volumes, corev1.Volume{Name: tok.volume, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 			Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-				Audience:          syncspec.AzureTokenAudience,
+				Audience:          tok.audience,
 				ExpirationSeconds: ptr.To[int64](3600),
-				Path:              filepath.Base(syncspec.AzureTokenFile),
+				Path:              filepath.Base(tok.file),
 			}}},
 			DefaultMode: ptr.To[int32](0o440),
 		}}})
-		mounts = append(mounts, readOnly("azure-token", filepath.Dir(syncspec.AzureTokenFile)))
+		mounts = append(mounts, readOnly(tok.volume, filepath.Dir(tok.file)))
 	}
 	var env []corev1.EnvVar
 	if p := t.Spec.Proxy; p != nil {
