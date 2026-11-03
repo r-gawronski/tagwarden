@@ -271,6 +271,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		pod.Containers[0].SecurityContext.Privileged = new(true)
 		pod.Containers[0].SecurityContext.AllowPrivilegeEscalation = new(true)
 		pod.SecurityContext.RunAsNonRoot = new(false)
+		pod.HostAliases = []corev1.HostAlias{{IP: "10.0.0.1", Hostnames: []string{"source.example.internal"}}}
 		Expect(k8sClient.Update(ctx, cj)).To(Succeed())
 
 		Eventually(func(g Gomega) {
@@ -281,6 +282,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 			g.Expect(p.Containers[0].SecurityContext.Privileged).To(BeNil())
 			g.Expect(*p.Containers[0].SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
 			g.Expect(*p.SecurityContext.RunAsNonRoot).To(BeTrue())
+			g.Expect(p.HostAliases).To(BeEmpty())
 		}).Should(Succeed())
 	})
 
