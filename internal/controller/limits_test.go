@@ -34,11 +34,15 @@ import (
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
+// leapDayHour runs one hour apart only from 23:00 on 29 February to
+// midnight on 1 March, the next time in 2028.
+const leapDayHour = "0 0,6,12,18,23 1,3,5,7,9,11,13,15,17,19,21,23,25,27,29 * *"
+
 var _ = Describe("minGap", func() {
 	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	DescribeTable("finds the shortest gap between runs",
 		func(schedule string, want time.Duration) {
-			Expect(minGap(schedule, from)).To(Equal(want))
+			Expect(minGap(schedule, from, 0)).To(Equal(want))
 		},
 		Entry("every minute", "* * * * *", time.Minute),
 		Entry("every 5 minutes", "*/5 * * * *", 5*time.Minute),
@@ -52,10 +56,21 @@ var _ = Describe("minGap", func() {
 		Entry("weekday steps", "*/15 1-5 ? * MON-FRI", 15*time.Minute),
 		Entry("only on 1 January", "0,30 0 1 1 *", 30*time.Minute),
 		Entry("never runs", "0 0 30 2 *", time.Duration(math.MaxInt64)),
+		Entry("one hour only from 29 February to 1 March", leapDayHour, time.Hour),
 	)
 
+	It("stops at the first gap below the limit", func() {
+		Expect(minGap(leapDayHour, from, 6*time.Hour)).To(Equal(5 * time.Hour))
+	})
+
+	It("looks five years ahead", func() {
+		Expect(minGap(leapDayHour, time.Date(2028, 3, 1, 0, 0, 0, 0, time.UTC), 0)).To(Equal(time.Hour))
+		// 2100 is no leap year, so the next 29 February is in 2104.
+		Expect(minGap(leapDayHour, time.Date(2096, 3, 1, 0, 0, 0, 0, time.UTC), 0)).To(Equal(5 * time.Hour))
+	})
+
 	It("refuses what the CronJob controller refuses", func() {
-		_, err := minGap("61 * * * *", from)
+		_, err := minGap("61 * * * *", from, 0)
 		Expect(err).To(HaveOccurred())
 	})
 })
@@ -91,10 +106,10 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 		},
 		Entry("schedule more often than hourly", func(m *mirrorv1alpha1.ArtifactMirror) {
 			m.Spec.Schedule = "*/30 * * * *"
-		}, ReasonScheduleTooFrequent, "runs every 30m0s at its most frequent, below minSyncInterval 1h0m0s"),
+		}, ReasonScheduleTooFrequent, "runs 30m0s apart at least once, below minSyncInterval 1h0m0s"),
 		Entry("schedule that runs twice within a minute of a day", func(m *mirrorv1alpha1.ArtifactMirror) {
 			m.Spec.Schedule = "0,1 3 * * *"
-		}, ReasonScheduleTooFrequent, "runs every 1m0s"),
+		}, ReasonScheduleTooFrequent, "runs 1m0s apart"),
 		Entry("keepLatest above 20", func(m *mirrorv1alpha1.ArtifactMirror) {
 			m.Spec.Tags.KeepLatest = ptr.To[int32](21)
 		}, ReasonLimitExceeded, "tags.keepLatest 21 exceeds maxKeepLatest 20"),
