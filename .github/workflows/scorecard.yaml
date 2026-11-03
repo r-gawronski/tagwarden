@@ -13,10 +13,14 @@ permissions:
 
 jobs:
   analysis:
+    # Skipped while the repository is private.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
+      actions: read
+      # Used by publish_results once the repository is public.
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
