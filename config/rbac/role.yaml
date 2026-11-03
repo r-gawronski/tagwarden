@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - namespaces
+  - pods
   verbs:
   - get
   - list
@@ -24,8 +25,10 @@ rules:
   resources:
   - artifactmirrors
   verbs:
+  - create
   - get
   - list
+  - patch
   - update
   - watch
 - apiGroups:

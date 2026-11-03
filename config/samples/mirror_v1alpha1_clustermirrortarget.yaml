@@ -54,3 +54,10 @@ spec:
     maxKeepLatest: 20
     maxExplicitTags: 50
     maxArtifactSize: 10Gi
+  # Let pods annotated with tagwarden.dev/auto-mirror: default request
+  # mirrors of their images. The project must be listed above.
+  autoMirror:
+    enabled: true
+    project: mirror
+    schedule: "0 */6 * * *"
+    maxMirrorsPerNamespace: 20

@@ -187,6 +187,11 @@ var _ = BeforeSuite(func() {
 		ArgoCDTracking:      ArgoCDTrackingInherit,
 		ArgoCDInstanceLabel: "app.kubernetes.io/instance",
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&AutoMirrorReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Recorder:  recorder,
+	}).SetupWithManager(mgr)).To(Succeed())
 	go func() {
 		defer GinkgoRecover()
 		Expect(mgr.Start(ctx)).To(Succeed())
