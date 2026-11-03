@@ -88,3 +88,41 @@ An empty syncImage.tag falls back to manager.image.tag, then appVersion.
 {{- include "tagwarden.managerImage" . }}
 {{- end }}
 {{- end }}
+
+
+{{/*
+Trivy server name, image and labels. The Service name is what gated sync pods
+and the manager reach.
+*/}}
+{{- define "tagwarden.trivyName" -}}
+{{- include "tagwarden.resourceName" (dict "suffix" "trivy" "context" .) }}
+{{- end }}
+
+{{- define "tagwarden.trivyImage" -}}
+{{- $image := .Values.trivy.image }}
+{{- printf "%s:%s@%s" (required "trivy.image.repository is required" $image.repository) (required "trivy.image.tag is required" $image.tag) (required "trivy.image.digest is required" $image.digest) }}
+{{- end }}
+
+{{- define "tagwarden.trivySelectorLabels" -}}
+app.kubernetes.io/name: {{ include "tagwarden.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: trivy
+{{- end }}
+
+{{- define "tagwarden.trivyLabels" -}}
+{{ include "tagwarden.trivySelectorLabels" . }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+{{- end }}
+
+{{/*
+Manager flags for the gate, empty unless trivy.enabled (the only guard). The Trivy version is
+the image tag.
+*/}}
+{{- define "tagwarden.trivyManagerArgs" -}}
+{{- if .Values.trivy.enabled }}
+- --trivy-image={{ include "tagwarden.trivyImage" . }}
+- --trivy-version={{ .Values.trivy.image.tag }}
+- --trivy-url=http://{{ include "tagwarden.trivyName" . }}.{{ .Release.Namespace }}.svc:4954
+{{- end }}
+{{- end }}

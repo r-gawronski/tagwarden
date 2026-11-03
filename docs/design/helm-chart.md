@@ -44,6 +44,7 @@ values.
 | `templates/_helpers.tpl`, `templates/NOTES.txt`, `.helmignore` | hand; the plugin keeps them |
 | `templates/prometheus/*`, `templates/network-policy/*` | hand; the plugin keeps them |
 | `templates/sync/serviceaccount.yaml` | hand |
+| `templates/trivy/*` | hand; rendered only with `trivy.enabled` |
 | `templates/mirror/resources.yaml` | hand |
 | `templates/crd/*`, `templates/rbac/*`, `templates/manager/*`, `templates/metrics/*` | generated on every `make helm` |
 
@@ -81,6 +82,7 @@ server validates them against the Kubernetes and CRD schemas.
 | `manager.podSecurityContext`, `.securityContext`, `.resources` | hardened | runAsNonRoot, seccomp RuntimeDefault, read-only root FS, no privilege escalation, drop ALL, limits set |
 | `crd.enabled`, `crd.keep` | `true`, `true` | see below |
 | `rbac.helpers.enabled` | `false` | admin, editor and viewer ClusterRoles for the CRDs |
+| `trivy.enabled` | `false` | in-chart Trivy server for the vulnerability gate, see below |
 | `targets` | `[]` | items `{name, spec}` render `ClusterMirrorTarget` |
 | `mirrors` | `[]` | items `{name, namespace, spec}` render `ArtifactMirror` |
 
@@ -91,6 +93,31 @@ them silently. With `deniedCIDRs: []` the chart renders `--denied-cidrs=`,
 which the manager accepts as an empty list.
 `POD_NAMESPACE` comes from the downward API, so the release namespace is the
 operator namespace. Secrets referenced by targets must exist there.
+
+## Trivy server
+
+`trivy.enabled: true` renders, in the release namespace, a one-replica
+StatefulSet with a cache PVC (`trivy.persistence`, 10Gi), a Service on 4954,
+a ServiceAccount without token, a token Secret and, with
+`networkPolicy.enabled`, a NetworkPolicy. The Secret is generated once and
+kept on upgrades (annotated `helm.sh/resource-policy: keep`), or
+`trivy.token.existingSecret` names one with a `token` key. The generated token
+is kept through `lookup`, which returns nothing under `helm template` and Argo
+CD, so every render there would rotate it: GitOps installs must set
+`trivy.token.existingSecret`. The server pod carries a `checksum/token`
+annotation, so a changed token restarts it. A startup probe on `/healthz`
+allows 15 minutes for the first DB download. With `networkPolicy.enabled:
+false` the server is protected by the token only. The schema requires `trivy.image` (repository, tag, digest),
+`trivy.db.repository` and a `trivy.tmp.sizeLimit` of at least 1Gi, and caps
+`trivy.replicas` at 1. `trivy.image.tag` is the Trivy version. The NetworkPolicy
+admits pods labeled `tagwarden.dev/scanner: trivy` and the manager, and
+allows egress to DNS and `trivy.networkPolicy.registryEgress`.
+
+With the server enabled the manager gets `--trivy-image`, `--trivy-version`
+and `--trivy-url`. The manager.yaml line that adds them is patched by
+`make helm`, like the image line. `scanner.url` for an external server
+belongs to the `ClusterMirrorTarget` API, not to the chart. Design:
+[vulnerability-gate.md](vulnerability-gate.md).
 
 ## CRDs
 
@@ -160,13 +187,16 @@ cluster-scoped CRDs.
 
 - `helm lint --strict`;
 - `helm template` with the default values and with
-  `test/chart/example-values.yaml` (one target, one mirror), validated by
+  `test/chart/example-values.yaml` (one target, one mirror) and
+  `test/chart/trivy-values.yaml` (gate enabled), validated by
   kubeconform (`go tool`, version in `go.mod`) in strict mode against the
   Kubernetes schemas. CRDs, Tagwarden kinds and ServiceMonitor are skipped:
   kubeconform has no schema for them;
 - `go test -tags=chart ./test/chart/`: decodes the rendered targets and
   mirrors strictly into the API types, checks the image, sync image and
-  denied CIDR args, and checks that the schema rejects unknown keys.
+  denied CIDR args, checks that the schema rejects unknown keys, that
+  `trivy.enabled: false` renders nothing about Trivy and that the schema
+  requires the Trivy digest and a `tmp.sizeLimit` of at least 1Gi.
 
 Helm comes from `azure/setup-helm`, pinned by commit, at the version in the
 workflow.

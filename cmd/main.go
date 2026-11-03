@@ -19,10 +19,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 
@@ -66,6 +69,29 @@ func runSync(args []string) int {
 	return synccmd.Run(ctx, args, os.Stdout, synccmd.TerminationLogPath)
 }
 
+var (
+	trivyImageRe   = regexp.MustCompile(`@sha256:[a-f0-9]{64}$`)
+	trivyVersionRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+)
+
+// validateTrivy checks the vulnerability gate flags. They are all empty or all set.
+func validateTrivy(image, version, serverURL string) error {
+	if image == "" && version == "" && serverURL == "" {
+		return nil
+	}
+	if !trivyImageRe.MatchString(image) {
+		return errors.New("--trivy-image must be pinned by digest (@sha256:<64 hex>)")
+	}
+	if !trivyVersionRe.MatchString(version) {
+		return errors.New("--trivy-version must look like 0.76.1")
+	}
+	u, err := url.Parse(serverURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("--trivy-url must be an http or https URL")
+	}
+	return nil
+}
+
 // nolint:gocyclo
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "sync" {
@@ -81,6 +107,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var trivyImage, trivyVersion, trivyURL string
 	var operatorNamespace, syncImage, deniedCIDRs string
 	var argoTracking, argoInstanceLabel string
 	flag.StringVar(&operatorNamespace, "operator-namespace", os.Getenv("POD_NAMESPACE"),
@@ -93,6 +120,9 @@ func main() {
 		`Show sync CronJobs in the Argo CD app of their mirror: "inherit", or empty to turn it off.`)
 	flag.StringVar(&argoInstanceLabel, "argocd-instance-label", controller.DefaultArgoCDInstanceLabel,
 		"The label Argo CD uses for label tracking mode.")
+	flag.StringVar(&trivyImage, "trivy-image", "", "Trivy image of the gate, pinned by digest. Set by the chart.")
+	flag.StringVar(&trivyVersion, "trivy-version", "", "Trivy version of the gate image and server. Set by the chart.")
+	flag.StringVar(&trivyURL, "trivy-url", "", "URL of the in-chart Trivy server. Set by the chart.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -131,6 +161,13 @@ func main() {
 	if errs := validation.IsQualifiedName(argoInstanceLabel); len(errs) > 0 {
 		setupLog.Error(nil, "Invalid --argocd-instance-label", "value", argoInstanceLabel, "reason", strings.Join(errs, "; "))
 		os.Exit(1)
+	}
+	if err := validateTrivy(trivyImage, trivyVersion, trivyURL); err != nil {
+		setupLog.Error(err, "Invalid vulnerability gate flags")
+		os.Exit(1)
+	}
+	if trivyURL != "" {
+		setupLog.Info("Vulnerability gate scanner configured", "image", trivyImage, "version", trivyVersion, "url", trivyURL)
 	}
 	var denied []string
 	for c := range strings.SplitSeq(deniedCIDRs, ",") {

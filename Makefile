@@ -302,6 +302,10 @@ helm: manifests kustomize kubebuilder ## Regenerate the Helm chart in dist/chart
 	sed -i.bak 's#^        image: ".*manager\.image\.repository.*$$#        image: {{ include "tagwarden.managerImage" . | quote }}#' dist/chart/templates/manager/manager.yaml
 	rm dist/chart/templates/manager/manager.yaml.bak
 	grep -q 'include "tagwarden.managerImage"' dist/chart/templates/manager/manager.yaml
+	@# Add the gate flags in front of manager.args, only when trivy.enabled.
+	sed -i.bak 's#^        {{- range .Values.manager.args }}$$#        {{- with (include "tagwarden.trivyManagerArgs" .) }}{{ . | nindent 8 }}{{ end }}{{- range .Values.manager.args }}#' dist/chart/templates/manager/manager.yaml
+	rm dist/chart/templates/manager/manager.yaml.bak
+	grep -q 'include "tagwarden.trivyManagerArgs"' dist/chart/templates/manager/manager.yaml
 
 # Kubernetes schemas kubeconform validates against. Tagwarden kinds are
 # checked by test/chart, CRDs come from controller-gen.
@@ -311,7 +315,7 @@ CHART_API_VERSIONS = --api-versions mirror.tagwarden.dev/v1alpha1
 .PHONY: chart-check
 chart-check: ## Lint the chart and validate its rendered output.
 	$(HELM) lint --strict $(HELM_CHART_DIR)
-	for values in $(HELM_CHART_DIR)/values.yaml test/chart/example-values.yaml; do \
+	for values in $(HELM_CHART_DIR)/values.yaml test/chart/example-values.yaml test/chart/trivy-values.yaml; do \
 		$(HELM) template tagwarden $(HELM_CHART_DIR) -n tagwarden-system -f "$$values" $(CHART_API_VERSIONS) | \
 		go tool kubeconform -strict -summary -kubernetes-version $(KUBECONFORM_K8S_VERSION) \
 			-skip CustomResourceDefinition,ClusterMirrorTarget,ArtifactMirror,ServiceMonitor - ; \

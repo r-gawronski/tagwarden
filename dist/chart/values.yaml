@@ -141,6 +141,58 @@ prometheus:
 networkPolicy:
   enabled: false
 
+## Trivy server for the vulnerability gate. See docs/design/vulnerability-gate.md.
+## One replica, plain HTTP inside the cluster, guarded by a token and (with
+## networkPolicy.enabled) a NetworkPolicy. With networkPolicy.enabled=false the
+## server is protected by the token only. The manager gets --trivy-image,
+## --trivy-version and --trivy-url from these values.
+trivy:
+  enabled: false
+  ## Pinned by digest, which is required when enabled. tag is the Trivy
+  ## version, for example "0.76.1"; the gate checks it against the server.
+  image:
+    repository: ""
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  ## One replica only: scans need one cache. The schema rejects more.
+  replicas: 1
+  ## Vulnerability DB in the target registry, never the internet.
+  db:
+    ## For example registry.example.internal/platform/ghcr.io/aquasecurity/trivy-db:2
+    repository: ""
+    ## kubernetes.io/dockerconfigjson Secret with a pull-only account.
+    # credentialsSecretRef: {name: trivy-db-pull}
+    ## CA of the registry, passed as SSL_CERT_FILE.
+    # caBundleSecretRef: {name: registry-ca, key: ca.crt}
+  persistence:
+    size: 10Gi
+    storageClassName: ""
+  ## /tmp emptyDir. Holds the DB tarball during a download.
+  tmp:
+    sizeLimit: 2Gi
+  ## Existing Secret with a "token" key. Empty: the chart generates one and
+  ## keeps it on upgrades. The upgrade lookup returns nothing under Argo CD and
+  ## helm template, which would rotate the token on every render: GitOps
+  ## installs must set existingSecret.
+  token:
+    existingSecret: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  ## Egress is limited to DNS and these ranges. Needs networkPolicy.enabled.
+  networkPolicy:
+    registryEgress: []
+    # - {cidr: 10.0.0.0/24, port: 443}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 ## ClusterMirrorTargets to create. Each item is {name, spec}; spec is passed
 ## through as is. Secrets referenced by a target live in the release namespace.
 targets: []

@@ -1,0 +1,182 @@
+{{- if .Values.trivy.enabled }}
+{{- $db := .Values.trivy.db }}
+{{- /*
+The token Secret lives in this file so the Secret and the pod checksum share one
+generated value. A generated token is kept on upgrades through lookup, which
+returns nothing under helm template and Argo CD: GitOps installs must set
+trivy.token.existingSecret.
+*/}}
+{{- $generatedName := include "tagwarden.resourceName" (dict "suffix" "trivy-token" "context" .) }}
+{{- $tokenSecret := .Values.trivy.token.existingSecret | default $generatedName }}
+{{- $token := "" }}
+{{- with lookup "v1" "Secret" .Release.Namespace $tokenSecret }}
+{{- $token = get (.data | default dict) "token" }}
+{{- end }}
+{{- if not .Values.trivy.token.existingSecret }}
+{{- $token = $token | default (randAlphaNum 40 | b64enc) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $generatedName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tagwarden.trivyLabels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  token: {{ $token }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "tagwarden.trivyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tagwarden.trivyLabels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "tagwarden.trivyName" . }}
+  replicas: {{ .Values.trivy.replicas }}
+  selector:
+    matchLabels:
+      {{- include "tagwarden.trivySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tagwarden.trivyLabels" . | nindent 8 }}
+      annotations:
+        checksum/token: {{ $token | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "tagwarden.trivyName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.trivy.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.trivy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.trivy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.trivy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: trivy
+          image: {{ include "tagwarden.trivyImage" . | quote }}
+          imagePullPolicy: {{ .Values.trivy.image.pullPolicy }}
+          args:
+            - server
+            - --listen=0.0.0.0:4954
+            - --cache-dir=/cache
+            - --token-header=Trivy-Token
+            - --db-repository={{ required "trivy.db.repository is required" $db.repository }}
+          env:
+            - name: TRIVY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $tokenSecret }}
+                  key: token
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+            {{- with $db.caBundleSecretRef }}
+            - name: SSL_CERT_FILE
+              value: /etc/trivy-ca/{{ .key }}
+            {{- end }}
+            {{- with $db.credentialsSecretRef }}
+            - name: DOCKER_CONFIG
+              value: /etc/trivy-docker
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 4954
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.trivy.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+            - name: tmp
+              mountPath: /tmp
+            {{- with $db.caBundleSecretRef }}
+            - name: ca
+              mountPath: /etc/trivy-ca
+              readOnly: true
+            {{- end }}
+            {{- with $db.credentialsSecretRef }}
+            - name: docker-config
+              mountPath: /etc/trivy-docker
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.trivy.tmp.sizeLimit }}
+        {{- with $db.caBundleSecretRef }}
+        - name: ca
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: {{ .key }}
+                path: {{ .key }}
+        {{- end }}
+        {{- with $db.credentialsSecretRef }}
+        - name: docker-config
+          secret:
+            secretName: {{ .name }}
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: cache
+        labels:
+          {{- include "tagwarden.trivySelectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- with .Values.trivy.persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.trivy.persistence.size }}
+{{- end }}
