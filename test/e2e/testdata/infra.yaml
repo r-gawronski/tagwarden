@@ -1,0 +1,263 @@
+# In-cluster registries and proxy for the mirror e2e tests. The test creates
+# the TLS Secrets source-tls and target-tls from a CA it generates.
+#
+# The source stands in for an internet registry: it is reachable as
+# source.example.internal only through the proxy, which maps that name to
+# the fixed source ClusterIP. Cluster DNS cannot resolve it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-infra
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zot
+  namespace: e2e-infra
+data:
+  source.json: |
+    {
+      "distSpecVersion": "1.1.1",
+      "storage": {"rootDirectory": "/var/lib/registry"},
+      "http": {
+        "address": "0.0.0.0",
+        "port": "5000",
+        "tls": {"cert": "/tls/tls.crt", "key": "/tls/tls.key"}
+      },
+      "log": {"level": "info"}
+    }
+  target.json: |
+    {
+      "distSpecVersion": "1.1.1",
+      "storage": {"rootDirectory": "/var/lib/registry"},
+      "http": {
+        "address": "0.0.0.0",
+        "port": "5000",
+        "tls": {"cert": "/tls/tls.crt", "key": "/tls/tls.key"},
+        "auth": {"htpasswd": {"path": "/auth/htpasswd"}},
+        "compat": ["docker2s2"]
+      },
+      "log": {"level": "info"}
+    }
+---
+# Test-only user e2e with password e2e-password (bcrypt), for the target
+# registry and the proxy.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: htpasswd
+  namespace: e2e-infra
+stringData:
+  htpasswd: |
+    e2e:$2y$05$j8WzbJntxrZN2Nq8pE5/yey8UawVPquK59v50qOCtfsjDzexxM7CW
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: source
+  namespace: e2e-infra
+spec:
+  selector:
+    matchLabels: {app: source}
+  template:
+    metadata:
+      labels: {app: source}
+    spec:
+      containers:
+        - name: zot
+          image: ghcr.io/project-zot/zot-minimal:v2.1.15@sha256:346cefc8dd90c6ffe1e714460ba4bb5f867eacae9b40ca87da3c2e7e034ad31a
+          args: ["serve", "/etc/zot/source.json"]
+          ports: [{containerPort: 5000}]
+          readinessProbe:
+            tcpSocket: {port: 5000}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: config, mountPath: /etc/zot}
+            - {name: tls, mountPath: /tls}
+            - {name: data, mountPath: /var/lib/registry}
+      volumes:
+        - {name: config, configMap: {name: zot}}
+        - {name: tls, secret: {secretName: source-tls}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: source
+  namespace: e2e-infra
+spec:
+  # Fixed, so the proxy can map source.example.internal to it. Inside the
+  # kind service CIDR 10.96.0.0/16.
+  clusterIP: 10.96.100.100
+  selector: {app: source}
+  ports: [{port: 5000, targetPort: 5000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: target
+  namespace: e2e-infra
+spec:
+  selector:
+    matchLabels: {app: target}
+  template:
+    metadata:
+      labels: {app: target}
+    spec:
+      containers:
+        - name: zot
+          image: ghcr.io/project-zot/zot-minimal:v2.1.15@sha256:346cefc8dd90c6ffe1e714460ba4bb5f867eacae9b40ca87da3c2e7e034ad31a
+          args: ["serve", "/etc/zot/target.json"]
+          ports: [{containerPort: 5000}]
+          readinessProbe:
+            tcpSocket: {port: 5000}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: config, mountPath: /etc/zot}
+            - {name: tls, mountPath: /tls}
+            - {name: auth, mountPath: /auth}
+            - {name: data, mountPath: /var/lib/registry}
+      volumes:
+        - {name: config, configMap: {name: zot}}
+        - {name: tls, secret: {secretName: target-tls}}
+        - {name: auth, secret: {secretName: htpasswd}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: target
+  namespace: e2e-infra
+spec:
+  selector: {app: target}
+  ports: [{port: 5000, targetPort: 5000}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: squid
+  namespace: e2e-infra
+data:
+  squid.conf: |
+    http_port 3128
+    # Squid sizes its tables by RLIMIT_NOFILE, which is huge in kind pods
+    # and gets it OOM killed.
+    max_filedescriptors 1024
+    auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/auth/htpasswd
+    auth_param basic realm e2e
+    acl authed proxy_auth REQUIRED
+    acl CONNECT method CONNECT
+    acl tls_ports port 443 5000
+    http_access deny CONNECT !tls_ports
+    http_access allow authed
+    http_access deny all
+    cache deny all
+    # Resolves source.example.internal from the pod hostAliases.
+    hosts_file /etc/hosts
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: e2e-infra
+spec:
+  selector:
+    matchLabels: {app: proxy}
+  template:
+    metadata:
+      labels: {app: proxy}
+    spec:
+      hostAliases:
+        - ip: 10.96.100.100
+          hostnames: [source.example.internal]
+      containers:
+        - name: squid
+          image: ubuntu/squid:6.13-25.04_beta@sha256:3de2e64f0ca6efdac3e98557607dc0f23050037f3885016d5d5bfcf9950501b8
+          args: ["-f", "/etc/squid/conf/squid.conf", "-NYC"]
+          ports: [{containerPort: 3128}]
+          readinessProbe:
+            tcpSocket: {port: 3128}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: config, mountPath: /etc/squid/conf}
+            - {name: auth, mountPath: /etc/squid/auth}
+      volumes:
+        - {name: config, configMap: {name: squid}}
+        - name: auth
+          secret: {secretName: htpasswd, defaultMode: 0444}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: e2e-infra
+spec:
+  selector: {app: proxy}
+  ports: [{port: 3128, targetPort: 3128}]
+---
+# The proxy may reach DNS, the source and public HTTPS, nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-egress
+  namespace: e2e-infra
+spec:
+  podSelector:
+    matchLabels: {app: proxy}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - podSelector:
+            matchLabels: {app: source}
+      ports:
+        - {port: 5000, protocol: TCP}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.244.0.0/16, 10.96.0.0/16]
+      ports:
+        - {port: 443, protocol: TCP}
+---
+# Sync pods may reach DNS, the proxy and the target registry, nothing else.
+# Every sync pod carries the tagwarden.dev/mirror label.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sync-egress
+  namespace: tagwarden-system
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: tagwarden.dev/mirror, operator: Exists}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: e2e-infra}
+          podSelector:
+            matchLabels: {app: proxy}
+      ports:
+        - {port: 3128, protocol: TCP}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: e2e-infra}
+          podSelector:
+            matchLabels: {app: target}
+      ports:
+        - {port: 5000, protocol: TCP}
