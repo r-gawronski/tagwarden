@@ -54,43 +54,52 @@ const TerminationLogPath = "/dev/termination-log"
 // maxTermination is the Kubernetes limit for a termination message.
 const maxTermination = 4096
 
-// Exit codes.
-const (
-	exitOK     = 0
-	exitFailed = 1
-	exitConfig = 2
-)
-
 type options struct {
 	targetAuth, targetCA, proxyCA, clientCertDir string
 	// allowInternal skips the internal address check. Only tests set it,
 	// for in-process registries on 127.0.0.1.
 	allowInternal bool
+	// lookup resolves host names. Tests replace it.
+	lookup func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
-// Run runs one sync and returns the exit code: 0 when every selected tag is
-// on the target, 1 when a tag failed or a mutation was refused, 2 on a spec
-// or configuration error.
+// transientError marks an error that may pass on the next run.
+type transientError struct{ error }
+
+func (e transientError) Unwrap() error { return e.error }
+
+// Run runs one sync and returns one of the syncspec exit codes.
 func Run(ctx context.Context, args []string, stdout io.Writer, termPath string) int {
 	o := options{
 		targetAuth: syncspec.TargetAuthFile, targetCA: syncspec.TargetCAFile,
 		proxyCA: syncspec.ProxyCAFile, clientCertDir: syncspec.ClientCertDir,
+		lookup: net.DefaultResolver.LookupIPAddr,
 	}
 	return run(ctx, args, stdout, termPath, o, os.Getenv)
 }
 
-func run(ctx context.Context, args []string, stdout io.Writer, termPath string, o options, getenv func(string) string) int {
+func run(ctx context.Context, args []string, stdout io.Writer, termPath string, o options, getenv func(string) string) (code int) {
+	defer func() {
+		// The panic value may hold anything, so it is not reported.
+		if recover() != nil {
+			writeTermination(stdout, termPath, report{Errors: []string{"internal error"}})
+			code = syncspec.ExitSyncFailed
+		}
+	}()
 	spec, req, err := setup(ctx, args, o, getenv)
 	if err != nil {
 		writeTermination(stdout, termPath, report{Errors: []string{err.Error()}})
-		return exitConfig
+		if errors.As(err, new(transientError)) {
+			return syncspec.ExitSyncFailed
+		}
+		return syncspec.ExitConfig
 	}
 	res, err := sync.Run(ctx, req)
 	audit(stdout, spec, res)
 	r := summarize(res)
-	code := exitOK
+	code = syncspec.ExitOK
 	if err != nil {
-		code = exitFailed
+		code = syncspec.ExitSyncFailed
 		// Per-tag errors are already listed; keep run-level ones such as a
 		// failed listing or a cancelled context.
 		if len(res.Errors) == 0 || ctx.Err() != nil {
@@ -120,7 +129,7 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
-	if err := checkSource(ctx, spec, p.allowInternal); err != nil {
+	if err := checkSource(ctx, spec, p); err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
 	auth, err := targetAuth(p.targetAuth, spec.TargetRepo.RegistryStr())
@@ -246,12 +255,12 @@ func transports(p options, getenv func(string) string) (src, dst http.RoundTripp
 // that resolves to an internal address (threat model T6, T16). It runs
 // before any registry call. With a proxy the proxy resolves names itself,
 // so this check covers literal addresses and the Job's own DNS view only.
-func checkSource(ctx context.Context, spec syncspec.Spec, allowInternal bool) error {
+func checkSource(ctx context.Context, spec syncspec.Spec, o options) error {
 	host := spec.SourceRepo.RegistryStr()
 	if !allowedSource(host, spec.AllowedSources) {
 		return fmt.Errorf("source: registry %s is not in allowedSources", host)
 	}
-	if allowInternal {
+	if o.allowInternal {
 		return nil
 	}
 	name := host
@@ -263,13 +272,13 @@ func checkSource(ctx context.Context, spec syncspec.Spec, allowInternal bool) er
 	if a, err := netip.ParseAddr(name); err == nil {
 		addrs = []netip.Addr{a}
 	} else {
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, name)
+		ips, err := o.lookup(ctx, name)
 		var dnsErr *net.DNSError
 		switch {
 		// An air-gapped Job often cannot resolve upstream names; the proxy does.
 		case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
 		case err != nil:
-			return fmt.Errorf("source: resolve %s: %w", name, err)
+			return transientError{fmt.Errorf("source: resolve %s: %w", name, err)}
 		}
 		for _, ip := range ips {
 			if a, ok := netip.AddrFromSlice(ip.IP); ok {

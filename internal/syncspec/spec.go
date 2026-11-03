@@ -53,6 +53,19 @@ const (
 	ProxyPasswordEnv = "TAGWARDEN_PROXY_PASSWORD" //nolint:gosec // env var name, not a credential
 )
 
+// Exit codes of the sync Job. 2 is not used: the Go runtime exits 2 on an
+// unrecovered panic.
+const (
+	// ExitOK means every selected tag is on the target.
+	ExitOK = 0
+	// ExitSyncFailed means a tag failed, a mutation was refused or a
+	// transient error stopped the run. The next run may succeed.
+	ExitSyncFailed = 1
+	// ExitConfig means the spec, the mounted files or the source checks
+	// refused the run. It fails again until the configuration changes.
+	ExitConfig = 3
+)
+
 // Mirror names the ArtifactMirror a sync runs for, for audit lines.
 type Mirror struct {
 	Namespace string `json:"namespace"`

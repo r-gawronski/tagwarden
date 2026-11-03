@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -153,6 +154,7 @@ func newEnv(t *testing.T, source, target name.Repository, pass string) *env {
 			clientCertDir: filepath.Join(dir, "missing"),
 			// The in-process registries listen on 127.0.0.1.
 			allowInternal: true,
+			lookup:        net.DefaultResolver.LookupIPAddr,
 		},
 		vars:   map[string]string{},
 		spec:   filepath.Join(dir, "spec.json"),
@@ -242,7 +244,7 @@ func TestRunSyncs(t *testing.T) {
 	e := newEnv(t, src, dst, password)
 
 	code, out, msg := e.run(t)
-	if code != 0 {
+	if code != syncspec.ExitOK {
 		t.Fatalf("exit %d: %s\n%s", code, msg, out)
 	}
 	var r report
@@ -274,7 +276,7 @@ func TestRunSyncs(t *testing.T) {
 	}
 
 	code, out, msg = e.run(t)
-	if code != 0 || !strings.Contains(msg, `"skipped":2`) || strings.Count(out, `"action":"skipped"`) != 2 {
+	if code != syncspec.ExitOK || !strings.Contains(msg, `"skipped":2`) || strings.Count(out, `"action":"skipped"`) != 2 {
 		t.Fatalf("second run exit %d: %s\n%s", code, msg, out)
 	}
 	assertNoSecrets(t, out, msg)
@@ -289,7 +291,7 @@ func TestRunWrongPassword(t *testing.T) {
 	e.vars[syncspec.ProxyPasswordEnv] = proxyPassword
 
 	code, out, msg := e.run(t)
-	if code != 1 || !strings.Contains(msg, `"failed":2`) || strings.Count(out, `"action":"failed"`) != 2 {
+	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, `"failed":2`) || strings.Count(out, `"action":"failed"`) != 2 {
 		t.Fatalf("exit %d: %s\n%s", code, msg, out)
 	}
 	assertNoSecrets(t, out, msg) // password is a substring of the wrong one
@@ -315,7 +317,7 @@ func TestRunProxyCredentials(t *testing.T) {
 	e.vars[syncspec.ProxyPasswordEnv] = proxyPassword
 
 	code, out, msg := e.run(t)
-	if code != 1 || !strings.Contains(msg, "list source tags") {
+	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, "list source tags") {
 		t.Fatalf("exit %d: %s\n%s", code, msg, out)
 	}
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("proxy-user:"+proxyPassword))
@@ -353,7 +355,7 @@ func TestRunConfigErrors(t *testing.T) {
 			if err := json.Unmarshal([]byte(msg), &r); err != nil {
 				t.Fatal(err)
 			}
-			if code != 2 || len(r.Errors) != 1 || out != "" {
+			if code != syncspec.ExitConfig || len(r.Errors) != 1 || out != "" {
 				t.Fatalf("exit %d: %s\n%s", code, msg, out)
 			}
 			t.Log(r.Errors[0])
@@ -382,7 +384,7 @@ func TestRunRefusesSources(t *testing.T) {
 			e.opts.allowInternal = false
 			e.writeSpec(t, tc.source, `"allowedSources":[`+tc.allowed+`],"deniedCIDRs":[`+tc.denied+`]`)
 			code, out, msg := e.run(t)
-			if code != 2 || !strings.Contains(msg, tc.want) || out != "" {
+			if code != syncspec.ExitConfig || !strings.Contains(msg, tc.want) || out != "" {
 				t.Fatalf("exit %d: %s\n%s", code, msg, out)
 			}
 		})
@@ -441,5 +443,43 @@ func TestCheckAddrs(t *testing.T) {
 	// Any internal address refuses the host.
 	if checkAddrs([]netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("127.0.0.1")}, nil) == nil {
 		t.Error("mixed addresses allowed")
+	}
+}
+
+func TestRunRecoversPanic(t *testing.T) {
+	e := newEnv(t, newRegistry(t, false), newRegistry(t, true), password)
+	var out bytes.Buffer
+	term := filepath.Join(e.dir, "termination-log")
+	// A nil getenv panics during setup.
+	code := run(context.Background(), []string{"--spec", e.spec}, &out, term, e.opts, nil)
+	msg, err := os.ReadFile(term) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != syncspec.ExitSyncFailed || !strings.Contains(string(msg), `"errors":["internal error"]`) {
+		t.Fatalf("exit %d: %s", code, msg)
+	}
+}
+
+func TestRunDNSErrors(t *testing.T) {
+	src := newRegistry(t, false)
+	cases := []struct {
+		err  *net.DNSError
+		code int
+	}{
+		{&net.DNSError{Err: "timeout", IsTimeout: true}, syncspec.ExitSyncFailed},
+		{&net.DNSError{Err: "server misbehaving", IsTemporary: true}, syncspec.ExitSyncFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.err.Err, func(t *testing.T) {
+			e := newEnv(t, src, newRegistry(t, true), password)
+			e.opts.allowInternal = false
+			e.opts.lookup = func(context.Context, string) ([]net.IPAddr, error) { return nil, tc.err }
+			e.writeSpec(t, "registry.example.internal/team/app", `"allowedSources":["registry.example.internal"]`)
+			code, out, msg := e.run(t)
+			if code != tc.code || !strings.Contains(msg, "resolve") || out != "" {
+				t.Fatalf("exit %d: %s\n%s", code, msg, out)
+			}
+		})
 	}
 }
