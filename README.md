@@ -466,7 +466,8 @@ You need Kubernetes 1.30 or newer and a registry you can push to.
 - [Argo CD](docs/argocd.md): a Sync now button, health checks and sync Jobs in the app tree.
 - [Threat model](docs/threat-model.md): what Tagwarden trusts, and how it
   handles each threat.
-- [Helm chart design](docs/design/helm-chart.md) and
+- [Helm chart design](docs/design/helm-chart.md),
+  [vulnerability gate design](docs/design/vulnerability-gate.md) and
   [spike results](docs/design/spikes.md).
 
 ## Contributing
