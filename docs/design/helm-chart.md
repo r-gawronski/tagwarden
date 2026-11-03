@@ -1,0 +1,155 @@
+# Helm chart
+
+The chart in `dist/chart` installs the operator. `config/` stays the source
+of truth: `make helm` regenerates the chart from it, and the CI
+`generate-check` job fails when the committed chart differs from a
+regeneration. The `chart` job lints the chart and validates its output.
+
+## Generation
+
+`make helm`:
+
+1. builds `config/helm`, an overlay of `config/default`, into
+   `dist/helm-input.yaml` (not committed);
+2. runs `kubebuilder edit --plugins=helm/v2-alpha --manifests=dist/helm-input.yaml`
+   (kubebuilder v4.16.0, installed into `bin/` at the version in the
+   Makefile);
+3. deletes `.github/workflows/test-chart.yml`, which the plugin writes on
+   every run (the kind install test belongs to the e2e workflow);
+4. points the image line of `templates/manager/manager.yaml` at the
+   `tagwarden.managerImage` helper, so the image can carry a digest. The
+   target fails if the generated line no longer matches.
+
+Plugin limits worked around in config:
+
+- It keeps one ServiceAccount. `config/helm` removes the `tagwarden-sync`
+  ServiceAccount, and the chart renders it from a hand-maintained template.
+- It writes one template per object name. The namespaced manager Role and
+  RoleBinding (from the `namespace=system` RBAC markers) are renamed in
+  `config/rbac` to `manager-namespaced-role` and
+  `manager-namespaced-rolebinding`, so they no longer collide with the
+  ClusterRole and ClusterRoleBinding.
+
+Passing `--manifests` also keeps the plugin from running
+`make build-installer`, which rewrites `config/manager/kustomization.yaml`.
+Run `make helm` without `IMG` overrides; the chart takes the image from
+values.
+
+## Generated and hand-maintained files
+
+| File | Owner |
+|------|-------|
+| `Chart.yaml` | hand; the plugin never overwrites it |
+| `values.yaml`, `values.schema.json` | hand; keep them in sync |
+| `templates/_helpers.tpl`, `templates/NOTES.txt`, `.helmignore` | hand; the plugin keeps them |
+| `templates/prometheus/*`, `templates/network-policy/*` | hand; the plugin keeps them |
+| `templates/sync/serviceaccount.yaml` | hand |
+| `templates/mirror/resources.yaml` | hand |
+| `templates/crd/*`, `templates/rbac/*`, `templates/manager/*`, `templates/metrics/*` | generated on every `make helm` |
+
+`kubebuilder edit --plugins=helm/v2-alpha --force` overwrites the
+hand-maintained files except `Chart.yaml`. Do not use it.
+
+Hand changes to the ServiceMonitor: the generated template set
+`insecureSkipVerify: true` unless cert-manager was enabled. The chart has no
+cert-manager integration, so the template takes `prometheus.tlsConfig` from
+values instead and never skips verification.
+
+## Values
+
+`values.schema.json` sets `additionalProperties: false` on every object the
+chart defines, so `helm install` and `helm template` reject unknown keys.
+Objects passed through to Kubernetes fields (`securityContext`, `resources`,
+`affinity`, `tolerations`, `env`, `strategy`, `prometheus.tlsConfig`) and
+the `spec` of targets and mirrors are not described in the schema; the API
+server validates them against the Kubernetes and CRD schemas.
+
+| Value | Default | Notes |
+|-------|---------|-------|
+| `manager.image.repository`, `.tag`, `.digest`, `.pullPolicy` | `registry.example.internal/tagwarden/tagwarden`, appVersion, none, `IfNotPresent` | the digest is appended as `repo:tag@sha256:...` |
+| `syncImage.repository`, `.tag`, `.digest` | empty | empty repository means the manager image |
+| `deniedCIDRs` | `[]` | rendered as `--denied-cidrs`; set the pod and service CIDRs |
+| `leaderElection.enabled` | `true` | |
+| `metrics.enabled`, `.port`, `.secure` | `true`, `8443`, `true` | |
+| `manager.imagePullSecrets`, `.nodeSelector`, `.tolerations`, `.affinity` | empty | |
+| `manager.podSecurityContext`, `.securityContext`, `.resources` | hardened | runAsNonRoot, seccomp RuntimeDefault, read-only root FS, no privilege escalation, drop ALL, limits set |
+| `crd.enabled`, `crd.keep` | `true`, `true` | see below |
+| `rbac.helpers.enabled` | `false` | admin, editor and viewer ClusterRoles for the CRDs |
+| `targets` | `[]` | items `{name, spec}` render `ClusterMirrorTarget` |
+| `mirrors` | `[]` | items `{name, namespace, spec}` render `ArtifactMirror` |
+
+The manager args in `manager.args` are templates that wire leader election,
+the sync image and the denied CIDRs. Keep them when overriding the list.
+`POD_NAMESPACE` comes from the downward API, so the release namespace is the
+operator namespace. Secrets referenced by targets must exist there.
+
+## CRDs
+
+Options:
+
+- `crds/` directory: Helm installs the CRDs before anything else but never
+  upgrades or deletes them. A new chart version with a changed CRD schema
+  would leave the old schema in the cluster.
+- Templates gated by `crd.enabled`, with `helm.sh/resource-policy: keep`
+  when `crd.keep` is true.
+
+Decision: templates with keep, both on by default. Upgrades update the CRDs
+with the chart, and `helm uninstall` leaves the CRDs, and with them every
+mirror and target, in place. The plugin generates exactly this
+(`crd.enabled` and `crd.keep`), so the value names follow the plugin rather
+than `crds.install`. Set `crd.enabled: false` when the CRDs are managed
+elsewhere.
+
+Cost: Helm cannot build objects of a kind the cluster does not serve yet, so
+CRDs and custom resources cannot be created by the same first install
+(`resource mapping not found`, also for hooks, checked with Helm 4.1.4).
+The `targets` and `mirrors` templates render only when
+`.Capabilities.APIVersions` has `mirror.tagwarden.dev/v1alpha1`. On a first
+install they are skipped and NOTES says so; the next `helm upgrade` creates
+them. GitOps tools that render with the cluster's API versions converge on
+the next sync. `helm template` without a cluster needs
+`--api-versions mirror.tagwarden.dev/v1alpha1` to render them.
+
+Helm 4 `--wait` also waits for targets and mirrors to become Ready; a target
+whose Secrets are missing makes the upgrade time out.
+
+## Uninstall
+
+`helm uninstall` deletes targets and mirrors from values together with the
+manager. A mirror keeps its finalizer until the manager removes its CronJob
+and ConfigMap, so with the manager gone it stays Terminating and its CronJob
+stays behind. Before uninstalling, upgrade with `mirrors: []` (or delete the
+mirrors) and wait until `kubectl get cronjobs -l tagwarden.dev/mirror -n
+<release namespace>` is empty.
+
+## RBAC
+
+The chart RBAC comes from `config/rbac`, which the RBAC markers generate:
+
+- ClusterRole `manager-role`: Tagwarden CRDs, namespaces, events.
+- Role `manager-namespaced-role` in the release namespace: secrets, pods,
+  jobs, cronjobs, configmaps.
+- Leader election Role, metrics auth roles.
+- `tagwarden-sync` ServiceAccount with `automountServiceAccountToken: false`
+  and no bindings.
+
+The plugin's `rbac.namespaced` switch is not exposed: it would turn the
+ClusterRole into a Role, which cannot grant access to namespaces or
+cluster-scoped CRDs.
+
+## CI checks
+
+`make chart-check`, run by the `chart` job:
+
+- `helm lint --strict`;
+- `helm template` with the default values and with
+  `test/chart/example-values.yaml` (one target, one mirror), validated by
+  kubeconform (`go tool`, version in `go.mod`) in strict mode against the
+  Kubernetes schemas. CRDs, Tagwarden kinds and ServiceMonitor are skipped:
+  kubeconform has no schema for them;
+- `go test -tags=chart ./test/chart/`: decodes the rendered targets and
+  mirrors strictly into the API types, checks the image, sync image and
+  denied CIDR args, and checks that the schema rejects unknown keys.
+
+Helm comes from `azure/setup-helm`, pinned by commit, at the version in the
+workflow.
