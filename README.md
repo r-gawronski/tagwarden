@@ -38,6 +38,12 @@ make deploy IMG=<some-registry>/tagwarden:tag
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
 privileges or be logged in as admin.
 
+Sync Jobs run the same image in `sync` mode, in the operator namespace
+`tagwarden-system`. Add `--denied-cidrs=<pod CIDR>,<service CIDR>` to the
+manager args in `config/manager/manager.yaml` so that sources cannot resolve
+to cluster addresses. The Secrets a `ClusterMirrorTarget` references must
+exist in `tagwarden-system`.
+
 **Create instances of your solution**
 You can apply the samples (examples) from the config/sample:
 
