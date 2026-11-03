@@ -1,4 +1,4 @@
-# Tagwarden
+<p align="center"><img src="docs/assets/banner.png" alt="Tagwarden: curated mirrors for air-gapped clusters" width="900"></p>
 
 [![CI](https://github.com/r-gawronski/tagwarden/actions/workflows/ci.yaml/badge.svg)](https://github.com/r-gawronski/tagwarden/actions/workflows/ci.yaml)
 [![E2E Tests](https://github.com/r-gawronski/tagwarden/actions/workflows/test-e2e.yaml/badge.svg)](https://github.com/r-gawronski/tagwarden/actions/workflows/test-e2e.yaml)
@@ -39,45 +39,7 @@ other change.
 
 ## How it works
 
-```mermaid
----
-config:
-  look: handDrawn
-  theme: base
-  themeVariables:
-    lineColor: "#8B95A5"
-    primaryTextColor: "#1E293B"
-    textColor: "#1E293B"
-    edgeLabelBackground: "#F1F5F9"
-    clusterBkg: "rgba(139, 149, 165, 0.08)"
-    clusterBorder: "#8B95A5"
-    titleColor: "#8B95A5"
----
-flowchart LR
-  subgraph cluster [Kubernetes cluster]
-    direction TB
-    AM([ArtifactMirror]):::res
-    T([ClusterMirrorTarget]):::res
-    C(Controller):::ctl
-    J(Sync Job):::ctl
-    AM -- team --> C
-    T -- platform --> C
-    C -- CronJob --> J
-    J -. result .-> C
-  end
-  P(HTTPS proxy):::ext
-  U[(Upstream)]:::ext
-  R[(Your registry)]:::reg
-  J -- list, fetch --> P
-  P --> U
-  J == push by digest ==> R
-
-  classDef res fill:#DBEAFE,stroke:#3B82F6,color:#1E3A8A,stroke-width:2px
-  classDef ctl fill:#EDE9FE,stroke:#8B5CF6,color:#4C1D95,stroke-width:2px
-  classDef ext fill:#FEF3C7,stroke:#F59E0B,color:#78350F,stroke-width:2px
-  classDef reg fill:#DCFCE7,stroke:#22C55E,color:#14532D,stroke-width:2px
-  linkStyle default stroke:#8B95A5,stroke-width:2px
-```
+<p align="center"><img src="docs/assets/how-it-works.png" alt="Overview: ArtifactMirror (team) and ClusterMirrorTarget (platform) feed the controller, which runs a sync Job; the Job lists and fetches from upstream through an HTTPS proxy and pushes by digest to your registry" width="900"></p>
 
 There are two resources:
 
@@ -95,50 +57,7 @@ status.
 
 ### What happens during a sync run
 
-```mermaid
----
-config:
-  look: handDrawn
-  theme: base
-  themeVariables:
-    actorBkg: "#EDE9FE"
-    actorBorder: "#8B5CF6"
-    actorTextColor: "#4C1D95"
-    actorLineColor: "#8B95A5"
-    signalColor: "#8B95A5"
-    signalTextColor: "#8B95A5"
-    noteBkgColor: "#FEF3C7"
-    noteBorderColor: "#F59E0B"
-    noteTextColor: "#78350F"
-    sequenceNumberColor: "#1E293B"
----
-sequenceDiagram
-  autonumber
-  participant Team
-  participant C as Controller
-  participant J as Sync Job
-  participant P as Proxy
-  participant U as Upstream
-  participant R as Your registry
-
-  rect rgba(100, 149, 237, 0.15)
-    Note over Team,J: on apply
-    Team->>C: ArtifactMirror
-    C->>C: check against target
-    C->>J: CronJob
-  end
-  rect rgba(46, 160, 67, 0.15)
-    Note over J,R: on schedule
-    J->>P: list tags
-    P->>U: list tags
-    J->>J: select tags
-    J->>P: fetch new digests
-    P->>U: fetch
-    J->>R: push by digest, with signatures
-    J->>C: result
-    C->>Team: mirror status
-  end
-```
+<p align="center"><img src="docs/assets/sync-run.png" alt="Sequence of a sync run: the team applies an ArtifactMirror, the controller checks it against the target and creates a CronJob; on schedule the sync Job lists and fetches tags through the proxy, pushes new digests with signatures to your registry, and the controller updates the mirror status" width="760"></p>
 
 ## Examples
 
