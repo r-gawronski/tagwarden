@@ -204,11 +204,34 @@ not needed: the controller renders the token volume itself.
 - Every mirror of the target shares the identity. Use separate targets,
   ServiceAccounts and identities when teams need different registry
   rights.
-- A missing ServiceAccount stops the Job from starting; the Job's Events
-  say so. Entra and registry errors show the HTTP status and the Entra
-  error code (for example `invalid_client AADSTS700016`), never a token.
-- `scope` defaults to `https://containerregistry.azure.net/.default`.
-  Change it only for a cloud whose registries expect another resource.
+- Give each target whose identity differs its own ServiceAccount and its
+  own federated credential, and always set `serviceAccountName`. Entra
+  matches a federated credential by the token's subject, the
+  ServiceAccount. If two targets share one ServiceAccount (the default
+  `tagwarden-sync`, for example), the projected token in a pod of one
+  target is also accepted for the other target's identity, so a
+  compromised sync pod of one target can act as the other.
+- Azure auth works only with Azure Container Registry login servers
+  (`*.azurecr.io`, `*.azurecr.us`, `*.azurecr.cn`, port 443 at most), for
+  the target and for source entries. The CRD refuses other hosts, and the
+  sync Job checks again before it sends a token.
+- `authorityHost` accepts only `https://login.microsoftonline.com/`
+  (default), `https://login.microsoftonline.us/`,
+  `https://login.partner.microsoftonline.cn/` and
+  `https://login.chinacloudapi.cn/`. Another authority, such as one of a
+  disconnected or on-premises Azure, needs a code change in two places:
+  the CEL rule on `authorityHost` and `syncspec.AzureAuthority`.
+- The registry token is always requested for
+  `https://containerregistry.azure.net/.default`, the ACR audience the
+  Azure SDKs and CLI use in every cloud. A Resource Manager scope is never
+  used, so no management token reaches the registry.
+- A missing ServiceAccount does not change the target: it stays `Ready`
+  and so do its mirrors. The Job cannot create its pod, and the only sign
+  is a `FailedCreate` Event on the Job
+  (`kubectl -n tagwarden-system get events --field-selector reason=FailedCreate`).
+  Create the ServiceAccount before the target.
+- Entra and registry errors show the HTTP status and the Entra error code
+  (for example `invalid_client AADSTS700016`), never a token.
 - Real-cloud tests are manual; CI uses fakes for Entra and the registry.
 
 ## Tenant limits
