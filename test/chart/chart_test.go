@@ -64,6 +64,9 @@ func TestCustomResources(t *testing.T) {
 		if err := yaml.UnmarshalStrict([]byte(doc), obj); err != nil {
 			t.Errorf("%s: %v\n%s", meta.Kind, err, doc)
 		}
+		if !strings.Contains(doc, `"helm.sh/resource-policy": keep`) {
+			t.Errorf("%s is not kept on uninstall", meta.Kind)
+		}
 		kinds[meta.Kind]++
 	}
 	if kinds["ClusterMirrorTarget"] != 1 || kinds["ArtifactMirror"] != 1 {

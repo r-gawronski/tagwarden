@@ -1,7 +1,9 @@
 {{- /*
 Hand-maintained. The CRDs must exist before Helm can build these objects, so
 they render only once the API is served. On a first install with targets or
-mirrors, run helm upgrade once more after the install.
+mirrors, run helm upgrade once more after the install. With crd.keep they
+are kept on uninstall like the CRDs: deleting them together with the
+operator would leave mirrors Terminating.
 */}}
 {{- $served := .Capabilities.APIVersions.Has "mirror.tagwarden.dev/v1alpha1" }}
 {{- if $served }}
@@ -14,6 +16,10 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
     app.kubernetes.io/instance: {{ $.Release.Name }}
+  {{- if $.Values.crd.keep }}
+  annotations:
+    "helm.sh/resource-policy": keep
+  {{- end }}
 spec:
   {{- toYaml .spec | nindent 2 }}
 {{- end }}
@@ -27,6 +33,10 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
     app.kubernetes.io/instance: {{ $.Release.Name }}
+  {{- if $.Values.crd.keep }}
+  annotations:
+    "helm.sh/resource-policy": keep
+  {{- end }}
 spec:
   {{- toYaml .spec | nindent 2 }}
 {{- end }}

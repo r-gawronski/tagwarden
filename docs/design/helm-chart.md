@@ -98,7 +98,8 @@ Options:
 
 Decision: templates with keep, both on by default. Upgrades update the CRDs
 with the chart, and `helm uninstall` leaves the CRDs, and with them every
-mirror and target, in place. The plugin generates exactly this
+mirror and target, in place. Chart-managed targets and mirrors carry the
+same keep policy (see Uninstall). The plugin generates exactly this
 (`crd.enabled` and `crd.keep`), so the value names follow the plugin rather
 than `crds.install`. Set `crd.enabled: false` when the CRDs are managed
 elsewhere.
@@ -118,12 +119,19 @@ whose Secrets are missing makes the upgrade time out.
 
 ## Uninstall
 
-`helm uninstall` deletes targets and mirrors from values together with the
-manager. A mirror keeps its finalizer until the manager removes its CronJob
-and ConfigMap, so with the manager gone it stays Terminating and its CronJob
-stays behind. Before uninstalling, upgrade with `mirrors: []` (or delete the
-mirrors) and wait until `kubectl get cronjobs -l tagwarden.dev/mirror -n
-<release namespace>` is empty.
+With `crd.keep: true` (the default) `helm uninstall` keeps the CRDs and the
+targets and mirrors from values (`helm.sh/resource-policy: keep`). Deleting
+mirrors together with the manager would leave them Terminating: a mirror
+keeps its finalizer until the manager removes its CronJob and ConfigMap.
+Reinstalling with the same release name and namespace adopts the kept
+objects. To remove mirrors, delete them (or drop them from `mirrors` and
+upgrade) while the operator still runs, and wait until
+`kubectl get cronjobs -l tagwarden.dev/mirror -n <release namespace>` is
+empty. With `crd.keep: false` uninstall deletes targets, mirrors and CRDs,
+and mirrors still pending cleanup stay Terminating.
+
+Future option: a pre-delete hook Job that deletes the mirrors and waits for
+their CronJobs before the manager goes away.
 
 ## RBAC
 
