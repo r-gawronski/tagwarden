@@ -25,6 +25,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -173,6 +174,7 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 		{Name: "spec", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: cj.Name},
 			Items:                []corev1.KeyToPath{{Key: specKey, Path: filepath.Base(syncspec.SpecFile)}},
+			DefaultMode:          ptr.To[int32](0o440),
 		}}},
 		secretVolume("target-auth", t.Spec.CredentialsSecretRef.Name,
 			corev1.KeyToPath{Key: corev1.DockerConfigJsonKey, Path: filepath.Base(syncspec.TargetAuthFile)}),
@@ -286,4 +288,21 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	rendered, _ := json.Marshal([]any{cj.Labels, cj.Annotations, cj.Spec})
 	sum = sha256.Sum256(rendered)
 	cj.Annotations[annotationCronJobChecksum] = hex.EncodeToString(sum[:])
+}
+
+// securityDrift reports whether the security-relevant fields of a live sync
+// pod template differ from the desired ones. A hand edit keeps the checksum
+// annotation, so the checksum alone would let it persist. Every compared
+// field is set by renderCronJob, so server defaulting causes no drift.
+func securityDrift(live, want *corev1.PodSpec) bool {
+	fields := func(p *corev1.PodSpec) []any {
+		f := make([]any, 0, 9+8*len(p.Containers))
+		f = append(f, p.ServiceAccountName, p.AutomountServiceAccountToken, p.SecurityContext,
+			p.HostNetwork, p.HostPID, p.HostIPC, p.Volumes, len(p.InitContainers), len(p.Containers))
+		for _, c := range p.Containers {
+			f = append(f, c.Name, c.Image, c.Command, c.Args, c.Env, c.EnvFrom, c.SecurityContext, c.VolumeMounts)
+		}
+		return f
+	}
+	return !equality.Semantic.DeepEqual(fields(live), fields(want))
 }
