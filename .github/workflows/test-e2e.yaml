@@ -18,7 +18,4 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Install kind
-        run: go install sigs.k8s.io/kind@v0.33.0
-      - run: kind version
       - run: make test-e2e
