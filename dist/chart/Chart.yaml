@@ -1,14 +1,14 @@
 apiVersion: v2
 name: tagwarden
-description: A Helm chart to distribute tagwarden
+description: Mirrors selected container images and Helm charts into an OCI registry.
 type: application
-
+# Hand-maintained: make helm never overwrites this file.
 version: 0.1.0
 appVersion: "0.1.0"
-
 keywords:
   - kubernetes
   - operator
-
+  - mirror
+  - oci
 annotations:
   kubebuilder.io/generated-by: kubebuilder

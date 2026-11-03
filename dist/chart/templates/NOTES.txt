@@ -13,3 +13,8 @@ To learn more about the release, try:
 
   $ helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
   $ helm get all {{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- if and (or .Values.targets .Values.mirrors) (not (.Capabilities.APIVersions.Has "mirror.tagwarden.dev/v1alpha1")) }}
+
+The Tagwarden CRDs were not served yet, so targets and mirrors were not
+created. Run helm upgrade with the same values once more to create them.
+{{- end }}
