@@ -423,12 +423,21 @@ GKE does not need to be enabled on the cluster or node pool.
      --location=global --workload-identity-pool=tagwarden \
      --issuer-uri=<issuer> \
      --attribute-mapping=google.subject=assertion.sub \
+     --attribute-condition="assertion.sub=='system:serviceaccount:tagwarden-system:tagwarden-sync-gcp'" \
      --jwk-json-path=cluster-jwks.json
    ```
 
+   The attribute condition makes STS refuse tokens of every other
+   ServiceAccount in the cluster, so a pod elsewhere cannot get a Google
+   token from this provider at all.
+
    `--jwk-json-path` uploads the cluster's signing keys, so Google never
-   needs to reach the cluster; update them when the cluster rotates its
-   keys. Leave it out when the issuer serves its discovery document
+   needs to reach the cluster. Tokens signed with a key that is not
+   uploaded fail with `invalid_grant`: when the cluster rotates its
+   service account signing keys, upload a JWKS with the old and the new
+   keys (`gcloud iam workload-identity-pools providers update-oidc ...
+   --jwk-json-path=...`) before the switch, and drop the old key after
+   the old tokens expired. Leave the flag out when the issuer serves its discovery document
    publicly. Keep the provider's default allowed audience: the projected
    token is issued for
    `https://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`.
@@ -450,10 +459,18 @@ GKE does not need to be enabled on the cluster or node pool.
      --member=principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/subject/system:serviceaccount:tagwarden-system:tagwarden-sync-gcp
    ```
 
+   Bind exactly this `principal://` subject. Do not grant the roles to a
+   `principalSet://` of the pool (or of an attribute): that would give
+   every ServiceAccount of the cluster, or of every cluster the pool
+   trusts, the registry roles.
+
    To impersonate a service account instead (for example when policy
    requires service accounts in IAM bindings), grant the roles above to
    the service account, allow the principal to mint its tokens, and set
-   `serviceAccountEmail`:
+   `serviceAccountEmail`. `serviceAccountEmail` must be a user-managed
+   service account (`<name>@<project ID>.iam.gserviceaccount.com`);
+   service accounts of domain-scoped projects and Google-managed service
+   accounts do not match the pattern and are refused.
 
    ```sh
    gcloud iam service-accounts add-iam-policy-binding \
@@ -513,9 +530,12 @@ GKE does not need to be enabled on the cluster or node pool.
 - Allow `sts.googleapis.com`, `iamcredentials.googleapis.com` (only with
   `serviceAccountEmail`) and every registry host in the proxy allowlist
   and in NetworkPolicies. Google does not document other hosts for
-  Artifact Registry, and layer downloads observed for `pkg.dev` and
-  `gcr.io` redirect to `/artifacts-downloads/` on the registry host
-  itself.
+  Artifact Registry. Layer downloads observed for `pkg.dev` and `gcr.io`
+  redirect to `/artifacts-downloads/` on the registry host itself; this
+  is observed behaviour, not documented. If pulls fail behind the proxy
+  with a blob download error, check the proxy log for a redirect to
+  another host such as `storage.googleapis.com` and allow it. The Job
+  follows such redirects only without credentials.
 - The STS and IAM Credentials endpoints are fixed; there is no endpoint
   field. Regional STS endpoints are not used.
 - Only pods that use GCP auth run as `serviceAccountName` and mount the
@@ -529,10 +549,18 @@ GKE does not need to be enabled on the cluster or node pool.
   repositories), port 443 at most. The CRD refuses other hosts, and the
   sync Job checks again before it sends a token. `mirror.gcr.io` and
   other `*.gcr.io` names are refused.
-- The access token uses the `cloud-platform` scope, the only one Artifact
-  Registry documents; the IAM roles limit what it can do. A federated
+- Federated tokens use the `cloud-platform` scope, which they also need
+  to call IAM Credentials; the principal's IAM roles limit what they can do.
+  Impersonated tokens use the narrower Cloud Storage scope
+  `devstorage.read_write`, which Artifact Registry accepts for Docker
+  push and pull. The narrower scope is untested against a real registry:
+  check a push and a pull after setting `serviceAccountEmail`. A federated
   token lasts up to an hour, an impersonated one exactly one hour, as long
   as a sync Job may run.
+- The access token goes only to the registry host. The Job refuses a
+  registry whose bearer token realm is on another host before any token
+  request (config error), and refuses any request with credentials to
+  another host while it runs.
 - Use one ServiceAccount per identity, and always set
   `serviceAccountName`. The principal is the Kubernetes ServiceAccount, so
   two targets that share one ServiceAccount share every role granted to
