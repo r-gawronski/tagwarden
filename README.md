@@ -102,23 +102,25 @@ the project, i.e.:
 kubectl apply -f https://raw.githubusercontent.com/<org>/tagwarden/<tag or branch>/dist/install.yaml
 ```
 
-### By providing a Helm Chart
+### With the Helm chart
 
-1. Build the chart using the optional helm plugin
+The chart lives in `dist/chart`. The release namespace becomes the operator
+namespace. Set `deniedCIDRs` to the pod and service CIDRs of the cluster:
 
 ```sh
-kubebuilder edit --plugins=helm/v2-alpha
+helm install tagwarden dist/chart --namespace tagwarden-system --create-namespace \
+  --set manager.image.repository=<some-registry>/tagwarden \
+  --set manager.image.tag=<tag> \
+  --set 'deniedCIDRs={10.244.0.0/16,10.96.0.0/12}'
 ```
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+`targets` and `mirrors` in the values create `ClusterMirrorTarget` and
+`ArtifactMirror` objects. On the first install the CRDs are not served yet,
+so run `helm upgrade` with the same values once more to create them.
+Before `helm uninstall`, remove the mirrors and wait until their CronJobs are
+gone; the CRDs stay installed. See
+[docs/design/helm-chart.md](docs/design/helm-chart.md) for the values and
+for how the chart is generated (`make helm`).
 
 ## Contributing
 // TODO(user): Add detailed information on how you would like others to contribute to this project
