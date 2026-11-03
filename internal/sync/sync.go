@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"unicode/utf8"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -40,7 +41,11 @@ import (
 // upstream tag and the mutation policy is Fail.
 var ErrTagMutated = errors.New("sync: target tag points to a different digest than upstream")
 
-const maxMessage = 300
+const (
+	maxMessage = 300
+	// maxPages stops a registry that keeps returning empty tag pages.
+	maxPages = 1000
+)
 
 // Request describes one sync of a source repository to a target repository.
 type Request struct {
@@ -65,7 +70,8 @@ type Artifact struct {
 }
 
 // Result lists what happened to each selected tag. Overwritten mutated tags
-// are in both Mutated and Copied.
+// are in both Mutated and Copied. A tag deleted upstream is not selected, so
+// its target tag stays untouched; prune and reporting come in phase 4.
 type Result struct {
 	Copied, Skipped, Mutated, Failed []Artifact
 	Errors                           []string
@@ -79,7 +85,8 @@ type syncer struct {
 }
 
 // Run lists the source tags, selects them with r.Policy and copies each one
-// by digest. A failed tag does not stop the others. The error is non-nil
+// by digest. A failed tag does not stop the others. Target tags whose
+// upstream tag was deleted are left as they are. The error is non-nil
 // when the listing fails, a tag fails or a mutated tag is refused.
 func Run(ctx context.Context, r Request) (Result, error) {
 	if err := ctx.Err(); err != nil {
@@ -145,6 +152,7 @@ func newSyncer(r Request) (*syncer, error) {
 		s.platforms = append(s.platforms, normalize(*pl))
 	}
 	var err error
+	// ggcr already retries 408, 429 and 5xx; do not add another retry layer.
 	if s.src, err = remote.NewPuller(r.SourceOpts...); err != nil {
 		return nil, err
 	}
@@ -165,10 +173,9 @@ func (s *syncer) list(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("sync: list source tags: %w", err)
 	}
 	var all []string
-	// The page cap stops a registry that keeps returning empty pages.
 	for pages := 0; l.HasNext(); pages++ {
-		if pages > s.req.MaxTags {
-			return nil, fmt.Errorf("sync: source tag list exceeds %d pages", s.req.MaxTags)
+		if pages >= maxPages {
+			return nil, fmt.Errorf("sync: source tag list exceeds %d pages", maxPages)
 		}
 		page, err := l.Next(ctx)
 		if err != nil {
@@ -291,12 +298,10 @@ func (s *syncer) copy(ctx context.Context, desc *remote.Descriptor) error {
 	if err := s.push.Push(ctx, ref, desc); err != nil {
 		return fmt.Errorf("copy %s: %w", desc.Digest, err)
 	}
-	got, err := resolve(ctx, s.dst, ref)
-	if err != nil {
+	// ggcr rejects a response for a digest reference whose digest differs,
+	// so a successful resolve proves the target holds the same digest.
+	if _, err := resolve(ctx, s.dst, ref); err != nil {
 		return fmt.Errorf("verify %s: %w", desc.Digest, err)
-	}
-	if got.Digest != desc.Digest {
-		return fmt.Errorf("target digest %s differs from source %s", got.Digest, desc.Digest)
 	}
 	return nil
 }
@@ -399,8 +404,12 @@ func notFound(err error) bool {
 // userinfo and credentials travel only in headers, so errors hold none.
 func short(err error) string {
 	msg := err.Error()
-	if len(msg) > maxMessage {
-		msg = msg[:maxMessage] + "..."
+	if len(msg) <= maxMessage {
+		return msg
 	}
-	return msg
+	cut := maxMessage
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "..."
 }
