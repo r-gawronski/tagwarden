@@ -116,6 +116,57 @@ spec:
                 required:
                 - name
                 type: object
+              limits:
+                description: |-
+                  limits caps schedules, mirrors, tags and artifact sizes per tenant.
+                  Defaults apply when it is absent.
+                properties:
+                  maxArtifactSize:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      maxArtifactSize caps the size of one artifact: config and layers of
+                      the manifest, or of every manifest in an index. Referrers do not
+                      count. The sync Job reports a larger artifact as failed and copies
+                      nothing of it. No limit when absent.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                    x-kubernetes-validations:
+                    - message: must be positive
+                      rule: quantity(string(self)).isGreaterThan(quantity('0'))
+                  maxExplicitTags:
+                    description: maxExplicitTags caps the number of tags.tags of a
+                      mirror. Defaults to 50.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  maxKeepLatest:
+                    description: maxKeepLatest caps tags.keepLatest of a mirror. Defaults
+                      to 20.
+                    format: int32
+                    maximum: 100
+                    minimum: 1
+                    type: integer
+                  maxMirrorsPerNamespace:
+                    description: |-
+                      maxMirrorsPerNamespace caps the ArtifactMirrors of one namespace that
+                      use this target. The oldest ones win, by creation time and then name;
+                      the others get Ready=False with reason LimitExceeded. Defaults to 50.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  minSyncInterval:
+                    description: |-
+                      minSyncInterval is the smallest allowed gap between two runs of a
+                      mirror's schedule. A mirror whose schedule runs more often gets
+                      Ready=False with reason ScheduleTooFrequent. Defaults to 1h. At least 5m.
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be at least 5m
+                      rule: duration(self) >= duration('5m')
+                type: object
               policy:
                 default: {}
                 description: policy holds the default policy for mirrors that use

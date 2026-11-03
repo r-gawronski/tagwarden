@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -131,6 +132,44 @@ type TargetProject struct {
 	AllowRepositoryOverride bool `json:"allowRepositoryOverride,omitempty"`
 }
 
+// TargetLimits caps what the mirrors of a target may ask for. An absent
+// field uses its default; the controller applies the defaults.
+type TargetLimits struct {
+	// minSyncInterval is the smallest allowed gap between two runs of a
+	// mirror's schedule. A mirror whose schedule runs more often gets
+	// Ready=False with reason ScheduleTooFrequent. Defaults to 1h. At least 5m.
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('5m')",message="must be at least 5m"
+	// +optional
+	MinSyncInterval *metav1.Duration `json:"minSyncInterval,omitempty"`
+
+	// maxMirrorsPerNamespace caps the ArtifactMirrors of one namespace that
+	// use this target. The oldest ones win, by creation time and then name;
+	// the others get Ready=False with reason LimitExceeded. Defaults to 50.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxMirrorsPerNamespace *int32 `json:"maxMirrorsPerNamespace,omitempty"`
+
+	// maxKeepLatest caps tags.keepLatest of a mirror. Defaults to 20.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	MaxKeepLatest *int32 `json:"maxKeepLatest,omitempty"`
+
+	// maxExplicitTags caps the number of tags.tags of a mirror. Defaults to 50.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	MaxExplicitTags *int32 `json:"maxExplicitTags,omitempty"`
+
+	// maxArtifactSize caps the size of one artifact: config and layers of
+	// the manifest, or of every manifest in an index. Referrers do not
+	// count. The sync Job reports a larger artifact as failed and copies
+	// nothing of it. No limit when absent.
+	// +kubebuilder:validation:XValidation:rule="quantity(string(self)).isGreaterThan(quantity('0'))",message="must be positive"
+	// +optional
+	MaxArtifactSize *resource.Quantity `json:"maxArtifactSize,omitempty"`
+}
+
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
 type ClusterMirrorTargetSpec struct {
 	// registry is the target registry as host[:port], without a scheme.
@@ -177,6 +216,11 @@ type ClusterMirrorTargetSpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Policy TargetPolicy `json:"policy,omitzero"`
+
+	// limits caps schedules, mirrors, tags and artifact sizes per tenant.
+	// Defaults apply when it is absent.
+	// +optional
+	Limits *TargetLimits `json:"limits,omitempty"`
 }
 
 // ClusterMirrorTargetStatus defines the observed state of ClusterMirrorTarget.
