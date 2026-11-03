@@ -97,8 +97,16 @@ var (
 )
 
 // ACRHost reports whether host is an Azure Container Registry login
-// server. The CRD has the same rule.
-func ACRHost(host string) bool { return acrHost.MatchString(strings.ToLower(host)) }
+// server. Like CEL lowerAscii in the CRD rule, only ASCII letters are
+// folded, so a non-ASCII look-alike such as the Kelvin sign never matches.
+func ACRHost(host string) bool {
+	return acrHost.MatchString(strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+		return r
+	}, host))
+}
 
 // AzureAuthority reports whether u is a known Microsoft Entra authority
 // host. The CRD has the same rule; a new cloud needs both changed.
