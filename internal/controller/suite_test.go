@@ -156,6 +156,7 @@ var _ = BeforeSuite(func() {
 		defer GinkgoRecover()
 		Expect(mgr.Start(ctx)).To(Succeed())
 	}()
+	createMirrorFixtures()
 })
 
 var _ = AfterSuite(func() {

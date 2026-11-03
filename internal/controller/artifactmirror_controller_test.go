@@ -19,7 +19,10 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -40,6 +43,7 @@ const (
 	teamA        = "team-a"
 	teamB        = "team-b"
 	sharedRepo   = "shared/app"
+	v310         = "3.10"
 )
 
 // deleteAndWait deletes obj and waits until the finalizer is gone.
@@ -86,16 +90,18 @@ func cronJob(m *mirrorv1alpha1.ArtifactMirror) func() (*batchv1.CronJob, error) 
 
 func notFound(err error) bool { return apierrors.IsNotFound(err) }
 
-var _ = Describe("ArtifactMirror Controller", Ordered, func() {
-	BeforeAll(func() {
-		for ns, labels := range map[string]map[string]string{teamA: {"example.com/team": "a"}, teamB: nil} {
-			Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: labels}})).To(Succeed())
-		}
-		createReadyTarget(mirrorTarget, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
-			t.Spec.AllowedSources = append(t.Spec.AllowedSources, "docker.io", "169.254.169.254", "10.96.0.10")
-		})
+// createMirrorFixtures creates the tenant namespaces and the target the
+// mirror tests share. The suite calls it once.
+func createMirrorFixtures() {
+	for ns, labels := range map[string]map[string]string{teamA: {"example.com/team": "a"}, teamB: nil} {
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: labels}})).To(Succeed())
+	}
+	createReadyTarget(mirrorTarget, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+		t.Spec.AllowedSources = append(t.Spec.AllowedSources, "docker.io", "169.254.169.254", "10.96.0.10")
 	})
+}
 
+var _ = Describe("ArtifactMirror Controller", func() {
 	It("renders a hardened CronJob and its spec ConfigMap", func() {
 		m := newMirror(teamA, "render")
 		createMirror(m)
@@ -337,6 +343,124 @@ var _ = Describe("ArtifactMirror Controller", Ordered, func() {
 		Eventually(mirrorReady(m)).Should(HaveField("Reason", ReasonTargetNotReady))
 		_, err := cronJob(m)()
 		Expect(notFound(err)).To(BeTrue())
+	})
+})
+
+var _ = Describe("ArtifactMirror sync status", Ordered, func() {
+	var m *mirrorv1alpha1.ArtifactMirror
+	var jobs int
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	digest := "sha256:" + strings.Repeat("a", 64)
+
+	BeforeAll(func() {
+		m = newMirror(teamA, "status")
+		createMirror(m)
+		Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
+	})
+
+	// finishJob creates a finished Job and its pod with the given sync
+	// container result, the way the Job controller and kubelet would.
+	finishJob := func(exitCode int32, message string) time.Time {
+		jobs++
+		at := start.Add(time.Duration(jobs) * time.Minute)
+		labels, annotations := mirrorMeta(m)
+		podSpec := corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{{Name: syncContainer, Image: syncImage}}}
+		job := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%d", objectName(m), jobs), Namespace: operatorNamespace,
+				Labels: labels, Annotations: annotations},
+			Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: podSpec}},
+		}
+		Expect(k8sClient.Create(ctx, job)).To(Succeed())
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-pod", Namespace: operatorNamespace,
+				Labels: map[string]string{batchv1.JobNameLabel: job.Name}, Annotations: annotations,
+				OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name,
+					UID: job.UID, Controller: new(true)}}},
+			Spec: podSpec,
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status.Phase = corev1.PodFailed
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: syncContainer, Image: syncImage, ImageID: syncImage,
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				ExitCode: exitCode, Message: message, StartedAt: metav1.NewTime(at.Add(-time.Second)), FinishedAt: metav1.NewTime(at),
+			}}}}
+		if exitCode == 0 {
+			pod.Status.Phase = corev1.PodSucceeded
+		}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+		now := metav1.NewTime(at)
+		job.Status.StartTime = &metav1.Time{Time: at.Add(-time.Second)}
+		if exitCode == 0 {
+			job.Status.Succeeded = 1
+			job.Status.CompletionTime = &now
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue, LastTransitionTime: now},
+				{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: now},
+			}
+		} else {
+			job.Status.Failed = 1
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: "BackoffLimitExceeded"},
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: "BackoffLimitExceeded"},
+			}
+		}
+		Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+		return at
+	}
+
+	status := func() mirrorv1alpha1.ArtifactMirrorStatus {
+		var got mirrorv1alpha1.ArtifactMirror
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(m), &got)).To(Succeed())
+		return got.Status
+	}
+	synced := func() *metav1.Condition { return meta.FindStatusCondition(status().Conditions, ConditionSynced) }
+
+	It("records a successful sync", func() {
+		at := finishJob(0, `{"v":1,"copied":1,"skipped":1,"synced":[{"tag":"`+v310+`","digest":"`+digest+`"},{"tag":"3.9","digest":"`+digest+`"}]}`)
+		Eventually(synced).Should(And(HaveField("Status", metav1.ConditionTrue), HaveField("Reason", ReasonSynced),
+			HaveField("Message", "copied 1, skipped 1, mutated 0, failed 0")))
+		st := status()
+		Expect(st.LastSyncTime.Time).To(BeTemporally("==", at))
+		Expect(st.LastSuccessfulSyncTime.Time).To(BeTemporally("==", at))
+		Expect(st.Synced).To(Equal([]mirrorv1alpha1.SyncedTag{{Tag: v310, Digest: digest}, {Tag: "3.9", Digest: digest}}))
+		Expect(meta.IsStatusConditionTrue(st.Conditions, ConditionReady)).To(BeTrue())
+		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(HaveSuffix("Normal Synced copied 1, skipped 1, mutated 0, failed 0")))
+	})
+
+	It("reports a truncated synced list", func() {
+		finishJob(0, `{"v":1,"skipped":1,"truncated":true,"synced":[{"tag":"`+v310+`","digest":"`+digest+`"}]}`)
+		Eventually(synced).Should(And(HaveField("Status", metav1.ConditionTrue), HaveField("Reason", ReasonTruncated)))
+	})
+
+	DescribeTable("reports a failed sync and keeps the last success",
+		func(exitCode int32, message, reason, text string) {
+			success := status().LastSuccessfulSyncTime
+			at := finishJob(exitCode, message)
+			Eventually(synced).Should(And(HaveField("Status", metav1.ConditionFalse), HaveField("Reason", reason),
+				HaveField("Message", ContainSubstring(text))))
+			st := status()
+			Expect(st.LastSyncTime.Time).To(BeTemporally("==", at))
+			Expect(st.LastSuccessfulSyncTime).To(Equal(success))
+			Expect(len(st.Synced)).To(BeNumerically("<=", maxSynced))
+			Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning " + reason)))
+		},
+		Entry("sync error", int32(1), `{"v":1,"failed":1,"errors":["`+v310+`: `+strings.Repeat("x", 300)+`"]}`,
+			ReasonSyncFailed, "failed 1; 1 errors, first: "+v310+": xxx"),
+		Entry("config error", int32(3), `{"v":1,"synced":[],"errors":["source: registry quay.io is not in allowedSources"]}`,
+			ReasonConfigRejected, "not in allowedSources"),
+		Entry("crash", int32(2), "", ReasonCrashed, "exited with code 2"),
+		Entry("garbage message", int32(1), "panic: \x00\xff not json", ReasonCrashed, "exited with code 1: report: not valid JSON"),
+		Entry("giant message", int32(0), `{"v":1,"errors":["`+strings.Repeat("x", 64*1024)+`"]}`, ReasonCrashed, "larger than 4096"),
+		Entry("invalid synced entry", int32(0), `{"v":1,"synced":[{"tag":"`+v310+`","digest":"sha256:evil"}]}`, ReasonCrashed, "invalid synced entry"),
+	)
+
+	It("ignores an older Job finishing late", func() {
+		before := status()
+		jobs -= 10
+		finishJob(0, `{"v":1}`)
+		Consistently(status).Should(HaveField("LastSyncTime", before.LastSyncTime))
 	})
 })
 
