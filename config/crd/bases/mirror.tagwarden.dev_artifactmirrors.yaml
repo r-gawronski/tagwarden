@@ -187,7 +187,9 @@ spec:
                   repository:
                     description: |-
                       repository overrides the path inside the project.
-                      Defaults to <source registry>/<source repository>.
+                      Defaults to <source registry>/<source repository>. A different path
+                      requires allowRepositoryOverride: true on the project in the
+                      ClusterMirrorTarget; otherwise the mirror is refused.
                     maxLength: 255
                     minLength: 1
                     pattern: ^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*$
