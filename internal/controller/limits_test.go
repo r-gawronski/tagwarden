@@ -17,12 +17,14 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"math"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
@@ -89,6 +91,15 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 		Entry("schedule that runs twice within a minute of a day", func(m *mirrorv1alpha1.ArtifactMirror) {
 			m.Spec.Schedule = "0,1 3 * * *"
 		}, ReasonScheduleTooFrequent, "runs every 1m0s"),
+		Entry("keepLatest above 20", func(m *mirrorv1alpha1.ArtifactMirror) {
+			m.Spec.Tags.KeepLatest = ptr.To[int32](21)
+		}, ReasonLimitExceeded, "tags.keepLatest 21 exceeds maxKeepLatest 20"),
+		Entry("more than 50 explicit tags", func(m *mirrorv1alpha1.ArtifactMirror) {
+			m.Spec.Tags.Tags = nil
+			for i := range 51 {
+				m.Spec.Tags.Tags = append(m.Spec.Tags.Tags, fmt.Sprintf("1.%d", i))
+			}
+		}, ReasonLimitExceeded, "tags.tags has 51 entries, more than maxExplicitTags 50"),
 		Entry("schedule that the CronJob controller cannot parse", func(m *mirrorv1alpha1.ArtifactMirror) {
 			m.Spec.Schedule = "61 * * * *"
 		}, ReasonInvalidSpec, "schedule"),
@@ -107,6 +118,20 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 		expectRefused(m, ReasonScheduleTooFrequent, "below minSyncInterval 5m0s")
 	})
 
+	It("applies the tag limits set on the target", func() {
+		t := limited("limits-tags", mirrorv1alpha1.TargetLimits{
+			MaxKeepLatest:   ptr.To[int32](50),
+			MaxExplicitTags: ptr.To[int32](1),
+		})
+		m := mirrorOf(t, teamA, "tag-limits")
+		m.Spec.Tags.KeepLatest = ptr.To[int32](50)
+		createMirror(m)
+		expectReady(m)
+
+		updateMirror(m, func(m *mirrorv1alpha1.ArtifactMirror) { m.Spec.Tags.Tags = []string{"1.0", v310} })
+		expectRefused(m, ReasonLimitExceeded, "tags.tags has 2 entries, more than maxExplicitTags 1")
+	})
+
 	It("removes the CronJob when the target tightens a limit", func() {
 		t := limited("limits-tighten", mirrorv1alpha1.TargetLimits{})
 		m := mirrorOf(t, teamA, "tighten")
@@ -117,5 +142,44 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 		t.Spec.Limits = &mirrorv1alpha1.TargetLimits{MinSyncInterval: &metav1.Duration{Duration: 48 * time.Hour}}
 		Expect(k8sClient.Update(ctx, t)).To(Succeed())
 		expectRefused(m, ReasonScheduleTooFrequent, "below minSyncInterval 48h0m0s")
+	})
+
+	It("lets the oldest mirrors of a namespace in and the rest wait", func() {
+		t := limited("limits-count", mirrorv1alpha1.TargetLimits{MaxMirrorsPerNamespace: ptr.To[int32](2)})
+		a, b, c := mirrorOf(t, teamA, "count-a"), mirrorOf(t, teamA, "count-b"), mirrorOf(t, teamA, "count-c")
+		for _, m := range []*mirrorv1alpha1.ArtifactMirror{a, b, c} {
+			// Separate paths, so only the namespace count links them.
+			m.Spec.Target.Repository = "count/" + m.Name
+			createMirror(m)
+		}
+		other := mirrorOf(t, teamB, "count-other")
+		other.Spec.Target.Repository = "count/other"
+		createMirror(other)
+
+		expectReady(a)
+		expectReady(b)
+		expectRefused(c, ReasonLimitExceeded, "maxMirrorsPerNamespace is 2")
+		expectReady(other)
+
+		deleteAndWait(a)
+		expectReady(c)
+		Expect(mirrorReady(b)()).To(HaveField("Status", metav1.ConditionTrue))
+	})
+
+	It("does not let a mirror over the count limit claim a path", func() {
+		t := limited("limits-claim", mirrorv1alpha1.TargetLimits{MaxMirrorsPerNamespace: ptr.To[int32](1)})
+		first := mirrorOf(t, teamA, "claim-1")
+		createMirror(first)
+		expectReady(first)
+		over := mirrorOf(t, teamA, "claim-2")
+		over.Spec.Source.Registry = ghcrRegistry
+		over.Spec.Target.Repository = "claimed/app"
+		createMirror(over)
+		expectRefused(over, ReasonLimitExceeded, "maxMirrorsPerNamespace is 1")
+
+		newer := mirrorOf(t, teamB, "claim-3")
+		newer.Spec.Target.Repository = "claimed/app"
+		createMirror(newer)
+		expectReady(newer)
 	})
 })
