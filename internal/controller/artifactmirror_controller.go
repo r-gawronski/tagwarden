@@ -443,10 +443,14 @@ func (r *ArtifactMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.ArtifactMirror{}).
 		// A mirror that moves onto, leaves or claims a path changes who owns
-		// it, so the other mirrors of the path are checked again.
+		// it, so the other mirrors of the path are checked again. One that
+		// comes or goes changes which mirrors of its namespace fit the
+		// target's maxMirrorsPerNamespace.
 		Watches(&mirrorv1alpha1.ArtifactMirror{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {
-				return r.mirrorsMatching(ctx, client.MatchingFields{indexTargetKey: targetKey(o.(*mirrorv1alpha1.ArtifactMirror))})
+				m := o.(*mirrorv1alpha1.ArtifactMirror)
+				return append(r.mirrorsMatching(ctx, client.MatchingFields{indexTargetKey: targetKey(m)}),
+					r.mirrorsMatching(ctx, client.InNamespace(m.Namespace), client.MatchingFields{indexTargetName: m.Spec.TargetRef})...)
 			})).
 		Watches(&mirrorv1alpha1.ClusterMirrorTarget{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {

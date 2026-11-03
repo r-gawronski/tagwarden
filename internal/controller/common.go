@@ -50,6 +50,7 @@ const (
 	ReasonRepositoryOverrideNotAllowed = "RepositoryOverrideNotAllowed"
 	ReasonAmbiguousAllowedSources      = "AmbiguousAllowedSources"
 	ReasonScheduleTooFrequent          = "ScheduleTooFrequent"
+	ReasonLimitExceeded                = "LimitExceeded"
 )
 
 // CacheOptions limits the cache for the operator namespace types to that

@@ -23,13 +23,17 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 )
 
 // Defaults of ClusterMirrorTarget.spec.limits.
 const (
-	defaultMinSyncInterval = time.Hour
+	defaultMinSyncInterval        = time.Hour
+	defaultMaxMirrorsPerNamespace = 50
+	defaultMaxKeepLatest          = 20
+	defaultMaxExplicitTags        = 50
 
 	// scheduleHorizon is how many runs of a schedule minGap looks at.
 	scheduleHorizon = 1000
@@ -59,9 +63,17 @@ func minGap(schedule string, from time.Time) (time.Duration, error) {
 	return gap, nil
 }
 
+func limitOr(v *int32, def int32) int32 {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+
 // checkLimits refuses a mirror that asks for more than the limits of its
-// target allow (threat model T10).
-func (r *ArtifactMirrorReconciler) checkLimits(_ context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (string, string, error) {
+// target allow (threat model T10). The oldest maxMirrorsPerNamespace
+// mirrors of a namespace that use the target are allowed.
+func (r *ArtifactMirrorReconciler) checkLimits(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (string, string, error) {
 	l := t.Spec.Limits
 	if l == nil {
 		l = &mirrorv1alpha1.TargetLimits{}
@@ -77,6 +89,28 @@ func (r *ArtifactMirrorReconciler) checkLimits(_ context.Context, t *mirrorv1alp
 	if gap < interval {
 		return ReasonScheduleTooFrequent, fmt.Sprintf("schedule %q runs every %s at its most frequent, below minSyncInterval %s of ClusterMirrorTarget %s",
 			m.Spec.Schedule, gap, interval, t.Name), nil
+	}
+	if k, maxK := m.Spec.Tags.KeepLatest, limitOr(l.MaxKeepLatest, defaultMaxKeepLatest); k != nil && *k > maxK {
+		return ReasonLimitExceeded, fmt.Sprintf("tags.keepLatest %d exceeds maxKeepLatest %d of ClusterMirrorTarget %s", *k, maxK, t.Name), nil
+	}
+	if n, maxN := len(m.Spec.Tags.Tags), limitOr(l.MaxExplicitTags, defaultMaxExplicitTags); n > int(maxN) {
+		return ReasonLimitExceeded, fmt.Sprintf("tags.tags has %d entries, more than maxExplicitTags %d of ClusterMirrorTarget %s", n, maxN, t.Name), nil
+	}
+
+	var list mirrorv1alpha1.ArtifactMirrorList
+	if err := r.List(ctx, &list, client.InNamespace(m.Namespace), client.MatchingFields{indexTargetName: t.Name}); err != nil {
+		return "", "", err
+	}
+	ahead := 0
+	for i := range list.Items {
+		o := &list.Items[i]
+		if o.UID != m.UID && o.DeletionTimestamp.IsZero() && older(o, m) {
+			ahead++
+		}
+	}
+	if maxM := limitOr(l.MaxMirrorsPerNamespace, defaultMaxMirrorsPerNamespace); ahead >= int(maxM) {
+		return ReasonLimitExceeded, fmt.Sprintf("namespace %s already has %d older ArtifactMirrors for ClusterMirrorTarget %s, maxMirrorsPerNamespace is %d",
+			m.Namespace, ahead, t.Name, maxM), nil
 	}
 	return "", "", nil
 }
