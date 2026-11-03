@@ -426,7 +426,7 @@ spec:
       namespaceSelector: {}
   autoMirror:
     enabled: true
-    project: shared                 # must be listed in projects
+    project: shared                 # listed in projects, no allowRepositoryOverride
     schedule: "0 */6 * * *"         # must respect limits.minSyncInterval
     maxMirrorsPerNamespace: 20      # default 20, max 200
 ```
@@ -447,7 +447,8 @@ What you get:
   `DigestOnlyNotSupported` and `TooManyTags`.
 - `repo:tag` and `repo:tag@digest` work. A ref that already points at the
   target registry and project is mapped back to its upstream source. A
-  digest-only ref is skipped for now.
+  digest-only ref is skipped for now, and so is an untagged one (it would
+  mean `latest`): use an explicit tag.
 
 Teams keep upstream names in their manifests. The nodes pull through a
 containerd mirror that rewrites the path to the target project. On k3s,
