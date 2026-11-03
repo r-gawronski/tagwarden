@@ -188,6 +188,35 @@ var _ = Describe("ClusterMirrorTarget Controller", func() {
 		}, ReasonSecretNotFound, "tgt-proxy-missing-proxy-auth not found"),
 	)
 
+	DescribeTable("refuses allowedSources that map to one target path segment",
+		func(name string, sources []mirrorv1alpha1.RegistryHost, message string) {
+			for _, s := range targetSecrets(name) {
+				Expect(k8sClient.Create(ctx, s)).To(Succeed())
+				DeferCleanup(k8sClient.Delete, ctx, s)
+			}
+			t := newTarget(name)
+			t.Spec.AllowedSources = sources
+			Expect(k8sClient.Create(ctx, t)).To(Succeed())
+			DeferCleanup(k8sClient.Delete, ctx, t)
+			Eventually(func() *metav1.Condition { return targetReady(name) }).Should(And(
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", ReasonAmbiguousAllowedSources),
+				HaveField("Message", ContainSubstring(message)),
+			))
+			Expect(recorder.Events("", name)).To(ContainElement(ContainSubstring("Warning " + ReasonAmbiguousAllowedSources)))
+		},
+		Entry("port and dash", "tgt-ambiguous-port", []mirrorv1alpha1.RegistryHost{"reg.example.internal:5000", "reg.example.internal-5000"},
+			"reg.example.internal-5000"),
+		Entry("IPv6 forms", "tgt-ambiguous-ipv6", []mirrorv1alpha1.RegistryHost{"[2001:db8::1]:5000", "2001-db8--1-5000"},
+			"2001-db8--1-5000"),
+	)
+
+	It("allows Docker Hub aliases, which are one registry", func() {
+		createReadyTarget("tgt-docker-aliases", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.AllowedSources = []mirrorv1alpha1.RegistryHost{"docker.io", "index.docker.io", "Registry-1.Docker.IO"}
+		})
+	})
+
 	It("turns not Ready when a Secret is deleted", func() {
 		t := createReadyTarget("tgt-delete")
 		DeferCleanup(k8sClient.Delete, ctx, t)

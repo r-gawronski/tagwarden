@@ -48,6 +48,7 @@ const (
 	ReasonCrashed                      = "Crashed"
 	ReasonOwnershipConflict            = "OwnershipConflict"
 	ReasonRepositoryOverrideNotAllowed = "RepositoryOverrideNotAllowed"
+	ReasonAmbiguousAllowedSources      = "AmbiguousAllowedSources"
 )
 
 // CacheOptions limits the cache for the operator namespace types to that

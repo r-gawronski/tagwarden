@@ -235,6 +235,7 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ClusterMirrorTargetReconciler{
+		Recorder:  mgr.GetEventRecorder("tagwarden"),
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Namespace: operatorNamespace,

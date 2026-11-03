@@ -98,10 +98,19 @@ func canonicalSource(s mirrorv1alpha1.Source) string {
 	return reg + "/" + repo
 }
 
-// defaultTargetPath is the canonical source with the port separator and
-// IPv6 brackets turned into characters a repository path allows.
+// pathSafe turns the port separator and IPv6 brackets of a registry host
+// into characters a repository path allows.
+var pathSafe = strings.NewReplacer("[", "", "]", "", ":", "-")
+
+// registrySegment is the path segment of a source registry in the default
+// target path.
+func registrySegment(host mirrorv1alpha1.RegistryHost) string {
+	return pathSafe.Replace(syncspec.CanonicalRegistry(string(host)))
+}
+
+// defaultTargetPath is the canonical source made path-safe.
 func defaultTargetPath(m *mirrorv1alpha1.ArtifactMirror) string {
-	return strings.NewReplacer("[", "", "]", "", ":", "-").Replace(canonicalSource(m.Spec.Source))
+	return pathSafe.Replace(canonicalSource(m.Spec.Source))
 }
 
 // targetPath is the repository inside the project: the override, or the
