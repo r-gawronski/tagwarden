@@ -43,6 +43,7 @@ const (
 	pushPassword  = "push-secret-value"
 	proxyPassword = "proxy-secret-value"
 	clientKey     = "client-key-value"
+	sourcePass    = "source-secret-value"
 )
 
 func testCAPEM() []byte {
@@ -73,7 +74,7 @@ func targetSecrets(prefix string) []*corev1.Secret {
 		}},
 		{ObjectMeta: om("proxy-ca"), Data: map[string][]byte{caKey: ca}},
 		{ObjectMeta: om("proxy-auth"), Type: corev1.SecretTypeBasicAuth, Data: map[string][]byte{
-			"username": []byte("proxy-user"), "password": []byte(proxyPassword),
+			usernameKey: []byte("proxy-user"), passwordKey: []byte(proxyPassword),
 		}},
 	}
 }
@@ -114,7 +115,7 @@ func targetReady(name string) *metav1.Condition {
 
 func expectNoSecrets(texts ...string) {
 	for _, s := range texts {
-		for _, v := range []string{pushPassword, proxyPassword, clientKey, "robot"} {
+		for _, v := range []string{pushPassword, proxyPassword, clientKey, sourcePass, "robot"} {
 			ExpectWithOffset(1, s).NotTo(ContainSubstring(v))
 		}
 	}
@@ -181,7 +182,7 @@ var _ = Describe("ClusterMirrorTarget Controller", func() {
 		}, ReasonInvalidSecret, "want kubernetes.io/tls"),
 		Entry("proxy credentials without a password", "tgt-proxy-auth", func(s map[string]*corev1.Secret) {
 			s["proxy-auth"].Type = corev1.SecretTypeOpaque
-			delete(s["proxy-auth"].Data, "password")
+			delete(s["proxy-auth"].Data, passwordKey)
 		}, ReasonInvalidSecret, "no key password"),
 		Entry("missing proxy credentials", "tgt-proxy-missing", func(s map[string]*corev1.Secret) {
 			delete(s, "proxy-auth")
@@ -213,7 +214,7 @@ var _ = Describe("ClusterMirrorTarget Controller", func() {
 
 	It("allows Docker Hub aliases, which are one registry", func() {
 		createReadyTarget("tgt-docker-aliases", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
-			t.Spec.AllowedSources = []mirrorv1alpha1.RegistryHost{"docker.io", "index.docker.io", "Registry-1.Docker.IO"}
+			t.Spec.AllowedSources = []mirrorv1alpha1.RegistryHost{dockerHubHost, "index.docker.io", "Registry-1.Docker.IO"}
 		})
 	})
 
