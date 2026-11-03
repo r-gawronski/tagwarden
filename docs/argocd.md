@@ -63,7 +63,8 @@ The flags are `--argocd-tracking=inherit` (empty means off) and
 - **Annotation tracking** (Argo CD default): the mirror carries
   `argocd.argoproj.io/tracking-id: <app>:mirror.tagwarden.dev/ArtifactMirror:<ns>/<name>`.
   The CronJob gets the same app with its own identity,
-  `<app>:batch/CronJob:<operator-ns>/<cronjob-name>`.
+  `<app>:batch/CronJob:<operator-ns>/<cronjob-name>`. The CronJob is named
+  `<namespace>-<mirror>-<hash8>` (see the README).
 - **Label tracking**: the mirror has no tracking-id annotation but has the
   instance label. The CronJob gets the same label value.
 
@@ -79,6 +80,18 @@ CronJob.
 
 Jobs and pods already have owner references to the CronJob, so Argo CD
 shows them as its children. You don't need `orphaned-resources` for this.
+
+Three things to know:
+
+- The AppProject of the mirror's app must allow the operator namespace in
+  `spec.destinations`. Otherwise Argo CD does not show the CronJob.
+- `inherit` trusts whoever can edit `ArtifactMirror` objects. A mirror
+  author can point the tracking id at another app they name. That only
+  changes what the other app displays: `Prune=false`, `Delete=false` and
+  `IgnoreExtraneous` keep the CronJob display-only.
+- The UI shows the CronJob as `OutOfSync` with "not present in the
+  application's source". This is expected. `Prune=false` shows as
+  "ignored (no prune)", and the app itself stays `Synced`.
 
 A mirror without tracking info gets nothing. A tracking id that names
 another object, for example a copied annotation, is ignored and the
