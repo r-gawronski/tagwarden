@@ -44,6 +44,8 @@ const (
 	teamB        = "team-b"
 	sharedRepo   = "shared/app"
 	v310         = "3.10"
+	teamLabel    = "example.com/team"
+	ghcrRegistry = "ghcr.io"
 )
 
 // deleteAndWait deletes obj and waits until the finalizer is gone.
@@ -93,7 +95,7 @@ func notFound(err error) bool { return apierrors.IsNotFound(err) }
 // createMirrorFixtures creates the tenant namespaces and the target the
 // mirror tests share. The suite calls it once.
 func createMirrorFixtures() {
-	for ns, labels := range map[string]map[string]string{teamA: {"example.com/team": "a"}, teamB: nil} {
+	for ns, labels := range map[string]map[string]string{teamA: {teamLabel: "a"}, teamB: nil} {
 		Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: labels}})).To(Succeed())
 	}
 	createReadyTarget(mirrorTarget, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
@@ -244,6 +246,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		cj, _ := cronJob(m)()
 		var cm corev1.ConfigMap
 		Expect(k8sClient.Get(ctx, objectKey(m), &cm)).To(Succeed())
+		updates := writes.Load()
 
 		// A metadata change reconciles the mirror without changing its spec.
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(m), m)).To(Succeed())
@@ -255,6 +258,55 @@ var _ = Describe("ArtifactMirror Controller", func() {
 			_ = k8sClient.Get(ctx, objectKey(m), &gotCM)
 			return []string{got.ResourceVersion, gotCM.ResourceVersion}
 		}, "2s").Should(Equal([]string{cj.ResourceVersion, cm.ResourceVersion}))
+		Expect(writes.Load()).To(Equal(updates), "CronJob or ConfigMap update calls")
+	})
+
+	It("never touches a CronJob or ConfigMap that names another mirror", func() {
+		m := newMirror(teamA, "squatted")
+		foreign := func() (*batchv1.CronJob, *corev1.ConfigMap) {
+			labels := map[string]string{LabelMirror: mirrorHash(teamA, "squatted")}
+			annotations := map[string]string{AnnotationMirrorNamespace: "elsewhere", AnnotationMirrorName: "owner"}
+			om := metav1.ObjectMeta{Name: objectName(m), Namespace: operatorNamespace, Labels: labels, Annotations: annotations}
+			pod := corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever,
+				Containers: []corev1.Container{{Name: syncContainer, Image: syncImage}}}
+			return &batchv1.CronJob{ObjectMeta: om, Spec: batchv1.CronJobSpec{Schedule: "@daily",
+					JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: pod}}}}},
+				&corev1.ConfigMap{ObjectMeta: *om.DeepCopy(), Data: map[string]string{"spec.json": "{}"}}
+		}
+		cj, cm := foreign()
+		Expect(k8sClient.Create(ctx, cj)).To(Succeed())
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(k8sClient.Delete, ctx, cj)
+		DeferCleanup(k8sClient.Delete, ctx, cm)
+
+		Expect(k8sClient.Create(ctx, m)).To(Succeed())
+		Eventually(mirrorReady(m)).Should(And(
+			HaveField("Status", metav1.ConditionFalse), HaveField("Reason", ReasonOwnershipConflict),
+			HaveField("Message", ContainSubstring("elsewhere/owner"))))
+		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning " + ReasonOwnershipConflict)))
+		deleteAndWait(m)
+
+		got, err := cronJob(m)()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.ResourceVersion).To(Equal(cj.ResourceVersion))
+		var gotCM corev1.ConfigMap
+		Expect(k8sClient.Get(ctx, objectKey(m), &gotCM)).To(Succeed())
+		Expect(gotCM.ResourceVersion).To(Equal(cm.ResourceVersion))
+	})
+
+	It("removes the CronJob when the namespace loses its project label", func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a-2", Labels: map[string]string{teamLabel: "a"}}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		m := newMirror(ns.Name, "labelled")
+		m.Spec.Target.Project = teamA
+		createMirror(m)
+		Eventually(func() error { _, err := cronJob(m)(); return err }).Should(Succeed())
+
+		ns.Labels = nil
+		Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+		Eventually(mirrorReady(m)).Should(HaveField("Reason", ReasonProjectNotAllowed))
+		_, err := cronJob(m)()
+		Expect(notFound(err)).To(BeTrue())
 	})
 
 	DescribeTable("refuses a mirror and renders no CronJob",
@@ -271,7 +323,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 			Expect(recorder.Events(namespace, m.Name)).To(ContainElement(ContainSubstring("Warning " + reason)))
 		},
 		Entry("project not allowed for the namespace", teamB, func(m *mirrorv1alpha1.ArtifactMirror) {
-			m.Spec.Target.Project = "team-a"
+			m.Spec.Target.Project = teamA
 		}, ReasonProjectNotAllowed, "does not allow namespace team-b"),
 		Entry("project not listed", teamA, func(m *mirrorv1alpha1.ArtifactMirror) {
 			m.Spec.Target.Project = "other"
@@ -304,7 +356,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 
 		other := newMirror(teamA, "claim-b")
 		other.Spec.Target.Repository = sharedRepo
-		other.Spec.Source.Registry = "ghcr.io"
+		other.Spec.Source.Registry = ghcrRegistry
 		createMirror(other)
 		same := newMirror(teamB, "claim-c")
 		same.Spec.Target.Repository = sharedRepo
@@ -317,6 +369,42 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		Expect(mirrorReady(first)()).To(HaveField("Status", metav1.ConditionTrue))
 		_, err := cronJob(other)()
 		Expect(notFound(err)).To(BeTrue())
+	})
+
+	It("re-checks the other mirrors of a path when an older mirror moves onto it", func() {
+		older := newMirror(teamA, "move-a")
+		older.Spec.Target.Repository = "moved/before"
+		older.Spec.Source.Registry = ghcrRegistry
+		createMirror(older)
+		Eventually(mirrorReady(older)).Should(HaveField("Status", metav1.ConditionTrue))
+		newer := newMirror(teamA, "move-b")
+		newer.Spec.Target.Repository = "moved/app"
+		createMirror(newer)
+		Eventually(mirrorReady(newer)).Should(HaveField("Status", metav1.ConditionTrue))
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(older), older)).To(Succeed())
+		older.Spec.Target.Repository = "moved/app"
+		Expect(k8sClient.Update(ctx, older)).To(Succeed())
+		Eventually(mirrorReady(newer)).Should(HaveField("Reason", ReasonTargetConflict))
+		_, err := cronJob(newer)()
+		Expect(notFound(err)).To(BeTrue())
+		Expect(mirrorReady(older)()).To(HaveField("Status", metav1.ConditionTrue))
+	})
+
+	It("hands a path to the next mirror when its owner is deleted", func() {
+		owner := newMirror(teamA, "owner-a")
+		owner.Spec.Target.Repository = "handover/app"
+		createMirror(owner)
+		Eventually(mirrorReady(owner)).Should(HaveField("Status", metav1.ConditionTrue))
+		next := newMirror(teamA, "owner-b")
+		next.Spec.Target.Repository = "handover/app"
+		next.Spec.Source.Registry = ghcrRegistry
+		createMirror(next)
+		Eventually(mirrorReady(next)).Should(HaveField("Reason", ReasonTargetConflict))
+
+		deleteAndWait(owner)
+		Eventually(mirrorReady(next)).Should(HaveField("Status", metav1.ConditionTrue))
+		Eventually(func() error { _, err := cronJob(next)(); return err }).Should(Succeed())
 	})
 
 	It("removes the CronJob and ConfigMap when the mirror is deleted", func() {
@@ -360,7 +448,7 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 
 	// finishJob creates a finished Job and its pod with the given sync
 	// container result, the way the Job controller and kubelet would.
-	finishJob := func(exitCode int32, message string) time.Time {
+	finishJob := func(exitCode int32, message string, foreignPod ...bool) time.Time {
 		jobs++
 		at := start.Add(time.Duration(jobs) * time.Minute)
 		labels, annotations := mirrorMeta(m)
@@ -378,6 +466,9 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 				OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name,
 					UID: job.UID, Controller: new(true)}}},
 			Spec: podSpec,
+		}
+		if len(foreignPod) > 0 {
+			pod.OwnerReferences = nil
 		}
 		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 		pod.Status.Phase = corev1.PodFailed
@@ -456,6 +547,12 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 		Entry("invalid synced entry", int32(0), `{"v":1,"synced":[{"tag":"`+v310+`","digest":"sha256:evil"}]}`, ReasonCrashed, "invalid synced entry"),
 	)
 
+	It("ignores a pod the Job does not control", func() {
+		finishJob(0, `{"v":1,"copied":5}`, true)
+		Eventually(synced).Should(And(HaveField("Reason", ReasonCrashed),
+			HaveField("Message", ContainSubstring("no sync container result"))))
+	})
+
 	It("ignores an older Job finishing late", func() {
 		before := status()
 		jobs -= 10
@@ -488,11 +585,11 @@ var _ = Describe("naming", func() {
 	})
 
 	It("hashes namespace and name into a short stable suffix", func() {
-		Expect(mirrorHash("team-a", "pause")).To(HaveLen(10))
+		Expect(mirrorHash("team-a", "pause")).To(HaveLen(20))
 		Expect(mirrorHash("team-a", "pause")).To(Equal(mirrorHash("team-a", "pause")))
 		Expect(mirrorHash("team-a", "pause")).NotTo(Equal(mirrorHash("team-a-pause", "")))
 		Expect(mirrorHash("a", "b/c")).NotTo(Equal(mirrorHash("b", "c")))
 		m := validMirror("pause")
-		Expect(objectName(m)).To(MatchRegexp("^tagwarden-[0-9a-f]{10}$"))
+		Expect(objectName(m)).To(MatchRegexp("^tagwarden-[0-9a-f]{20}$"))
 	})
 })

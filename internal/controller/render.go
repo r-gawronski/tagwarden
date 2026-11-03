@@ -19,6 +19,7 @@ package controller
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 
@@ -41,6 +42,7 @@ const (
 	AnnotationMirrorNamespace = "tagwarden.dev/mirror-namespace"
 	AnnotationMirrorName      = "tagwarden.dev/mirror-name"
 	annotationSpecChecksum    = "tagwarden.dev/spec-checksum"
+	annotationCronJobChecksum = "tagwarden.dev/cronjob-checksum"
 
 	// SyncServiceAccount runs the sync pods. It has no RBAC bindings.
 	SyncServiceAccount = "tagwarden-sync"
@@ -50,10 +52,12 @@ const (
 	maxListedTags = tags.MaxTags
 )
 
-// mirrorHash is the first 10 hex characters of sha256(namespace/name).
+// mirrorHash is the first 20 hex characters of sha256(namespace/name).
+// Objects also carry the full names in annotations, and the controller
+// never touches an object whose annotations name another mirror.
 func mirrorHash(namespace, name string) string {
 	sum := sha256.Sum256([]byte(namespace + "/" + name))
-	return hex.EncodeToString(sum[:])[:10]
+	return hex.EncodeToString(sum[:])[:20]
 }
 
 // objectName names the CronJob and ConfigMap of a mirror.
@@ -277,4 +281,9 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 			},
 		},
 	}
+	// The checksum covers everything rendered, so an unchanged checksum
+	// means nothing to update.
+	rendered, _ := json.Marshal([]any{cj.Labels, cj.Annotations, cj.Spec})
+	sum = sha256.Sum256(rendered)
+	cj.Annotations[annotationCronJobChecksum] = hex.EncodeToString(sum[:])
 }

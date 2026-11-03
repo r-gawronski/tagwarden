@@ -46,6 +46,7 @@ const (
 	ReasonSyncFailed        = "SyncFailed"
 	ReasonConfigRejected    = "ConfigRejected"
 	ReasonCrashed           = "Crashed"
+	ReasonOwnershipConflict = "OwnershipConflict"
 )
 
 // CacheOptions limits the cache for the operator namespace types to that

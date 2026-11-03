@@ -47,7 +47,7 @@ const (
 // syncStatus records the result of the most recent finished Job of m. The
 // termination message is untrusted: it only fills in status and is never
 // used to decide what a mirror may do (threat model T12).
-func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror) error {
+func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, ev *pending) error {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(r.Namespace),
 		client.MatchingLabels{LabelMirror: mirrorHash(m.Namespace, m.Name)}); err != nil {
@@ -76,7 +76,7 @@ func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1al
 		if cond.Status == metav1.ConditionTrue {
 			eventType = corev1.EventTypeNormal
 		}
-		r.Recorder.Eventf(m, nil, eventType, cond.Reason, "Sync", "%s", cond.Message)
+		ev.add(eventType, cond.Reason, "Sync", cond.Message)
 	}
 	return nil
 }
