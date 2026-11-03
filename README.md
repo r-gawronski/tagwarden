@@ -44,6 +44,10 @@ manager args in `config/manager/manager.yaml` so that sources cannot resolve
 to cluster addresses. The Secrets a `ClusterMirrorTarget` references must
 exist in `tagwarden-system`.
 
+Changing the operator namespace leaves the CronJobs and ConfigMaps in the
+old namespace behind. Delete them there, for example with
+`kubectl delete cronjobs,configmaps -l tagwarden.dev/mirror -n <old namespace>`.
+
 **Create instances of your solution**
 You can apply the samples (examples) from the config/sample:
 
