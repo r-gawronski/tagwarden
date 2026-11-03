@@ -598,6 +598,10 @@ spec:
             x-kubernetes-validations:
             - message: autoMirror.project must be listed in projects
               rule: '!has(self.autoMirror) || self.projects.exists(p, p.name == self.autoMirror.project)'
+            - message: autoMirror.project must not allow repository overrides, so
+                node pulls through a path rewrite stay bound to one source
+              rule: '!has(self.autoMirror) || self.projects.all(p, p.name != self.autoMirror.project
+                || !has(p.allowRepositoryOverride) || !p.allowRepositoryOverride)'
             - message: set exactly one of credentialsSecretRef or auth
               rule: has(self.credentialsSecretRef) != has(self.auth)
             - message: auth.azureWorkloadIdentity needs an Azure Container Registry

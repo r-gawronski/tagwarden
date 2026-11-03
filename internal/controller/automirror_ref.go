@@ -39,6 +39,8 @@ type imageSource struct {
 	Registry, Repository, Tag string
 }
 
+var errImplicitLatest = errors.New("image has no tag, so it would mean latest, which auto-mirror does not support; use an explicit tag")
+
 func (s imageSource) key() string { return s.Registry + "/" + s.Repository }
 
 // parseImage reads repo:tag and repo:tag@digest. A ref that points at the
@@ -51,6 +53,9 @@ func parseImage(ref string, t *mirrorv1alpha1.ClusterMirrorTarget) (imageSource,
 	last := base[strings.LastIndex(base, "/")+1:]
 	if hasDigest && !strings.Contains(last, ":") {
 		return imageSource{}, errDigestOnly
+	}
+	if !hasDigest && !strings.Contains(last, ":") {
+		return imageSource{}, errImplicitLatest
 	}
 	tag, err := name.NewTag(base, name.WeakValidation)
 	if err != nil {

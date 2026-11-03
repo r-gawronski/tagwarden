@@ -25,7 +25,7 @@ func TestParseImage(t *testing.T) {
 		wantErr bool
 	}{
 		{"nginx:" + tag127, imageSource{dockerHubHost, libraryNginx, tag127}, false},
-		{"nginx", imageSource{dockerHubHost, libraryNginx, "latest"}, false},
+		{"nginx", imageSource{}, true},
 		{"ghcr.io/org/app:v1" + dig, imageSource{ghcrRegistry, "org/app", "v1"}, false},
 		{"ghcr.io/org/app" + dig, imageSource{}, true},
 		{targetRegistry + "/shared/docker.io/library/nginx:" + tag127, imageSource{dockerHubHost, libraryNginx, tag127}, false},

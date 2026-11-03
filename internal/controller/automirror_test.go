@@ -11,6 +11,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -18,6 +20,7 @@ import (
 )
 
 const (
+	otherProject   = "other"
 	targetRegistry = "registry.example.internal:8443"
 	tag10          = "1.0"
 )
@@ -88,6 +91,82 @@ var _ = Describe("auto-mirror", func() {
 		t := newTarget("auto-bad")
 		t.Spec.AutoMirror = &mirrorv1alpha1.AutoMirror{Enabled: true, Project: "unlisted"}
 		Expect(k8sClient.Create(ctx, t)).To(MatchError(ContainSubstring("autoMirror.project must be listed in projects")))
+	})
+
+	// extraTarget creates a Ready target with the projects shared and other.
+	extraTarget := func(name string, auto mirrorv1alpha1.AutoMirror, selOther *metav1.LabelSelector) {
+		createReadyTarget(name, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.AllowedSources = []mirrorv1alpha1.RegistryHost{dockerHubHost, ghcrRegistry}
+			t.Spec.Projects = []mirrorv1alpha1.TargetProject{
+				{Name: sharedProject, NamespaceSelector: &metav1.LabelSelector{}},
+				{Name: otherProject, NamespaceSelector: selOther},
+			}
+			t.Spec.AutoMirror = &auto
+		})
+	}
+
+	It("keeps going when one source is rejected by the API", func() {
+		ns := newNS()
+		p := pod(ns, autoTarget, "ghcr.io/a..b/x:1", "ghcr.io/org/ok:1")
+		Eventually(events(p)).Should(ContainSubstring("Warning InvalidImage"))
+		m := only(ns)
+		Expect(m.Spec.Source.Repository).To(Equal("org/ok"))
+	})
+
+	It("does not touch a labelled mirror of another source at the generated name", func() {
+		ns := newNS()
+		name := generatedName(imageSource{Registry: ghcrRegistry, Repository: "org/imp"})
+		imp := newMirror(ns, name)
+		imp.Labels = map[string]string{mirrorv1alpha1.LabelGenerated: trueValue}
+		imp.Spec.TargetRef = autoTarget
+		imp.Spec.Source = mirrorv1alpha1.Source{Registry: dockerHubHost, Repository: libraryNginx}
+		imp.Spec.Target = mirrorv1alpha1.Target{Project: sharedProject}
+		imp.Spec.Tags = mirrorv1alpha1.TagSelector{Tags: []string{tag10}}
+		Expect(k8sClient.Create(ctx, imp)).To(Succeed())
+		p := pod(ns, autoTarget, "ghcr.io/org/imp:2")
+		Eventually(events(p)).Should(ContainSubstring("NameConflict"))
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(imp), imp)).To(Succeed())
+		Expect(imp.Spec.Tags.Tags).To(Equal([]string{tag10}))
+		Expect(imp.Spec.Source.Repository).To(Equal(libraryNginx))
+	})
+
+	It("moves generated mirrors to a new autoMirror project", func() {
+		extraTarget("auto-drift", mirrorv1alpha1.AutoMirror{Enabled: true, Project: sharedProject}, &metav1.LabelSelector{})
+		ns := newNS()
+		pod(ns, "auto-drift", "ghcr.io/org/drift:1")
+		Expect(string(only(ns).Spec.Target.Project)).To(Equal(sharedProject))
+		var t mirrorv1alpha1.ClusterMirrorTarget
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "auto-drift"}, &t); err != nil {
+				return err
+			}
+			t.Spec.AutoMirror.Project = otherProject
+			return k8sClient.Update(ctx, &t)
+		})).To(Succeed())
+		Eventually(func() string { return string(only(ns).Spec.Target.Project) }).Should(Equal(otherProject))
+	})
+
+	It("refuses before creating anything when the project does not allow the namespace", func() {
+		extraTarget("auto-sel", mirrorv1alpha1.AutoMirror{Enabled: true, Project: otherProject},
+			&metav1.LabelSelector{MatchLabels: map[string]string{"example.com/auto": "yes"}})
+		ns := newNS()
+		p := pod(ns, "auto-sel", "ghcr.io/org/app:1")
+		Eventually(events(p)).Should(And(ContainSubstring("MirrorRefused"), ContainSubstring(ReasonProjectNotAllowed)))
+		Consistently(generated(ns), "1s").Should(BeEmpty())
+	})
+
+	It("refuses untagged images", func() {
+		ns := newNS()
+		p := pod(ns, autoTarget, "nginx")
+		Eventually(events(p)).Should(ContainSubstring("ImplicitLatestNotSupported"))
+		Consistently(generated(ns), "1s").Should(BeEmpty())
+	})
+
+	It("rejects an autoMirror project that allows repository overrides", func() {
+		t := newTarget("auto-override")
+		t.Spec.Projects[0].AllowRepositoryOverride = true
+		t.Spec.AutoMirror = &mirrorv1alpha1.AutoMirror{Enabled: true, Project: t.Spec.Projects[0].Name}
+		Expect(k8sClient.Create(ctx, t)).To(MatchError(ContainSubstring("must not allow repository overrides")))
 	})
 
 	It("only warns when the target has no autoMirror", func() {
