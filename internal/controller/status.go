@@ -41,7 +41,7 @@ const (
 	exitCrashed = 2
 )
 
-// +kubebuilder:rbac:groups=batch,namespace=system,resources=jobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,namespace=system,resources=jobs,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",namespace=system,resources=pods,verbs=get;list;watch
 
 // syncStatus records the result of the most recent finished Job of m. The
@@ -53,6 +53,7 @@ func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1al
 		client.MatchingLabels{LabelMirror: mirrorHash(m.Namespace, m.Name)}); err != nil {
 		return err
 	}
+	trackSyncStart(m, jobs.Items)
 	job, done := latestFinished(jobs.Items, m)
 	last := m.Status.LastSyncTime
 	if job == nil || last != nil && done.LastTransitionTime.Before(last) {
@@ -190,14 +191,21 @@ func summary(r syncspec.Report) string {
 	}
 	if len(r.Errors) > 0 {
 		e := strings.ToValidUTF8(r.Errors[0], "?")
-		if len(e) > maxErrorLen {
-			n := maxErrorLen
-			for n > 0 && !utf8.RuneStart(e[n]) {
-				n--
-			}
-			e = e[:n] + "..."
+		if c := cut(e, maxErrorLen); c != e {
+			e = c + "..."
 		}
 		s += fmt.Sprintf("; %d errors, first: %s", len(r.Errors), e)
 	}
 	return s
+}
+
+// cut shortens s to at most n bytes without splitting a UTF-8 sequence.
+func cut(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
