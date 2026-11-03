@@ -364,6 +364,12 @@ func TestRunTagMutation(t *testing.T) {
 			if got, _ := headDigest(t, dst.repo.Tag(v100)); got != want.String() {
 				t.Fatalf("target digest %s, want %s", got, want)
 			}
+			// An ignored mutation reports what the target holds.
+			for _, a := range res.Skipped {
+				if a.Tag == v100 && a.Digest != old.String() {
+					t.Fatalf("skipped digest %s, want target digest %s", a.Digest, old)
+				}
+			}
 		})
 	}
 }

@@ -61,7 +61,8 @@ type Request struct {
 	MaxTags int
 }
 
-// Artifact is one tag and the digest it resolved to.
+// Artifact is one tag and the digest it resolved to. For a mutated tag
+// skipped under the Ignore policy, Digest is the digest the target keeps.
 type Artifact struct {
 	Tag, Digest string
 	// Referrers counts the referrers and cosign tag-scheme artifacts of the
@@ -216,6 +217,8 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 		res.Skipped = append(res.Skipped, a)
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationIgnore:
+		// Report what the target holds, not the upstream digest.
+		a.Digest = dst.Digest.String()
 		res.Skipped = append(res.Skipped, a)
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationOverwrite:
