@@ -140,15 +140,24 @@ func duplicateSourceRegistries(t *mirrorv1alpha1.ClusterMirrorTarget) (string, s
 	return dup("sourceCABundles", cas)
 }
 
-// missingIdentity refuses Azure workload identity auth without
-// spec.workloadIdentity.azure.
+// missingIdentity refuses cloud workload identity auth without the
+// matching identity in spec.workloadIdentity.
 func missingIdentity(t *mirrorv1alpha1.ClusterMirrorTarget) (string, string) {
-	uses := t.Spec.Auth != nil && t.Spec.Auth.AzureWorkloadIdentity != nil ||
-		slices.ContainsFunc(t.Spec.SourceCredentials, func(c mirrorv1alpha1.SourceCredential) bool { return c.AzureWorkloadIdentity != nil })
-	if uses && (t.Spec.WorkloadIdentity == nil || t.Spec.WorkloadIdentity.Azure == nil) {
+	wi := t.Spec.WorkloadIdentity
+	if usesAuth(t, syncspec.AuthAzureWorkloadIdentity) && (wi == nil || wi.Azure == nil) {
 		return ReasonInvalidSpec, "azureWorkloadIdentity requires spec.workloadIdentity.azure"
 	}
+	if usesAuth(t, syncspec.AuthAWSWorkloadIdentity) && (wi == nil || wi.AWS == nil) {
+		return ReasonInvalidSpec, "awsWorkloadIdentity requires spec.workloadIdentity.aws"
+	}
 	return "", ""
+}
+
+// usesAuth reports whether the target push or any source entry uses the
+// cloud provider.
+func usesAuth(t *mirrorv1alpha1.ClusterMirrorTarget, provider string) bool {
+	return targetAuth(t) == provider || slices.ContainsFunc(t.Spec.SourceCredentials,
+		func(c mirrorv1alpha1.SourceCredential) bool { return sourceAuth(&c) == provider })
 }
 
 // sourceRefs returns the credentials and CA entries for a source
