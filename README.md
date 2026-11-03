@@ -50,7 +50,8 @@ There are two resources:
   says what to mirror and when.
 
 The controller checks each mirror against its target and turns it into a
-CronJob in the operator namespace. On schedule, a sync Job lists the
+CronJob in the operator namespace, named `<namespace>-<mirror>-<hash8>`
+(cut to 52 characters). On schedule, a sync Job lists the
 upstream tags, picks the ones you asked for, copies new digests with
 their signatures, and reports back. You see the result in the mirror's
 status.

@@ -366,6 +366,55 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		}).Should(HaveKeyWithValue(LabelTarget, want))
 	})
 
+	// legacy creates a CronJob and ConfigMap under the old tagwarden-<20 hex>
+	// name, annotated for the mirror ns/name.
+	legacy := func(m *mirrorv1alpha1.ArtifactMirror, ownerNS, ownerName string) (*batchv1.CronJob, *corev1.ConfigMap) {
+		om := metav1.ObjectMeta{Name: "tagwarden-" + mirrorHash(m.Namespace, m.Name), Namespace: operatorNamespace,
+			Labels:      map[string]string{LabelMirror: mirrorHash(m.Namespace, m.Name)},
+			Annotations: map[string]string{AnnotationMirrorNamespace: ownerNS, AnnotationMirrorName: ownerName}}
+		pod := corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{{Name: syncContainer, Image: syncImage}}}
+		cj := &batchv1.CronJob{ObjectMeta: om, Spec: batchv1.CronJobSpec{Schedule: "0 0 * * *",
+			JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: pod}}}}}
+		cm := &corev1.ConfigMap{ObjectMeta: *om.DeepCopy(), Data: map[string]string{"spec.json": "{}"}}
+		ExpectWithOffset(1, k8sClient.Create(ctx, cj)).To(Succeed())
+		ExpectWithOffset(1, k8sClient.Create(ctx, cm)).To(Succeed())
+		DeferCleanup(func() {
+			_ = client.IgnoreNotFound(k8sClient.Delete(ctx, cj))
+			_ = client.IgnoreNotFound(k8sClient.Delete(ctx, cm))
+		})
+		return cj, cm
+	}
+
+	It("replaces objects under the old name with ones under the readable name", func() {
+		m := newMirror(teamA, "migrated")
+		oldCJ, oldCM := legacy(m, m.Namespace, m.Name)
+		createMirror(m)
+		Eventually(cronJob(m)).Should(Not(BeNil()))
+		Expect(objectName(m)).NotTo(Equal(oldCJ.Name))
+		// envtest has no garbage collector, so an orphan delete leaves the
+		// object terminating with the orphan finalizer.
+		gone := func(obj client.Object) func() bool {
+			return func() bool {
+				err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj)
+				return notFound(err) || err == nil && obj.GetDeletionTimestamp() != nil
+			}
+		}
+		Eventually(gone(oldCJ)).Should(BeTrue())
+		Eventually(gone(oldCM)).Should(BeTrue())
+		Expect(oldCJ.Finalizers).To(Equal([]string{metav1.FinalizerOrphanDependents}))
+		Expect(k8sClient.Get(ctx, objectKey(m), &corev1.ConfigMap{})).To(Succeed())
+	})
+
+	It("leaves old-name objects that name another mirror alone", func() {
+		m := newMirror(teamA, "migrate-foreign")
+		oldCJ, oldCM := legacy(m, "elsewhere", "owner")
+		createMirror(m)
+		Eventually(cronJob(m)).Should(Not(BeNil()))
+		Consistently(func() error { return k8sClient.Get(ctx, client.ObjectKeyFromObject(oldCJ), &batchv1.CronJob{}) }, "1s").Should(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(oldCM), &corev1.ConfigMap{})).To(Succeed())
+	})
+
 	It("never touches a CronJob or ConfigMap that names another mirror", func() {
 		m := newMirror(teamA, "squatted")
 		foreign := func() (*batchv1.CronJob, *corev1.ConfigMap) {
@@ -762,7 +811,32 @@ var _ = Describe("naming", func() {
 		Expect(mirrorHash("team-a", "pause")).To(Equal(mirrorHash("team-a", "pause")))
 		Expect(mirrorHash("team-a", "pause")).NotTo(Equal(mirrorHash("team-a-pause", "")))
 		Expect(mirrorHash("a", "b/c")).NotTo(Equal(mirrorHash("b", "c")))
+	})
+
+	It("names objects <namespace>-<mirror>-<hash8>", func() {
 		m := validMirror("pause")
-		Expect(objectName(m)).To(MatchRegexp("^tagwarden-[0-9a-f]{20}$"))
+		Expect(objectName(m)).To(MatchRegexp("^" + m.Namespace + "-pause-[0-9a-f]{8}$"))
+		Expect(manualJobName(m, "x")).To(HavePrefix(objectName(m) + "-manual-"))
+	})
+
+	It("sanitises and bounds generated names", func() {
+		long := strings.Repeat("a", 80)
+		mk := func(ns, n string) *mirrorv1alpha1.ArtifactMirror {
+			m := validMirror(n)
+			m.Namespace = ns
+			return m
+		}
+		for _, m := range []*mirrorv1alpha1.ArtifactMirror{
+			mk(long, long), mk("team", long), mk(strings.Repeat("a-", 40), "b"),
+			mk("Team.A", "My_Mirror.v1"), mk("x", "--y--"),
+		} {
+			n := objectName(m)
+			Expect(len(n)).To(BeNumerically("<=", 52))
+			Expect(n).To(MatchRegexp(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?-[0-9a-f]{8}$`))
+			Expect(n).NotTo(ContainSubstring("--"))
+			Expect(len(manualJobName(m, "v"))).To(BeNumerically("<=", 63))
+		}
+		Expect(objectName(mk("Team.A", "My_Mirror.v1"))).To(HavePrefix("team-a-my-mirror-v1-"))
+		Expect(objectName(mk(long, long+"1"))).NotTo(Equal(objectName(mk(long, long+"2"))))
 	})
 })

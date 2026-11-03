@@ -45,11 +45,16 @@ const (
 	maxRequestValue = 256
 )
 
+// manualSuffix is "-manual-" plus 10 hex characters.
+const manualSuffix = len("-manual-") + 10
+
 // manualJobName names the sync Job of a request after the CronJob and a
-// hash of the value, so one request never starts two Jobs.
+// hash of the value, so one request never starts two Jobs. The CronJob
+// part is cut further when needed to keep the Job name within 63
+// characters; it keeps its mirror hash.
 func manualJobName(m *mirrorv1alpha1.ArtifactMirror, value string) string {
 	sum := sha256.Sum256([]byte(value))
-	return objectName(m) + "-manual-" + hex.EncodeToString(sum[:])[:10]
+	return boundedName(m, 63-manualSuffix) + "-manual-" + hex.EncodeToString(sum[:])[:10]
 }
 
 // pendingRequest returns the sync-now value of m that still needs
