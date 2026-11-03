@@ -225,6 +225,7 @@ func main() {
 
 	if err := (&controller.ArtifactMirrorReconciler{
 		Client:      mgr.GetClient(),
+		APIReader:   mgr.GetAPIReader(),
 		Scheme:      mgr.GetScheme(),
 		Recorder:    mgr.GetEventRecorder("tagwarden"),
 		Namespace:   operatorNamespace,

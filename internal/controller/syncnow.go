@@ -93,12 +93,15 @@ func (r *ArtifactMirrorReconciler) syncNow(ctx context.Context, t *mirrorv1alpha
 		recordRequest(m, ev, value, mirrorv1alpha1.SyncRequestRefused, "ArtifactMirror is suspended")
 		return ctrl.Result{}, nil
 	}
+	// The cache can miss a Job created moments ago, by this controller or
+	// the CronJob controller, so read Jobs from the API server.
 	var jobs batchv1.JobList
-	if err := r.List(ctx, &jobs, client.InNamespace(r.Namespace),
+	if err := r.APIReader.List(ctx, &jobs, client.InNamespace(r.Namespace),
 		client.MatchingLabels{LabelMirror: mirrorHash(m.Namespace, m.Name)}); err != nil {
 		return ctrl.Result{}, err
 	}
 	name := manualJobName(m, value)
+	last := m.Status.LastSyncStartTime
 	for i := range jobs.Items {
 		j := &jobs.Items[i]
 		if !ownedBy(j, m) {
@@ -113,9 +116,16 @@ func (r *ArtifactMirrorReconciler) syncNow(ctx context.Context, t *mirrorv1alpha
 			recordRequest(m, ev, value, mirrorv1alpha1.SyncRequestDeferred, fmt.Sprintf("Job %s/%s is running", j.Namespace, j.Name))
 			return ctrl.Result{}, nil
 		}
+		start := j.CreationTimestamp
+		if j.Status.StartTime != nil {
+			start = *j.Status.StartTime
+		}
+		if last == nil || last.Before(&start) {
+			last = &start
+		}
 	}
 	interval := minSyncInterval(t)
-	if last := m.Status.LastSyncStartTime; last != nil {
+	if last != nil {
 		next := last.Add(interval)
 		if wait := time.Until(next); wait > 0 {
 			recordRequest(m, ev, value, mirrorv1alpha1.SyncRequestDeferred, fmt.Sprintf(

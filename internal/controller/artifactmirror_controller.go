@@ -73,8 +73,10 @@ const (
 // the mirror.
 type ArtifactMirrorReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder events.EventRecorder
+	// APIReader reads Jobs past the cache when a sync request is handled.
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Recorder  events.EventRecorder
 	// Namespace is the operator namespace for CronJobs, Jobs and ConfigMaps.
 	Namespace string
 	// SyncImage runs the sync Jobs.
