@@ -56,6 +56,10 @@ spec:
     ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
 ```
 
+Targets with Azure workload identity also reach the Microsoft Entra
+authority host (`login.microsoftonline.com` by default) through the same
+path as the registry. Allow it at the proxy, or in the `direct` policy.
+
 Add your pod and service CIDRs to `except` when they are outside these
 ranges. NetworkPolicies are a second layer: the sync Job checks every
 source address itself ([threat model](threat-model.md) T16).

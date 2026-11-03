@@ -113,6 +113,104 @@ spec:
   `proxy.caBundleSecretRef`. Use `sourceCABundles` instead; the proxy CA
   is for the proxy.
 
+## Azure Container Registry with workload identity
+
+The sync Job can push to and pull from Azure Container Registry with a
+Microsoft Entra workload identity instead of a Secret. It exchanges a
+projected ServiceAccount token for an Entra access token, and that for a
+registry refresh token, with plain HTTPS calls through the target's proxy.
+The cluster needs a public OIDC issuer that Microsoft Entra ID can reach
+(on AKS, enable the OIDC issuer). The Azure Workload Identity webhook is
+not needed: the controller renders the token volume itself.
+
+1. Create a user-assigned managed identity, or an app registration, and
+   note its client ID and your tenant ID:
+
+   ```sh
+   az identity create -g <group> -n tagwarden-sync
+   az identity show -g <group> -n tagwarden-sync --query clientId -o tsv
+   ```
+
+2. Add a federated credential for the sync ServiceAccount. The subject is
+   `system:serviceaccount:<operator namespace>:<ServiceAccount>`, the
+   issuer is the cluster's OIDC issuer URL and the audience is
+   `api://AzureADTokenExchange`:
+
+   ```sh
+   az identity federated-credential create -g <group> \
+     --identity-name tagwarden-sync --name tagwarden-sync \
+     --issuer "<cluster OIDC issuer URL>" \
+     --subject system:serviceaccount:tagwarden-system:tagwarden-sync-azure \
+     --audience api://AzureADTokenExchange
+   ```
+
+3. Grant the identity `AcrPush` on the target registry and `AcrPull` on
+   each source registry. Registries that use ABAC repository permissions
+   need the matching repository roles instead.
+
+   ```sh
+   az role assignment create --assignee <client ID> --role AcrPush \
+     --scope $(az acr show -n myregistry --query id -o tsv)
+   ```
+
+4. Create the ServiceAccount in the operator namespace. Tagwarden does not
+   create it and needs no RBAC for it; the pods only reference it. Give it
+   no RBAC bindings.
+
+   ```yaml
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata:
+     name: tagwarden-sync-azure
+     namespace: tagwarden-system
+   automountServiceAccountToken: false
+   ```
+
+5. Point the target at the identity:
+
+   ```yaml
+   apiVersion: mirror.tagwarden.dev/v1alpha1
+   kind: ClusterMirrorTarget
+   metadata:
+     name: acr
+   spec:
+     registry: myregistry.azurecr.io
+     auth:
+       azureWorkloadIdentity: {}       # instead of credentialsSecretRef
+     workloadIdentity:
+       serviceAccountName: tagwarden-sync-azure
+       azure:
+         clientID: 00000000-0000-0000-0000-000000000000
+         tenantID: 00000000-0000-0000-0000-000000000000
+         # authorityHost: https://login.microsoftonline.us/   # national clouds
+     sourceCredentials:
+       - registry: upstream.azurecr.io
+         azureWorkloadIdentity: {}     # pull with the same identity
+     allowedSources: [upstream.azurecr.io, registry.k8s.io]
+     projects:
+       - name: mirror
+         namespaceSelector: {}
+     proxy:
+       httpsProxy: http://proxy.example.internal:3128
+   ```
+
+- Allow the authority host (`login.microsoftonline.com`, or your national
+  cloud's) and every Azure registry in the proxy allowlist and in
+  NetworkPolicies. Registries also redirect blob downloads to
+  `*.blob.core.windows.net` or their data endpoints.
+- Only pods that use Azure auth run as `serviceAccountName` and mount the
+  projected token (audience `api://AzureADTokenExchange`, one hour). The
+  other pods keep `tagwarden-sync`. No pod gets a Kubernetes API token.
+- Every mirror of the target shares the identity. Use separate targets,
+  ServiceAccounts and identities when teams need different registry
+  rights.
+- A missing ServiceAccount stops the Job from starting; the Job's Events
+  say so. Entra and registry errors show the HTTP status and the Entra
+  error code (for example `invalid_client AADSTS700016`), never a token.
+- `scope` defaults to `https://containerregistry.azure.net/.default`.
+  Change it only for a cloud whose registries expect another resource.
+- Real-cloud tests are manual; CI uses fakes for Entra and the registry.
+
 ## Tenant limits
 
 `ClusterMirrorTarget.spec.limits` caps schedules, mirrors per namespace,
