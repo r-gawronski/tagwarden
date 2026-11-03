@@ -79,7 +79,10 @@ server validates them against the Kubernetes and CRD schemas.
 | `mirrors` | `[]` | items `{name, namespace, spec}` render `ArtifactMirror` |
 
 The manager args in `manager.args` are templates that wire leader election,
-the sync image and the denied CIDRs. Keep them when overriding the list.
+the sync image and the denied CIDRs. The schema rejects a list without a
+`--sync-image=` and a `--denied-cidrs=` entry, so an override cannot drop
+them silently. With `deniedCIDRs: []` the chart renders `--denied-cidrs=`,
+which the manager accepts as an empty list.
 `POD_NAMESPACE` comes from the downward API, so the release namespace is the
 operator namespace. Secrets referenced by targets must exist there.
 

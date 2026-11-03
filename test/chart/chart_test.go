@@ -88,12 +88,16 @@ func TestValues(t *testing.T) {
 		want string
 	}{
 		{name: "defaults", ok: true, want: "- --sync-image=registry.example.internal/tagwarden/tagwarden:0.1.0\n"},
+		{name: "empty denied CIDRs", ok: true, want: "- --denied-cidrs=\n"},
 		{name: "unknown top-level key", args: []string{"--set", "bogus=1"}},
 		{name: "unknown nested key", args: []string{"--set", "manager.image.registry=x"}},
 		{name: "unknown mirror key", args: []string{"--set", "mirrors[0].name=a,mirrors[0].namespace=b,mirrors[0].spec.x=1,mirrors[0].extra=1"}},
 		{name: "namespaced rbac", args: []string{"--set", "rbac.namespaced=true"}},
 		{name: "unknown service account key", args: []string{"--set", "serviceAccount.create=true"}},
 		{name: "bad digest", args: []string{"--set", "manager.image.digest=latest"}},
+		{name: "args without denied CIDRs", args: []string{"--set", "manager.args={--leader-elect,--sync-image=x}"}},
+		{name: "args without sync image", args: []string{"--set", "manager.args={--denied-cidrs=}"}},
+		{name: "args with both flags", ok: true, args: []string{"--set", "manager.args={--sync-image=x,--denied-cidrs=}"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := render(t, tc.args...)
