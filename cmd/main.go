@@ -198,8 +198,9 @@ func main() {
 	}
 
 	if err := (&controller.ArtifactMirrorReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("tagwarden"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "artifactmirror")
 		os.Exit(1)
