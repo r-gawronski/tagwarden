@@ -525,3 +525,76 @@ func TestRunDNSErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestTargetAuthKeyChoice(t *testing.T) {
+	const host = "registry.example.internal"
+	entry := func(pass string) string {
+		return fmt.Sprintf(`{"auth":%q}`, base64.StdEncoding.EncodeToString([]byte(user+":"+pass)))
+	}
+	cases := []struct {
+		name string
+		keys map[string]string
+		want string
+	}{
+		{"exact key wins", map[string]string{"https://" + host + "/v1/": "a", host: "b", "http://" + host: "c"}, "b"},
+		{"sorted when no exact key", map[string]string{"https://" + host + "/v1/": "a", "http://" + host: "c"}, "c"},
+		{"case-insensitive", map[string]string{"https://REGISTRY.Example.internal/v1/": "a"}, "a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := make([]string, 0, len(tc.keys))
+			for k, p := range tc.keys {
+				parts = append(parts, strconv.Quote(k)+":"+entry(p))
+			}
+			path := filepath.Join(t.TempDir(), "auth.json")
+			if err := os.WriteFile(path, []byte(`{"auths":{`+strings.Join(parts, ",")+`}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Repeat: map order must not change the choice.
+			for range 20 {
+				a, err := targetAuth(path, host)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := a.Authorization()
+				if err != nil || cfg.Password != tc.want {
+					t.Fatalf("password %q, want %q (%v)", cfg.Password, tc.want, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRunAuditsIgnoredMutation(t *testing.T) {
+	src, dst := newRegistry(t, false), newRegistry(t, true)
+	pushImages(t, src, "v1.0.0")
+	img, err := random.Image(64, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Write(dst.Tag("v1.0.0"), img, remote.WithAuth(&authn.Basic{Username: user, Password: password})); err != nil {
+		t.Fatal(err)
+	}
+	kept, _ := img.Digest()
+	upstream, err := remote.Head(src.Tag("v1.0.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t, src, dst, password)
+	b, _ := os.ReadFile(e.spec) //nolint:gosec // test temp dir
+	e.write(t, e.spec, strings.Replace(string(b), `"Fail"`, `"Ignore"`, 1))
+
+	code, out, msg := e.run(t)
+	lines := auditLines(t, out)
+	if code != syncspec.ExitOK || len(lines) != 1 {
+		t.Fatalf("exit %d: %s\n%s", code, msg, out)
+	}
+	l := lines[0]
+	if l.Action != "mutation-ignored" || l.UpstreamDigest != upstream.Digest.String() ||
+		l.Source != src.String()+":v1.0.0@"+upstream.Digest.String() || l.Target != dst.String()+":v1.0.0@"+kept.String() {
+		t.Fatalf("audit line %+v", l)
+	}
+	if !strings.Contains(msg, kept.String()) || strings.Contains(msg, upstream.Digest.String()) {
+		t.Fatalf("report must list the kept digest: %s", msg)
+	}
+}
