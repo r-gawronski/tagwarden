@@ -35,6 +35,9 @@ var _ = Describe("Workload identity in a sync CronJob", func() {
 		tokenVolume = "azure-token"
 		ecrSource   = "210987654321.dkr.ecr.eu-west-1.amazonaws.com"
 		awsVolume   = "aws-token"
+		garSource   = "us-docker.pkg.dev"
+		gcpVolume   = "gcp-token"
+		gcpAudience = "https://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster"
 	)
 	podOf := func(m *mirrorv1alpha1.ArtifactMirror) corev1.PodSpec {
 		EventuallyWithOffset(1, mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
@@ -73,6 +76,7 @@ var _ = Describe("Workload identity in a sync CronJob", func() {
 		ExpectWithOffset(1, p.ServiceAccountName).To(Equal("tagwarden-sync-azure"))
 	}
 	expectAWSToken := func(p corev1.PodSpec) { expectProjected(p, awsVolume, "sts.amazonaws.com") }
+	expectGCPToken := func(p corev1.PodSpec) { expectProjected(p, gcpVolume, gcpAudience) }
 	mirrorOf := func(target, mname, registry string) *mirrorv1alpha1.ArtifactMirror {
 		m := newMirror(teamA, mname)
 		m.Spec.TargetRef = target
@@ -245,5 +249,101 @@ var _ = Describe("Workload identity in a sync CronJob", func() {
 		Eventually(func() *metav1.Condition { return targetReady(name) }).Should(And(
 			HaveField("Status", metav1.ConditionFalse), HaveField("Reason", ReasonInvalidSpec),
 			HaveField("Message", ContainSubstring("spec.workloadIdentity.aws"))))
+	})
+
+	It("mounts the GCP token only in pods of Artifact Registry sources", func() {
+		const name = "tgt-gcp-source"
+		t := createReadyTarget(name, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.AllowedSources = append(t.Spec.AllowedSources, garSource)
+			t.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: garSource, GCPWorkloadIdentity: &mirrorv1alpha1.GCPWorkloadIdentityAuth{}},
+			}
+			t.Spec.WorkloadIdentity = &mirrorv1alpha1.WorkloadIdentity{
+				GCP: &mirrorv1alpha1.GCPIdentity{Audience: exampleGCPAudience},
+			}
+		})
+		DeferCleanup(k8sClient.Delete, ctx, t)
+		gar := mirrorOf(name, "gcp-gar", garSource)
+		plain := mirrorOf(name, "gcp-plain", k8sHost)
+
+		p := podOf(gar)
+		expectGCPToken(p)
+		Expect(volume(p, tokenVolume)).To(BeNil())
+		Expect(volume(p, awsVolume)).To(BeNil())
+		Expect(volume(p, "target-auth")).NotTo(BeNil())
+		Expect(p.ServiceAccountName).To(Equal(SyncServiceAccount))
+		s := specOf(gar)
+		Expect(s.SourceAuth).To(Equal(syncspec.AuthGCPWorkloadIdentity))
+		Expect(s.TargetAuth).To(BeEmpty())
+		Expect(*s.GCP).To(Equal(syncspec.GCP{Audience: exampleGCPAudience}))
+
+		p = podOf(plain)
+		Expect(volume(p, gcpVolume)).To(BeNil())
+		s = specOf(plain)
+		Expect(s.SourceAuth).To(BeEmpty())
+		Expect(s.GCP).To(BeNil())
+	})
+
+	It("mounts one token per provider when a target uses all three", func() {
+		const name = "tgt-gcp-all"
+		const email = "tagwarden-sync@example-project.iam.gserviceaccount.com"
+		t := createReadyTarget(name, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(t)
+			t.Spec.WorkloadIdentity.GCP.ServiceAccountEmail = email
+			t.Spec.AllowedSources = append(t.Spec.AllowedSources, azureSource, ecrSource)
+			t.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: azureSource, AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
+				{Registry: ecrSource, AWSWorkloadIdentity: &mirrorv1alpha1.AWSWorkloadIdentityAuth{}},
+			}
+			t.Spec.WorkloadIdentity.Azure = &mirrorv1alpha1.AzureIdentity{ClientID: zeroGUID, TenantID: zeroGUID}
+			t.Spec.WorkloadIdentity.AWS = &mirrorv1alpha1.AWSIdentity{RoleARN: exampleRoleARN, Region: exampleRegion}
+		})
+		DeferCleanup(k8sClient.Delete, ctx, t)
+		fromAzure := mirrorOf(name, "all-azure", azureSource)
+		fromECR := mirrorOf(name, "all-ecr", ecrSource)
+		push := mirrorOf(name, "all-push", k8sHost)
+
+		p := podOf(fromAzure)
+		expectGCPToken(p)
+		expectProjected(p, tokenVolume, "api://AzureADTokenExchange")
+		Expect(volume(p, awsVolume)).To(BeNil())
+		Expect(p.ServiceAccountName).To(Equal("tagwarden-sync-gcp"))
+		s := specOf(fromAzure)
+		Expect(s.TargetAuth).To(Equal(syncspec.AuthGCPWorkloadIdentity))
+		Expect(s.SourceAuth).To(Equal(syncspec.AuthAzureWorkloadIdentity))
+		Expect(*s.GCP).To(Equal(syncspec.GCP{Audience: exampleGCPAudience, ServiceAccountEmail: email}))
+		Expect(s.Azure).NotTo(BeNil())
+		Expect(s.AWS).To(BeNil())
+
+		p = podOf(fromECR)
+		expectGCPToken(p)
+		expectAWSToken(p)
+		Expect(volume(p, tokenVolume)).To(BeNil())
+		Expect(specOf(fromECR).Azure).To(BeNil())
+
+		p = podOf(push)
+		expectGCPToken(p)
+		Expect(volume(p, tokenVolume)).To(BeNil())
+		Expect(volume(p, awsVolume)).To(BeNil())
+		Expect(volume(p, "target-auth")).To(BeNil())
+	})
+
+	It("is not Ready when GCP auth has no GCP identity", func() {
+		const name = "tgt-gcp-missing"
+		for _, s := range targetSecrets(name) {
+			Expect(k8sClient.Create(ctx, s)).To(Succeed())
+		}
+		t := newTarget(name)
+		t.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+			{Registry: garSource, GCPWorkloadIdentity: &mirrorv1alpha1.GCPWorkloadIdentityAuth{}},
+		}
+		t.Spec.WorkloadIdentity = &mirrorv1alpha1.WorkloadIdentity{
+			AWS: &mirrorv1alpha1.AWSIdentity{RoleARN: exampleRoleARN, Region: exampleRegion},
+		}
+		Expect(k8sClient.Create(ctx, t)).To(Succeed())
+		DeferCleanup(k8sClient.Delete, ctx, t)
+		Eventually(func() *metav1.Condition { return targetReady(name) }).Should(And(
+			HaveField("Status", metav1.ConditionFalse), HaveField("Reason", ReasonInvalidSpec),
+			HaveField("Message", ContainSubstring("spec.workloadIdentity.gcp"))))
 	})
 })
