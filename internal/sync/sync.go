@@ -191,6 +191,7 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 		return fmt.Errorf("resolve source tag: %w", err)
 	}
 	a := Artifact{Tag: tag, Digest: src.Digest.String()}
+	overwrite := false
 
 	dst, err := resolve(ctx, s.dst, s.req.Target.Tag(tag))
 	switch {
@@ -207,7 +208,7 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 		res.Skipped = append(res.Skipped, a)
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationOverwrite:
-		res.Mutated = append(res.Mutated, a)
+		overwrite = true
 	default:
 		res.Mutated = append(res.Mutated, a)
 		return fmt.Errorf("%w: target %s, upstream %s", ErrTagMutated, dst.Digest, src.Digest)
@@ -228,6 +229,9 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 	}
 	if err := s.push.Put(ctx, s.req.Target.Tag(tag), desc); err != nil {
 		return fmt.Errorf("tag target: %w", err)
+	}
+	if overwrite {
+		res.Mutated = append(res.Mutated, a)
 	}
 	res.Copied = append(res.Copied, a)
 	return nil
