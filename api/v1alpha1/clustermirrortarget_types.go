@@ -349,6 +349,7 @@ type AutoMirror struct {
 
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.exists(p, p.name == self.autoMirror.project)",message="autoMirror.project must be listed in projects"
+// +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.all(p, p.name != self.autoMirror.project || !has(p.allowRepositoryOverride) || !p.allowRepositoryOverride)",message="autoMirror.project must not allow repository overrides, so node pulls through a path rewrite stay bound to one source"
 // +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$')`,message="auth.awsWorkloadIdentity needs an Amazon ECR private registry host (<account>.dkr.ecr.<region>.amazonaws.com)"

@@ -24,13 +24,16 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/events"
@@ -67,6 +70,8 @@ const (
 	reasonQuotaExceeded      = "QuotaExceeded"
 	reasonNameConflict       = "NameConflict"
 	reasonSyncFailed         = "SyncFailed"
+	reasonProjectNotAllowed  = ReasonProjectNotAllowed
+	reasonImplicitLatest     = "ImplicitLatestNotSupported"
 )
 
 // AutoMirrorReconciler turns the tagwarden.dev/auto-mirror annotation of a
@@ -91,19 +96,24 @@ type AutoMirrorReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=mirror.tagwarden.dev,resources=artifactmirrors,verbs=create;patch
 
-// trimPod keeps what auto-mirror needs of a pod to bound cache memory.
+// trimPod keeps what auto-mirror needs of a pod to bound cache memory: the
+// identity, the auto-mirror annotation and the container images. A pod
+// without the annotation keeps no containers. The informer still lists and
+// watches every pod, so the API server and CPU cost grow with the pod count
+// even though the memory does not.
 func trimPod(obj any) (any, error) {
 	p, ok := obj.(*corev1.Pod)
 	if !ok {
 		return obj, nil
 	}
-	t := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: p.Name, Namespace: p.Namespace, UID: p.UID, ResourceVersion: p.ResourceVersion,
-			DeletionTimestamp: p.DeletionTimestamp, Annotations: p.Annotations, Labels: p.Labels, OwnerReferences: p.OwnerReferences,
-		},
-		Status: corev1.PodStatus{Phase: p.Status.Phase},
+	t := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: p.Name, Namespace: p.Namespace, UID: p.UID, ResourceVersion: p.ResourceVersion, DeletionTimestamp: p.DeletionTimestamp,
+	}}
+	v := p.Annotations[mirrorv1alpha1.AutoMirrorAnnotation]
+	if v == "" {
+		return t, nil
 	}
+	t.Annotations = map[string]string{mirrorv1alpha1.AutoMirrorAnnotation: v}
 	for _, c := range p.Spec.InitContainers {
 		t.Spec.InitContainers = append(t.Spec.InitContainers, corev1.Container{Name: c.Name, Image: c.Image})
 	}
@@ -113,14 +123,29 @@ func trimPod(obj any) (any, error) {
 	return t, nil
 }
 
+func podImages(p *corev1.Pod) []string {
+	out := make([]string, 0, len(p.Spec.InitContainers)+len(p.Spec.Containers))
+	for _, c := range slices.Concat(p.Spec.InitContainers, p.Spec.Containers) {
+		out = append(out, c.Image)
+	}
+	return out
+}
+
 func (r *AutoMirrorReconciler) report(pod *corev1.Pod, key, state, typ, reason, msg string) {
 	k := client.ObjectKeyFromObject(pod)
 	r.mu.Lock()
-	if r.states == nil || len(r.states) > maxTrackedStates {
+	if r.states == nil {
 		r.states = map[types.NamespacedName]map[string]string{}
 	}
 	m := r.states[k]
 	if m == nil {
+		if len(r.states) >= maxTrackedStates {
+			// Evict one other pod; its next state change records an Event again.
+			for old := range r.states {
+				delete(r.states, old)
+				break
+			}
+		}
 		m = map[string]string{}
 		r.states[k] = m
 	}
@@ -176,16 +201,15 @@ func (r *AutoMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	tagsBySource := map[string][]string{}
 	sources := map[string]imageSource{}
-	var images []string
-	for _, c := range slices.Concat(pod.Spec.InitContainers, pod.Spec.Containers) {
-		images = append(images, c.Image)
-	}
-	for _, img := range images {
+	for _, img := range podImages(&pod) {
 		s, err := parseImage(img, &t)
 		if err != nil {
 			reason := reasonInvalidImage
-			if errors.Is(err, errDigestOnly) {
+			switch {
+			case errors.Is(err, errDigestOnly):
 				reason = reasonDigestOnly
+			case errors.Is(err, errImplicitLatest):
+				reason = reasonImplicitLatest
 			}
 			r.report(&pod, img, reason, corev1.EventTypeWarning, reason, fmt.Sprintf("image %s: %v", img, err))
 			continue
@@ -195,14 +219,20 @@ func (r *AutoMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			tagsBySource[s.key()] = append(tagsBySource[s.key()], s.Tag)
 		}
 	}
+	// One bad source must not stop the others.
 	var requeue bool
+	var errs []error
 	for _, k := range slices.Sorted(maps.Keys(sources)) {
-		if err := r.ensure(ctx, &pod, &t, sources[k], tagsBySource[k]); err != nil {
+		switch err := r.ensure(ctx, &pod, &t, sources[k], tagsBySource[k]); {
+		case err == nil:
+		case apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err):
 			requeue = true
-			if !apierrors.IsConflict(err) {
-				return ctrl.Result{}, err
-			}
+		default:
+			errs = append(errs, err)
 		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return ctrl.Result{}, err
 	}
 	if requeue {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
@@ -252,6 +282,12 @@ func (r *AutoMirrorReconciler) ensure(ctx context.Context, pod *corev1.Pod, t *m
 	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &cur)
 	switch {
 	case apierrors.IsNotFound(err):
+		if refused, err := r.projectRefusal(ctx, pod, t); err != nil || refused != "" {
+			if refused != "" {
+				r.report(pod, state, "project", corev1.EventTypeWarning, reasonMirrorRefused, refused)
+			}
+			return err
+		}
 		var all mirrorv1alpha1.ArtifactMirrorList
 		if err := r.APIReader.List(ctx, &all, client.InNamespace(pod.Namespace), client.MatchingLabels{
 			mirrorv1alpha1.LabelGenerated: trueValue, mirrorv1alpha1.LabelAutoTarget: targetLabel(t.Name)}); err != nil {
@@ -272,7 +308,11 @@ func (r *AutoMirrorReconciler) ensure(ctx context.Context, pod *corev1.Pod, t *m
 		desired.Labels = map[string]string{mirrorv1alpha1.LabelGenerated: trueValue, mirrorv1alpha1.LabelAutoTarget: targetLabel(t.Name)}
 		desired.Annotations = map[string]string{mirrorv1alpha1.SyncNowAnnotation: syncNowValue()}
 		desired.Spec.Tags.Tags = tags
-		if err := r.Create(ctx, desired); err != nil {
+		if err := r.Create(ctx, desired); apierrors.IsInvalid(err) {
+			r.report(pod, state, "invalid", corev1.EventTypeWarning, reasonInvalidImage,
+				fmt.Sprintf("%s cannot be mirrored: %v", state, err))
+			return nil
+		} else if err != nil {
 			return err
 		}
 		r.report(pod, state, "requested", corev1.EventTypeNormal, reasonMirrorRequested,
@@ -284,9 +324,17 @@ func (r *AutoMirrorReconciler) ensure(ctx context.Context, pod *corev1.Pod, t *m
 		r.report(pod, state, reasonNameConflict, corev1.EventTypeWarning, reasonMirrorRefused,
 			fmt.Sprintf("%s: ArtifactMirror %s/%s exists and is not generated", reasonNameConflict, cur.Namespace, cur.Name))
 		return nil
+	case cur.Spec.TargetRef != desired.Spec.TargetRef || canonicalSource(cur.Spec.Source) != canonicalSource(desired.Spec.Source):
+		r.report(pod, state, reasonNameConflict, corev1.EventTypeWarning, reasonMirrorRefused,
+			fmt.Sprintf("%s: ArtifactMirror %s/%s carries the generated label but mirrors another source or target", reasonNameConflict, cur.Namespace, cur.Name))
+		return nil
 	}
 
-	// Add the missing tags; never remove any, never touch anything else.
+	// Add the missing tags; never remove any. Restore the project and
+	// schedule when the platform team changed autoMirror.
+	next := cur.DeepCopy()
+	next.Spec.Target = desired.Spec.Target
+	next.Spec.Schedule = desired.Spec.Schedule
 	have := cur.Spec.Tags.Tags
 	var missing []string
 	for _, tag := range sortedUnique(want) {
@@ -303,34 +351,62 @@ func (r *AutoMirrorReconciler) ensure(ctx context.Context, pod *corev1.Pod, t *m
 		}
 	}
 	if len(missing) > 0 {
-		next := cur.DeepCopy()
 		next.Spec.Tags.Tags = sortedUnique(slices.Concat(have, missing))
 		if next.Annotations == nil {
 			next.Annotations = map[string]string{}
 		}
 		next.Annotations[mirrorv1alpha1.SyncNowAnnotation] = syncNowValue()
-		if err := r.Patch(ctx, next, client.MergeFromWithOptions(&cur, client.MergeFromWithOptimisticLock{})); err != nil {
+	}
+	if !equality.Semantic.DeepEqual(cur.Spec, next.Spec) || len(missing) > 0 {
+		if err := r.Patch(ctx, next, client.MergeFromWithOptions(&cur, client.MergeFromWithOptimisticLock{})); apierrors.IsInvalid(err) {
+			r.report(pod, state, "invalid", corev1.EventTypeWarning, reasonInvalidImage,
+				fmt.Sprintf("%s cannot be updated: %v", state, err))
+			return nil
+		} else if err != nil {
 			return err
 		}
 		cur = *next
 	}
 
-	// Surface whatever the mirror reports, whatever the reason: the sync
-	// path and any future gate (such as a vulnerability gate) set the
-	// conditions, this controller only relays them.
+	r.relay(pod, state, &cur, want)
+	return nil
+}
+
+// relay reports the state of a generated mirror on the pod, whatever the
+// reason: the sync path and any future gate (such as a vulnerability gate)
+// set the conditions, this controller only passes them on.
+func (r *AutoMirrorReconciler) relay(pod *corev1.Pod, state string, cur *mirrorv1alpha1.ArtifactMirror, want []string) {
 	if c := meta.FindStatusCondition(cur.Status.Conditions, ConditionReady); c != nil && c.Status == metav1.ConditionFalse {
 		r.report(pod, state, "ready:"+c.Reason+c.Message, corev1.EventTypeWarning, reasonMirrorRefused,
 			fmt.Sprintf("%s: %s", c.Reason, c.Message))
-		return nil
+		return
 	}
 	if c := meta.FindStatusCondition(cur.Status.Conditions, ConditionSynced); c != nil && c.Status == metav1.ConditionFalse {
 		r.report(pod, state, "synced:"+c.Reason+c.Message, corev1.EventTypeWarning, reasonSyncFailed,
 			fmt.Sprintf("%s: %s", c.Reason, c.Message))
-		return nil
+		return
 	}
 	r.report(pod, state, "requested", corev1.EventTypeNormal, reasonMirrorRequested,
 		fmt.Sprintf("Mirror of %s tags %v requested as ArtifactMirror %s", state, want, cur.Name))
-	return nil
+}
+
+// projectRefusal returns a message when the project of autoMirror does not
+// allow the namespace of the pod, so no object is created for it.
+func (r *AutoMirrorReconciler) projectRefusal(ctx context.Context, pod *corev1.Pod, t *mirrorv1alpha1.ClusterMirrorTarget) (string, error) {
+	project := t.Spec.AutoMirror.Project
+	i := slices.IndexFunc(t.Spec.Projects, func(p mirrorv1alpha1.TargetProject) bool { return p.Name == project })
+	if i < 0 {
+		return fmt.Sprintf("%s: project %s is not listed in ClusterMirrorTarget %s", reasonProjectNotAllowed, project, t.Name), nil
+	}
+	var ns corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: pod.Namespace}, &ns); err != nil {
+		return "", err
+	}
+	sel, err := metav1.LabelSelectorAsSelector(t.Spec.Projects[i].NamespaceSelector)
+	if err != nil || !sel.Matches(labels.Set(ns.Labels)) {
+		return fmt.Sprintf("%s: project %s does not allow namespace %s", reasonProjectNotAllowed, project, pod.Namespace), nil
+	}
+	return "", nil
 }
 
 func limitsOf(t *mirrorv1alpha1.ClusterMirrorTarget) mirrorv1alpha1.TargetLimits {
@@ -364,14 +440,18 @@ func (r *AutoMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Pods = podCache
 
 	has := func(o client.Object) bool { return o.GetAnnotations()[mirrorv1alpha1.AutoMirrorAnnotation] != "" }
-	podPred := predicate.Funcs{
-		CreateFunc: func(e ctrlevent.CreateEvent) bool { return has(e.Object) },
-		// An update that removes the annotation still has to clear the state.
-		UpdateFunc: func(e ctrlevent.UpdateEvent) bool {
-			return has(e.ObjectNew) || has(e.ObjectOld)
+	// Pods matter on create, delete and when the annotation, the images or
+	// the deletion state change. An update that removes the annotation still
+	// has to clear the state.
+	podPred := predicate.TypedFuncs[*corev1.Pod]{
+		CreateFunc: func(e ctrlevent.TypedCreateEvent[*corev1.Pod]) bool { return has(e.Object) },
+		UpdateFunc: func(e ctrlevent.TypedUpdateEvent[*corev1.Pod]) bool {
+			o, n := e.ObjectOld, e.ObjectNew
+			return (has(o) || has(n)) && (o.Annotations[mirrorv1alpha1.AutoMirrorAnnotation] != n.Annotations[mirrorv1alpha1.AutoMirrorAnnotation] ||
+				!slices.Equal(podImages(o), podImages(n)) || o.DeletionTimestamp.IsZero() != n.DeletionTimestamp.IsZero())
 		},
-		DeleteFunc:  func(e ctrlevent.DeleteEvent) bool { return has(e.Object) },
-		GenericFunc: func(ctrlevent.GenericEvent) bool { return false },
+		DeleteFunc:  func(e ctrlevent.TypedDeleteEvent[*corev1.Pod]) bool { return has(e.Object) },
+		GenericFunc: func(ctrlevent.TypedGenericEvent[*corev1.Pod]) bool { return false },
 	}
 	podsOf := func(ctx context.Context, target string, opts ...client.ListOption) []reconcile.Request {
 		var pods corev1.PodList
@@ -386,29 +466,45 @@ func (r *AutoMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		return reqs
 	}
-	generated := predicate.NewPredicateFuncs(func(o client.Object) bool { return o.GetLabels()[mirrorv1alpha1.LabelGenerated] == trueValue })
+	// The conditions that become pod Events, as one comparable string.
+	relayed := func(m *mirrorv1alpha1.ArtifactMirror) string {
+		var out strings.Builder
+		for _, t := range []string{ConditionReady, ConditionSynced} {
+			if c := meta.FindStatusCondition(m.Status.Conditions, t); c != nil {
+				fmt.Fprintf(&out, "%s=%s/%s/%s;", t, c.Status, c.Reason, c.Message)
+			}
+		}
+		return out.String()
+	}
+	isGenerated := func(o client.Object) bool { return o.GetLabels()[mirrorv1alpha1.LabelGenerated] == trueValue }
+	mirrorPred := predicate.Funcs{
+		CreateFunc: func(e ctrlevent.CreateEvent) bool { return isGenerated(e.Object) },
+		UpdateFunc: func(e ctrlevent.UpdateEvent) bool {
+			o, n := e.ObjectOld.(*mirrorv1alpha1.ArtifactMirror), e.ObjectNew.(*mirrorv1alpha1.ArtifactMirror)
+			return isGenerated(n) && (o.Generation != n.Generation || relayed(o) != relayed(n))
+		},
+		DeleteFunc:  func(e ctrlevent.DeleteEvent) bool { return isGenerated(e.Object) },
+		GenericFunc: func(ctrlevent.GenericEvent) bool { return false },
+	}
+	// Targets matter when the spec or their readiness changes.
+	targetPred := predicate.Funcs{
+		UpdateFunc: func(e ctrlevent.UpdateEvent) bool {
+			o, n := e.ObjectOld.(*mirrorv1alpha1.ClusterMirrorTarget), e.ObjectNew.(*mirrorv1alpha1.ClusterMirrorTarget)
+			return o.Generation != n.Generation ||
+				meta.IsStatusConditionTrue(o.Status.Conditions, ConditionReady) != meta.IsStatusConditionTrue(n.Status.Conditions, ConditionReady)
+		},
+		GenericFunc: func(ctrlevent.GenericEvent) bool { return false },
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("automirror").
-		WatchesRawSource(source.Kind(podCache, &corev1.Pod{}, &handler.TypedEnqueueRequestForObject[*corev1.Pod]{},
-			predicate.TypedFuncs[*corev1.Pod]{
-				CreateFunc: func(e ctrlevent.TypedCreateEvent[*corev1.Pod]) bool {
-					return podPred.Create(ctrlevent.CreateEvent{Object: e.Object})
-				},
-				UpdateFunc: func(e ctrlevent.TypedUpdateEvent[*corev1.Pod]) bool {
-					return podPred.Update(ctrlevent.UpdateEvent{ObjectOld: e.ObjectOld, ObjectNew: e.ObjectNew})
-				},
-				DeleteFunc: func(e ctrlevent.TypedDeleteEvent[*corev1.Pod]) bool {
-					return podPred.Delete(ctrlevent.DeleteEvent{Object: e.Object})
-				},
-				GenericFunc: func(ctrlevent.TypedGenericEvent[*corev1.Pod]) bool { return false },
-			})).
+		WatchesRawSource(source.Kind(podCache, &corev1.Pod{}, &handler.TypedEnqueueRequestForObject[*corev1.Pod]{}, podPred)).
 		Watches(&mirrorv1alpha1.ArtifactMirror{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {
 				return podsOf(ctx, o.(*mirrorv1alpha1.ArtifactMirror).Spec.TargetRef, client.InNamespace(o.GetNamespace()))
-			}), builder.WithPredicates(generated)).
+			}), builder.WithPredicates(mirrorPred)).
 		Watches(&mirrorv1alpha1.ClusterMirrorTarget{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {
 				return podsOf(ctx, o.GetName())
-			})).
+			}), builder.WithPredicates(targetPred)).
 		Complete(r)
 }
