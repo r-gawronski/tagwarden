@@ -182,7 +182,7 @@ func (e *env) writeSpec(t *testing.T, source, extra string) {
 
 func (e *env) write(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil { //nolint:gosec // test temp dir
 		t.Fatal(err)
 	}
 }
@@ -472,7 +472,7 @@ func TestCheckAddrs(t *testing.T) {
 // before the dial, even with the loopback test escape hatch on.
 func TestRunRefusesRedirect(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "http://169.254.169.254"+r.URL.Path, http.StatusTemporaryRedirect)
+		http.Redirect(w, r, "http://169.254.169.254/v2/", http.StatusTemporaryRedirect)
 	}))
 	t.Cleanup(srv.Close)
 	src, err := name.NewRepository(strings.TrimPrefix(srv.URL, "http://")+"/team/app", name.StrictValidation)
