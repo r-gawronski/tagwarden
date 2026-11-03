@@ -21,8 +21,8 @@ manager:
     digest: ""
     pullPolicy: IfNotPresent
 
-  ## Manager flags. The chart wires the operator through these templates;
-  ## when overriding the list, keep them.
+  ## Manager flags. The chart wires the operator through these templates.
+  ## The schema requires --sync-image= and --denied-cidrs= entries.
   args:
     - --leader-elect={{ .Values.leaderElection.enabled }}
     - --sync-image={{ include "tagwarden.syncImage" . }}

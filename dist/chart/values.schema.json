@@ -53,7 +53,15 @@
             "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
           }
         },
-        "args": { "type": "array", "items": { "type": "string" } },
+        "args": {
+          "description": "Must keep the --sync-image and --denied-cidrs flags.",
+          "type": "array",
+          "items": { "type": "string" },
+          "allOf": [
+            { "contains": { "type": "string", "pattern": "^--sync-image=" } },
+            { "contains": { "type": "string", "pattern": "^--denied-cidrs=" } }
+          ]
+        },
         "healthProbe": {
           "type": "object",
           "additionalProperties": false,
