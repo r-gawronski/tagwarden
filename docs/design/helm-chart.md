@@ -53,7 +53,13 @@ hand-maintained files except `Chart.yaml`. Do not use it.
 Hand changes to the ServiceMonitor: the generated template set
 `insecureSkipVerify: true` unless cert-manager was enabled. The chart has no
 cert-manager integration, so the template takes `prometheus.tlsConfig` from
-values instead and never skips verification.
+values instead and never skips verification. With `metrics.secure: true` (the
+default) Prometheus can scrape only when `prometheus.tlsConfig` holds the CA
+that signed the metrics certificate, for example
+`ca: {secret: {name: <secret>, key: ca.crt}}`. The manager's built-in
+self-signed certificate cannot be verified, and the chart does not mount a
+metrics certificate yet; until it does, scraping through the ServiceMonitor
+needs `metrics.secure: false` behind the NetworkPolicy.
 
 ## Values
 
