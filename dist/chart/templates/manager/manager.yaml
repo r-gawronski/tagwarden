@@ -84,7 +84,7 @@ spec:
         - --metrics-bind-address=0
         {{- end }}
         - --health-probe-bind-address=:{{ .Values.manager.healthProbe.port }}
-        {{- range .Values.manager.args }}
+        {{- with (include "tagwarden.trivyManagerArgs" .) }}{{ . | nindent 8 }}{{ end }}{{- range .Values.manager.args }}
         - {{ tpl . $ }}
         {{- end }}
         command:

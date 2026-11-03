@@ -117,6 +117,12 @@ func TestValues(t *testing.T) {
 		{name: "pod label", ok: true, args: []string{"--set", `manager.pod.labels.example\.com/team=platform`},
 			want: "        example.com/team: platform\n"},
 		{name: "non-string pod annotation", args: []string{"--set", `manager.pod.annotations.k8s\.grafana\.com/scrape=true`}},
+		{name: "trivy without digest", args: []string{"--set", "trivy.enabled=true,trivy.image.repository=r,trivy.image.tag=0.76.1,trivy.db.repository=d"}},
+		{name: "trivy tmp below 1Gi", args: []string{"-f", "trivy-values.yaml", "--set", "trivy.tmp.sizeLimit=512Mi"}},
+		{name: "trivy tmp 1Gi", ok: true, args: []string{"-f", "trivy-values.yaml", "--set", "trivy.tmp.sizeLimit=1Gi"}},
+		{name: "trivy two replicas", args: []string{"-f", "trivy-values.yaml", "--set", "trivy.replicas=2"}},
+		{name: "trivy without db repository", args: []string{"-f", "trivy-values.yaml", "--set", "trivy.db.repository="}},
+		{name: "unknown trivy key", args: []string{"--set", "trivy.bogus=1"}},
 		{name: "unknown pod key", args: []string{"--set", "manager.pod.extra=1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,5 +134,67 @@ func TestValues(t *testing.T) {
 				t.Errorf("rendered chart lacks %q", tc.want)
 			}
 		})
+	}
+}
+
+func TestTrivyDisabled(t *testing.T) {
+	out, err := render(t, "-f", "example-values.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	if strings.Contains(strings.ToLower(out), "trivy") {
+		t.Error("trivy.enabled=false renders trivy objects or flags")
+	}
+}
+
+func TestTrivyEnabled(t *testing.T) {
+	out, err := render(t, "-f", "trivy-values.yaml")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	kinds := map[string]bool{}
+	for doc := range strings.SplitSeq(out, "\n---\n") {
+		var meta struct{ Kind string }
+		if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {
+			t.Fatalf("decode: %v\n%s", err, doc)
+		}
+		if strings.Contains(doc, "component: trivy") {
+			kinds[meta.Kind] = true
+		}
+	}
+	for _, k := range []string{"StatefulSet", "Service", "ServiceAccount", "Secret", "NetworkPolicy"} {
+		if !kinds[k] {
+			t.Errorf("no trivy %s rendered", k)
+		}
+	}
+	for _, want := range []string{
+		"- --trivy-image=registry.example.internal/platform/trivy:0.76.1@sha256:",
+		"- --trivy-version=0.76.1\n",
+		"- --trivy-url=http://tagwarden-trivy.tagwarden-system.svc:4954\n",
+		"- --listen=0.0.0.0:4954\n",
+		"runAsUser: 65532\n",
+		"readOnlyRootFilesystem: true\n",
+		"automountServiceAccountToken: false\n",
+		"sizeLimit: 2Gi\n",
+		"tagwarden.dev/scanner: trivy\n",
+		"name: SSL_CERT_FILE\n",
+		"startupProbe:\n",
+		"failureThreshold: 90\n",
+		"checksum/token: ",
+		"helm.sh/resource-policy: keep\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered chart lacks %q", want)
+		}
+	}
+	if strings.Contains(out, "initialDelaySeconds: 30") {
+		t.Error("liveness probe still has initialDelaySeconds")
+	}
+	existing, err := render(t, "-f", "trivy-values.yaml", "--set", "trivy.token.existingSecret=mine")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, existing)
+	}
+	if strings.Contains(existing, "tagwarden-trivy-token") || !strings.Contains(existing, "name: mine\n") {
+		t.Error("existing token Secret is not used instead of the generated one")
 	}
 }
