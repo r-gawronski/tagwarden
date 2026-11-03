@@ -264,7 +264,7 @@ var _ = Describe("sync-now", Ordered, func() {
 		a := manualJobName(m, "a")
 		Expect(a).To(Equal(manualJobName(m, "a")))
 		Expect(a).NotTo(Equal(manualJobName(m, "b")))
-		Expect(a).To(HavePrefix(objectName(m) + "-manual-"))
+		Expect(a).To(MatchRegexp(`-[0-9a-f]{8}-manual-[0-9a-f]{10}$`))
 		Expect(len(manualJobName(m, strings.Repeat("x", 4096)))).To(BeNumerically("<=", 63))
 	})
 })

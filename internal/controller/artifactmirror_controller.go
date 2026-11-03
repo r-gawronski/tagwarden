@@ -233,6 +233,9 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	}
 
 	key := types.NamespacedName{Namespace: r.Namespace, Name: objectName(m)}
+	if err := r.removeRenamed(ctx, m, key.Name); err != nil {
+		return ctrl.Result{}, err
+	}
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		if err := checkOwner("ConfigMap", cm, m); err != nil {
@@ -405,10 +408,9 @@ func older(a, b *mirrorv1alpha1.ArtifactMirror) bool {
 	return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name)) < 0
 }
 
-// cleanup removes the CronJob, with its Jobs, and the ConfigMap of a
-// mirror. It deletes only objects whose annotations name the mirror.
-func (r *ArtifactMirrorReconciler) cleanup(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror) error {
-	r.trackingMismatch.Delete(client.ObjectKeyFromObject(m))
+// mirrorObjects lists the CronJobs and ConfigMaps in the operator namespace
+// that carry the hash label of m and name m in their annotations.
+func (r *ArtifactMirrorReconciler) mirrorObjects(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror) ([]client.Object, error) {
 	opts := []client.ListOption{
 		client.InNamespace(r.Namespace),
 		client.MatchingLabels{LabelMirror: mirrorHash(m.Namespace, m.Name)},
@@ -416,29 +418,63 @@ func (r *ArtifactMirrorReconciler) cleanup(ctx context.Context, m *mirrorv1alpha
 	var cronJobs batchv1.CronJobList
 	var configMaps corev1.ConfigMapList
 	if err := r.List(ctx, &cronJobs, opts...); err != nil {
-		return err
+		return nil, err
 	}
 	if err := r.List(ctx, &configMaps, opts...); err != nil {
-		return err
+		return nil, err
 	}
 	var objs []client.Object
 	for i := range cronJobs.Items {
-		objs = append(objs, &cronJobs.Items[i])
+		if ownedBy(&cronJobs.Items[i], m) {
+			objs = append(objs, &cronJobs.Items[i])
+		}
 	}
 	for i := range configMaps.Items {
-		objs = append(objs, &configMaps.Items[i])
-	}
-	for _, o := range objs {
-		if !ownedBy(o, m) {
-			continue
+		if ownedBy(&configMaps.Items[i], m) {
+			objs = append(objs, &configMaps.Items[i])
 		}
-		err := r.Delete(ctx, o, client.PropagationPolicy(metav1.DeletePropagationBackground),
-			client.Preconditions{UID: new(o.GetUID())})
-		if client.IgnoreNotFound(err) != nil {
+	}
+	return objs, nil
+}
+
+// deleteObjects deletes objs with the propagation policy, tolerating
+// objects that are already gone or were replaced meanwhile.
+func (r *ArtifactMirrorReconciler) deleteObjects(ctx context.Context, objs []client.Object, policy metav1.DeletionPropagation) error {
+	for _, o := range objs {
+		err := r.Delete(ctx, o, client.PropagationPolicy(policy), client.Preconditions{UID: new(o.GetUID())})
+		if client.IgnoreNotFound(err) != nil && !apierrors.IsConflict(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+// cleanup removes the CronJob, with its Jobs, and the ConfigMap of a
+// mirror. It deletes only objects whose annotations name the mirror.
+func (r *ArtifactMirrorReconciler) cleanup(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror) error {
+	r.trackingMismatch.Delete(client.ObjectKeyFromObject(m))
+	objs, err := r.mirrorObjects(ctx, m)
+	if err != nil {
+		return err
+	}
+	return r.deleteObjects(ctx, objs, metav1.DeletePropagationBackground)
+}
+
+// removeRenamed deletes the objects of m that sit under another name, such
+// as the tagwarden-<hash> names of earlier versions. Orphan keeps a running
+// sync Job alive until it finishes; its TTL then cleans it up.
+func (r *ArtifactMirrorReconciler) removeRenamed(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, current string) error {
+	objs, err := r.mirrorObjects(ctx, m)
+	if err != nil {
+		return err
+	}
+	old := objs[:0]
+	for _, o := range objs {
+		if o.GetName() != current {
+			old = append(old, o)
+		}
+	}
+	return r.deleteObjects(ctx, old, metav1.DeletePropagationOrphan)
 }
 
 // mirrorFromAnnotations maps an object in the operator namespace to the
