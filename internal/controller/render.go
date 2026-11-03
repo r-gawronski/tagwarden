@@ -315,10 +315,11 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	cj.Annotations[annotationCronJobChecksum] = hex.EncodeToString(sum[:])
 }
 
-// securityDrift reports whether the labels or security-relevant fields of a
-// live sync pod template differ from the desired ones. A hand edit keeps the
-// checksum annotation, so the checksum alone would let it persist. Labels
-// count because NetworkPolicies select sync pods by them. Every compared
+// securityDrift reports whether the tagwarden.dev/ labels or security-relevant
+// fields of a live sync pod template differ from the desired ones. A hand edit
+// keeps the checksum annotation, so the checksum alone would let it persist.
+// Labels count because NetworkPolicies select sync pods by them; other labels,
+// such as from mutating webhooks, are left alone. Every compared
 // field is either set by renderCronJob or left empty and not defaulted by the
 // server, so server defaulting causes no drift. DNSPolicy is defaulted and
 // left out.
@@ -326,7 +327,13 @@ func securityDrift(live, want *corev1.PodTemplateSpec) bool {
 	fields := func(t *corev1.PodTemplateSpec) []any {
 		p := &t.Spec
 		f := make([]any, 0, 19+8*len(p.Containers))
-		f = append(f, t.Labels, p.ServiceAccountName, p.AutomountServiceAccountToken, p.SecurityContext,
+		own := map[string]string{}
+		for k, v := range t.Labels {
+			if strings.HasPrefix(k, "tagwarden.dev/") {
+				own[k] = v
+			}
+		}
+		f = append(f, own, p.ServiceAccountName, p.AutomountServiceAccountToken, p.SecurityContext,
 			p.HostNetwork, p.HostPID, p.HostIPC, p.HostUsers, p.ShareProcessNamespace,
 			p.EnableServiceLinks, p.HostAliases, p.DNSConfig, p.NodeName, p.RuntimeClassName,
 			p.ImagePullSecrets, p.Volumes, len(p.InitContainers), len(p.Containers))
