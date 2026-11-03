@@ -208,12 +208,18 @@ Set `target.repository` to pick a different path.
 ### Upgrades with Renovate
 
 Your cluster can't see upstream registries, but you still want upgrade
-PRs. Let Tagwarden keep a window of versions in your registry, point
+PRs. The usual trouble is the step before Renovate. Renovate only
+proposes bumps; it doesn't decide what ends up in your registry.
+Replication rules filter with globs, and mirroring everything isn't an
+option when upstream has thousands of tags, nightly and rc builds, and
+several GB per image.
+
+So let Tagwarden keep a window of versions in your registry, point
 your manifests at the mirrored path, and run Renovate against your
 registry only. When a new release lands in the mirror, Renovate opens a
 PR. After the merge, GitOps rolls it out and the image is already
 there. Renovate can only ever propose a version that came in through
-Tagwarden.
+Tagwarden, and your registry holds only the window you picked.
 
 ```mermaid
 ---
