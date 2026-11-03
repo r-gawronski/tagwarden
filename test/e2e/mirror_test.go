@@ -55,6 +55,7 @@ var _ = Describe("Mirroring", Ordered, func() {
 	SetDefaultEventuallyPollingInterval(2 * time.Second)
 
 	BeforeAll(func() {
+		removeLeftovers()
 		ca = newTestCA()
 
 		By("deploying the registries, the proxy and the NetworkPolicies")
@@ -103,7 +104,7 @@ var _ = Describe("Mirroring", Ordered, func() {
 
 		By("adding the targets and mirrors with a second helm upgrade")
 		_, err = utils.Run(exec.Command("helm", "upgrade", helmRelease, "dist/chart", "--namespace", namespace,
-			"--reuse-values", "-f", "test/e2e/testdata/values-mirrors.yaml"))
+			"--reuse-values", "-f", "test/e2e/testdata/values-mirrors.yaml", "--wait", "--timeout", "3m"))
 		Expect(err).NotTo(HaveOccurred())
 
 		for _, m := range []string{"app", "app-direct"} {
@@ -170,13 +171,17 @@ var _ = Describe("Mirroring", Ordered, func() {
 		By("probing from a pod that the sync NetworkPolicy selects")
 		const probe = "egress-probe"
 		// kindnet adds a new pod to its policy sets asynchronously, so the
-		// first packets of a fresh pod can pass.
+		// first packets of a fresh pod can pass. Retry until a direct
+		// connection times out (curl exit 28), for up to about 30s.
 		script := fmt.Sprintf(`set -u
-sleep 5
 url=https://source.example.internal:5000/v2/
-if curl -sS --max-time 5 --cacert /ca/ca.crt --resolve source.example.internal:5000:%s "$url"; then
-  echo "direct connection to the source succeeded"; exit 1
-fi
+blocked=
+for i in $(seq 1 6); do
+  curl -sS --max-time 3 --cacert /ca/ca.crt --resolve source.example.internal:5000:%s "$url"
+  if [ $? -eq 28 ]; then blocked=1; break; fi
+  sleep 2
+done
+[ -n "$blocked" ] || { echo "direct connection to the source was never blocked"; exit 1; }
 curl -sSf --max-time 20 --cacert /ca/ca.crt --proxy http://proxy.e2e-infra.svc.cluster.local:3128 \
   --proxy-user "$PROXY_USER:$PROXY_PASSWORD" "$url"`, sourceIP)
 		pod := map[string]any{
@@ -224,6 +229,9 @@ curl -sSf --max-time 20 --cacert /ca/ca.crt --proxy http://proxy.e2e-infra.svc.c
 		runSync("app-direct", "app-direct-1", "Failed")
 		m := expectSynced("app-direct", metav1.ConditionFalse, "SyncFailed")
 		Expect(m.Status.Synced).To(BeEmpty())
+		// Cluster DNS cannot resolve the source; only the proxy can.
+		Expect(meta.FindStatusCondition(m.Status.Conditions, "Synced").Message).To(
+			ContainSubstring("resolve source.example.internal"))
 		_, err := remote.List(dstRepo.Repo("mirror", "e2e", "app-direct"), dstOpts...)
 		Expect(err).To(HaveOccurred(), "the target must not hold the direct mirror")
 	})
