@@ -185,13 +185,13 @@ func (s *syncer) list(ctx context.Context) ([]string, error) {
 // digest. The target tag moves last, after the digest and its referrers are
 // copied, so a partial copy is retried on the next run.
 func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
-	src, err := s.src.Head(ctx, s.req.Source.Tag(tag))
+	src, err := resolve(ctx, s.src, s.req.Source.Tag(tag))
 	if err != nil {
 		return fmt.Errorf("resolve source tag: %w", err)
 	}
 	a := Artifact{Tag: tag, Digest: src.Digest.String()}
 
-	dst, err := s.dst.Head(ctx, s.req.Target.Tag(tag))
+	dst, err := resolve(ctx, s.dst, s.req.Target.Tag(tag))
 	switch {
 	case notFound(err):
 	case err != nil:
@@ -275,7 +275,7 @@ func (s *syncer) copy(ctx context.Context, desc *remote.Descriptor) error {
 	if err := s.push.Push(ctx, ref, desc); err != nil {
 		return fmt.Errorf("copy %s: %w", desc.Digest, err)
 	}
-	got, err := s.dst.Head(ctx, ref)
+	got, err := resolve(ctx, s.dst, ref)
 	if err != nil {
 		return fmt.Errorf("verify %s: %w", desc.Digest, err)
 	}
@@ -332,6 +332,21 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// resolve returns the descriptor of ref. Like crane digest, it falls back to
+// GET when HEAD fails for any reason but 404, for registries that omit
+// Docker-Content-Digest on HEAD.
+func resolve(ctx context.Context, p *remote.Puller, ref name.Reference) (*v1.Descriptor, error) {
+	d, err := p.Head(ctx, ref)
+	if err == nil || notFound(err) {
+		return d, err
+	}
+	desc, err := p.Get(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return &desc.Descriptor, nil
 }
 
 func notFound(err error) bool {

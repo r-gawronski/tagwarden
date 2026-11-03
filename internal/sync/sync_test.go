@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -50,25 +51,40 @@ const (
 	password = "s3cret-registry-pass"
 )
 
-// testRegistry is an in-process registry that counts write requests and,
-// when auth is set, requires basic auth.
+// testRegistry is an in-process registry that counts write requests.
 type testRegistry struct {
 	repo   name.Repository
 	writes atomic.Int32
 }
 
-func newRegistry(t *testing.T, referrers, auth bool) *testRegistry {
+type regOpts struct {
+	referrers bool
+	// auth requires basic auth.
+	auth bool
+	// noHeadDigest drops Docker-Content-Digest from HEAD responses.
+	noHeadDigest bool
+}
+
+func newRegistry(t *testing.T, o regOpts) *testRegistry {
 	t.Helper()
 	r := &testRegistry{}
-	h := registry.New(registry.WithReferrersSupport(referrers), registry.Logger(log.New(io.Discard, "", 0)))
+	h := registry.New(registry.WithReferrersSupport(o.referrers), registry.Logger(log.New(io.Discard, "", 0)))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if u, p, ok := req.BasicAuth(); auth && (!ok || u != user || p != password) {
+		if u, p, ok := req.BasicAuth(); o.auth && (!ok || u != user || p != password) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			r.writes.Add(1)
+		}
+		if o.noHeadDigest && req.Method == http.MethodHead {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			maps.Copy(w.Header(), rec.Header())
+			w.Header().Del("Docker-Content-Digest")
+			w.WriteHeader(rec.Code)
+			return
 		}
 		h.ServeHTTP(w, req)
 	}))
@@ -166,8 +182,8 @@ func tagsOf(as []Artifact) []string {
 func fallbackTag(h v1.Hash) string { return h.Algorithm + "-" + h.Hex }
 
 func TestRunCopiesSelectedTagsByDigest(t *testing.T) {
-	src := newRegistry(t, true, false)
-	dst := newRegistry(t, true, false)
+	src := newRegistry(t, regOpts{referrers: true})
+	dst := newRegistry(t, regOpts{referrers: true})
 
 	idx := index(t, "linux/amd64", "linux/arm64")
 	digests := map[string]v1.Hash{}
@@ -240,8 +256,8 @@ func TestRunTagMutation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.policy), func(t *testing.T) {
-			src := newRegistry(t, false, false)
-			dst := newRegistry(t, false, false)
+			src := newRegistry(t, regOpts{})
+			dst := newRegistry(t, regOpts{})
 			upstream := push(t, src.repo, v100, image(t))
 			push(t, src.repo, "v1.1.0", image(t))
 			old := push(t, dst.repo, v100, image(t))
@@ -273,8 +289,8 @@ func TestRunTagMutation(t *testing.T) {
 }
 
 func TestRunMaxTags(t *testing.T) {
-	src := newRegistry(t, false, false)
-	dst := newRegistry(t, false, false)
+	src := newRegistry(t, regOpts{})
+	dst := newRegistry(t, regOpts{})
 	for i := range 3 {
 		push(t, src.repo, fmt.Sprintf("v1.0.%d", i), image(t))
 	}
@@ -290,8 +306,8 @@ func TestRunMaxTags(t *testing.T) {
 // ghcr.io has no referrers API, so ggcr reads the sha256-<hex> fallback tag.
 // That tag may point to an unrelated index whose children have no subject.
 func TestRunIgnoresFallbackTagPollution(t *testing.T) {
-	src := newRegistry(t, false, false)
-	dst := newRegistry(t, true, false)
+	src := newRegistry(t, regOpts{})
+	dst := newRegistry(t, regOpts{referrers: true})
 	d := push(t, src.repo, v100, image(t))
 	pollution := index(t, "linux/amd64", "linux/arm64")
 	push(t, src.repo, fallbackTag(d), pollution)
@@ -312,8 +328,8 @@ func TestRunIgnoresFallbackTagPollution(t *testing.T) {
 }
 
 func TestRunMissingPlatform(t *testing.T) {
-	src := newRegistry(t, false, false)
-	dst := newRegistry(t, false, false)
+	src := newRegistry(t, regOpts{})
+	dst := newRegistry(t, regOpts{})
 	push(t, src.repo, v100, index(t, "linux/amd64", "linux/arm64/v8"))
 	push(t, src.repo, "v1.1.0", index(t, "linux/amd64", "linux/s390x"))
 
@@ -334,8 +350,8 @@ func TestRunMissingPlatform(t *testing.T) {
 }
 
 func TestRunNeverLeaksCredentials(t *testing.T) {
-	src := newRegistry(t, true, true)
-	dst := newRegistry(t, false, false)
+	src := newRegistry(t, regOpts{referrers: true, auth: true})
+	dst := newRegistry(t, regOpts{})
 	auth := remote.WithAuth(&authn.Basic{Username: user, Password: password})
 	push(t, src.repo, v100, image(t), auth)
 
@@ -358,9 +374,32 @@ func TestRunNeverLeaksCredentials(t *testing.T) {
 	}
 }
 
+// Some registries omit Docker-Content-Digest on HEAD. Resolution then falls
+// back to GET, for both source and target.
+func TestRunWithoutHeadDigest(t *testing.T) {
+	src := newRegistry(t, regOpts{noHeadDigest: true})
+	dst := newRegistry(t, regOpts{noHeadDigest: true})
+	d := push(t, src.repo, v100, image(t))
+	req := Request{Source: src.repo, Target: dst.repo, Policy: tags.Policy{Tags: []string{v100}}}
+
+	for _, wantSkipped := range []bool{false, true} {
+		res, err := Run(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Run: %v (%+v)", err, res)
+		}
+		got := res.Copied
+		if wantSkipped {
+			got = res.Skipped
+		}
+		if len(got) != 1 || got[0].Digest != d.String() {
+			t.Fatalf("skipped=%v: %+v", wantSkipped, res)
+		}
+	}
+}
+
 func TestRunContextCancelled(t *testing.T) {
-	src := newRegistry(t, false, false)
-	dst := newRegistry(t, false, false)
+	src := newRegistry(t, regOpts{})
+	dst := newRegistry(t, regOpts{})
 	push(t, src.repo, v100, image(t))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
