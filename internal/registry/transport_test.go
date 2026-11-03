@@ -437,13 +437,13 @@ func freeAddr(t *testing.T) string {
 // number (1 for the first retry) and the scheduled delay.
 func stubWait(t *testing.T, f func(ctx context.Context, n int, d time.Duration) error) {
 	t.Helper()
-	orig := wait
+	orig := Wait
 	n := 0
-	wait = func(ctx context.Context, d time.Duration) error {
+	Wait = func(ctx context.Context, d time.Duration) error {
 		n++
 		return f(ctx, n, d)
 	}
-	t.Cleanup(func() { wait = orig })
+	t.Cleanup(func() { Wait = orig })
 }
 
 func noRetry(t *testing.T) {
@@ -493,8 +493,8 @@ func TestRetryDialRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if !slices.Equal(delays, backoff[:3]) {
-		t.Fatalf("delays %v, want %v", delays, backoff[:3])
+	if !slices.Equal(delays, Backoff[:3]) {
+		t.Fatalf("delays %v, want %v", delays, Backoff[:3])
 	}
 	if got != "blob" {
 		t.Fatalf("body %q", got)
@@ -515,8 +515,8 @@ func TestRetryGivesUp(t *testing.T) {
 	if err := get(t, rt, "http://"+addr+"/v2/"); err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("err = %v", err)
 	}
-	if !slices.Equal(delays, backoff) {
-		t.Fatalf("delays %v, want %v", delays, backoff)
+	if !slices.Equal(delays, Backoff) {
+		t.Fatalf("delays %v, want %v", delays, Backoff)
 	}
 }
 
@@ -561,7 +561,7 @@ func TestNoRetryPolicyRefusal(t *testing.T) {
 
 func TestRetryStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	orig := wait
+	orig := Wait
 	retries := 0
 	stubWait(t, func(ctx context.Context, _ int, d time.Duration) error {
 		retries++

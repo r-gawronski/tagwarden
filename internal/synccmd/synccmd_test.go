@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -44,6 +46,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
+	twregistry "github.com/r-gawronski/tagwarden/internal/registry"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
@@ -54,6 +57,8 @@ const (
 	user          = "pusher"
 	password      = "s3cret-push-pass"
 	proxyPassword = "s3cret-proxy-pass"
+	dnsTimeout    = "timeout"
+	dnsNotFound   = "no such host"
 )
 
 func golden(t *testing.T, file string, got []byte) {
@@ -304,8 +309,10 @@ func TestRunWrongPassword(t *testing.T) {
 }
 
 // Behind a proxy any lookup failure passes: the proxy resolves names and
-// its ACL is the control. Each host is resolved once per run.
+// its ACL is the control. Each host is resolved once per run, after the
+// retries of a temporary error.
 func TestRunProxiedLookupFailure(t *testing.T) {
+	stubWait(t)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -319,13 +326,13 @@ func TestRunProxiedLookupFailure(t *testing.T) {
 	lookups := map[string]int{}
 	e.opts.lookup = func(_ context.Context, host string) ([]net.IPAddr, error) {
 		lookups[host]++
-		return nil, &net.DNSError{Err: "timeout", Name: host, IsTimeout: true}
+		return nil, &net.DNSError{Err: dnsTimeout, Name: host, IsTimeout: true}
 	}
 	code, out, msg := e.run(t)
 	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, "list source tags") {
 		t.Fatalf("exit %d: %s\n%s", code, msg, out)
 	}
-	if lookups["registry.example.internal"] != 1 {
+	if lookups["registry.example.internal"] != len(twregistry.Backoff)+1 {
 		t.Fatalf("lookups %v, want one per host", lookups)
 	}
 }
@@ -348,7 +355,7 @@ func TestRunProxyCredentials(t *testing.T) {
 	e.vars["HTTPS_PROXY"] = proxy.URL
 	// The Job cannot resolve upstream names; the proxy does.
 	e.opts.lookup = func(_ context.Context, host string) ([]net.IPAddr, error) {
-		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+		return nil, &net.DNSError{Err: dnsNotFound, Name: host, IsNotFound: true}
 	}
 	e.vars[syncspec.ProxyUserEnv] = "proxy-user"
 	e.vars[syncspec.ProxyPasswordEnv] = proxyPassword
@@ -507,15 +514,16 @@ func TestRunRecoversPanic(t *testing.T) {
 }
 
 func TestRunDNSErrors(t *testing.T) {
+	stubWait(t)
 	src := newRegistry(t, false)
 	cases := []struct {
 		err  *net.DNSError
 		code int
 	}{
-		{&net.DNSError{Err: "timeout", IsTimeout: true}, syncspec.ExitSyncFailed},
+		{&net.DNSError{Err: dnsTimeout, IsTimeout: true}, syncspec.ExitSyncFailed},
 		{&net.DNSError{Err: "server misbehaving", IsTemporary: true}, syncspec.ExitSyncFailed},
 		// Without a proxy nothing else can resolve the name.
-		{&net.DNSError{Err: "no such host", IsNotFound: true}, syncspec.ExitSyncFailed},
+		{&net.DNSError{Err: dnsNotFound, IsNotFound: true}, syncspec.ExitSyncFailed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.err.Err, func(t *testing.T) {
@@ -601,5 +609,76 @@ func TestRunAuditsIgnoredMutation(t *testing.T) {
 	}
 	if !strings.Contains(msg, kept.String()) || strings.Contains(msg, upstream.Digest.String()) {
 		t.Fatalf("report must list the kept digest: %s", msg)
+	}
+}
+
+// stubWait counts backoff waits without sleeping.
+func stubWait(t *testing.T) *int {
+	t.Helper()
+	orig := twregistry.Wait
+	n := 0
+	twregistry.Wait = func(context.Context, time.Duration) error { n++; return nil }
+	t.Cleanup(func() { twregistry.Wait = orig })
+	return &n
+}
+
+// A pod's DNS traffic can be rejected until its NetworkPolicy is
+// programmed. Temporary lookup errors are retried before the answer is
+// cached; a missing name and a refused address are not.
+func TestLookupRetry(t *testing.T) {
+	public := []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}}
+	refused := &net.DNSError{Err: "read udp: connection refused", IsTemporary: true}
+	cases := []struct {
+		name   string
+		errs   []error
+		ips    []net.IPAddr
+		proxy  bool
+		calls  int
+		waits  int
+		wantOK bool
+	}{
+		{"temporary twice", []error{refused, &net.DNSError{Err: dnsTimeout, IsTimeout: true}}, public, false, 3, 2, true},
+		{"temporary behind proxy", []error{refused}, public, true, 2, 1, true},
+		{"not found", []error{&net.DNSError{Err: dnsNotFound, IsNotFound: true}}, nil, false, 1, 0, false},
+		{"refused address", nil, []net.IPAddr{{IP: net.ParseIP("169.254.169.254")}}, false, 1, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			waits := stubWait(t)
+			calls := 0
+			o := options{lookup: cachedLookup(func(context.Context, string) ([]net.IPAddr, error) {
+				calls++
+				if calls <= len(tc.errs) {
+					return nil, tc.errs[calls-1]
+				}
+				return tc.ips, nil
+			})}
+			for range 2 { // the second check hits the cache
+				err := o.checkHost(context.Background(), "registry.example.internal", tc.proxy, nil)
+				if (err == nil) != tc.wantOK {
+					t.Fatalf("err = %v", err)
+				}
+			}
+			if calls != tc.calls || *waits != tc.waits {
+				t.Fatalf("%d lookups, %d waits; want %d, %d", calls, *waits, tc.calls, tc.waits)
+			}
+		})
+	}
+}
+
+// Temporary lookup errors are retried for the whole backoff schedule and
+// then fail the run as transient.
+func TestLookupRetryGivesUp(t *testing.T) {
+	waits := stubWait(t)
+	calls := 0
+	o := options{lookup: cachedLookup(func(context.Context, string) ([]net.IPAddr, error) {
+		calls++
+		return nil, &net.DNSError{Err: dnsTimeout, IsTimeout: true}
+	})}
+	if err := o.checkHost(context.Background(), "registry.example.internal", false, nil); !errors.As(err, new(transientError)) {
+		t.Fatalf("err = %v, want transient", err)
+	}
+	if calls != len(twregistry.Backoff)+1 || *waits != len(twregistry.Backoff) {
+		t.Fatalf("%d lookups, %d waits", calls, *waits)
 	}
 }

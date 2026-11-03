@@ -308,7 +308,11 @@ func (o options) checkHost(ctx context.Context, name string, proxied bool, denie
 }
 
 // cachedLookup resolves each host once per run, so every request to a host
-// is checked against the same answer.
+// is checked against the same answer. A temporary error, such as a
+// resolver rejected until the pod's NetworkPolicy is programmed, is retried
+// on the registry backoff schedule before the answer is cached. Behind a
+// proxy a lookup error passes, so caching a race failure there would skip
+// the check for the whole run.
 func cachedLookup(lookup func(context.Context, string) ([]net.IPAddr, error)) func(context.Context, string) ([]net.IPAddr, error) {
 	type answer struct {
 		ips []net.IPAddr
@@ -322,10 +326,23 @@ func cachedLookup(lookup func(context.Context, string) ([]net.IPAddr, error)) fu
 		a, ok := cache[host]
 		if !ok {
 			a.ips, a.err = lookup(ctx, host)
+			for i := 0; i < len(registry.Backoff) && temporaryDNS(a.err); i++ {
+				if err := registry.Wait(ctx, registry.Backoff[i]); err != nil {
+					return nil, err
+				}
+				a.ips, a.err = lookup(ctx, host)
+			}
 			cache[host] = a
 		}
 		return a.ips, a.err
 	}
+}
+
+// temporaryDNS reports whether a lookup may pass when tried again. The
+// resolver marks socket errors, such as a refused query, as temporary.
+func temporaryDNS(err error) bool {
+	var d *net.DNSError
+	return errors.As(err, &d) && !d.IsNotFound && (d.IsTemporary || d.IsTimeout)
 }
 
 // checkAddrs refuses an address that syncspec.CheckAddr refuses. Only
