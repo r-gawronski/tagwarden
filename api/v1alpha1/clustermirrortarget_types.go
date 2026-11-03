@@ -121,6 +121,14 @@ type TargetProject struct {
 	// shared project. Team projects use a label selector.
 	// +required
 	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector"`
+
+	// allowRepositoryOverride lets ArtifactMirrors in this project set
+	// target.repository to a path other than the default. When false, they
+	// must use the default path <source-registry>/<source-repository>, so a
+	// tenant cannot claim the path of another source. Enable it only for
+	// projects owned by a single team.
+	// +optional
+	AllowRepositoryOverride bool `json:"allowRepositoryOverride,omitempty"`
 }
 
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.

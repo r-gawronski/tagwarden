@@ -141,6 +141,14 @@ spec:
                   description: TargetProject is a project in the target registry and
                     the namespaces allowed to use it.
                   properties:
+                    allowRepositoryOverride:
+                      description: |-
+                        allowRepositoryOverride lets ArtifactMirrors in this project set
+                        target.repository to a path other than the default. When false, they
+                        must use the default path <source-registry>/<source-repository>, so a
+                        tenant cannot claim the path of another source. Enable it only for
+                        projects owned by a single team.
+                      type: boolean
                     name:
                       description: name of the project, a single path segment.
                       maxLength: 255
