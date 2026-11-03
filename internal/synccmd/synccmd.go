@@ -155,6 +155,7 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 		RequiredPlatforms: spec.RequiredPlatforms,
 		OnTagMutation:     spec.OnTagMutation,
 		MaxTags:           spec.MaxTags,
+		MaxArtifactSize:   spec.MaxArtifactSize,
 		// Phase 1 pulls anonymously; per-source credentials come later.
 		SourceOpts: []remote.Option{remote.WithTransport(srcT), remote.WithAuth(authn.Anonymous)},
 		TargetOpts: []remote.Option{remote.WithTransport(dstT), remote.WithAuth(auth)},

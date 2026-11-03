@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"time"
@@ -37,6 +38,10 @@ import (
 	"github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/tags"
 )
+
+// ErrArtifactTooLarge means the config and layers of an artifact add up to
+// more than Request.MaxArtifactSize.
+var ErrArtifactTooLarge = errors.New("artifact too large")
 
 // ErrTagMutated means a target tag points to a different digest than the
 // upstream tag and the mutation policy is Fail.
@@ -60,6 +65,10 @@ type Request struct {
 	SourceOpts, TargetOpts []remote.Option
 	// MaxTags caps the upstream listing. Zero means tags.MaxTags.
 	MaxTags int
+	// MaxArtifactSize caps the config and layer bytes of one artifact,
+	// summed over every manifest of an index. Referrers do not count.
+	// Zero means no limit.
+	MaxArtifactSize int64
 }
 
 // Artifact is one tag and the digest it resolved to. For a mutated tag
@@ -251,6 +260,9 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 	if err := s.checkPlatforms(desc); err != nil {
 		return err
 	}
+	if err := s.checkSize(ctx, desc); err != nil {
+		return err
+	}
 	if err := s.copy(ctx, desc); err != nil {
 		return err
 	}
@@ -304,6 +316,70 @@ func (s *syncer) checkPlatforms(desc *remote.Descriptor) error {
 		}
 	}
 	return nil
+}
+
+// checkSize refuses an artifact larger than MaxArtifactSize before anything
+// of it is copied (threat model T10).
+func (s *syncer) checkSize(ctx context.Context, desc *remote.Descriptor) error {
+	if s.req.MaxArtifactSize <= 0 {
+		return nil
+	}
+	n, err := s.size(ctx, desc)
+	if err != nil {
+		return err
+	}
+	if n > s.req.MaxArtifactSize {
+		return fmt.Errorf("%w: %d > %d", ErrArtifactTooLarge, n, s.req.MaxArtifactSize)
+	}
+	return nil
+}
+
+// size sums the config and layer sizes of a manifest, or of every manifest
+// of an index, as the manifests declare them. ggcr checks each blob
+// against its declared size when it copies it. The sum saturates instead
+// of overflowing.
+func (s *syncer) size(ctx context.Context, desc *remote.Descriptor) (int64, error) {
+	var total int64
+	add := func(n int64) error {
+		if n < 0 {
+			return fmt.Errorf("%s declares a negative size", desc.Digest)
+		}
+		total = min(total, math.MaxInt64-n) + n
+		return nil
+	}
+	if desc.MediaType.IsIndex() {
+		im, err := v1.ParseIndexManifest(bytes.NewReader(desc.Manifest))
+		if err != nil {
+			return 0, err
+		}
+		for _, m := range im.Manifests {
+			child, err := s.src.Get(ctx, s.req.Source.Digest(m.Digest.String()))
+			if err != nil {
+				return 0, fmt.Errorf("fetch source manifest %s: %w", m.Digest, err)
+			}
+			n, err := s.size(ctx, child)
+			if err != nil {
+				return 0, err
+			}
+			if err := add(n); err != nil {
+				return 0, err
+			}
+		}
+		return total, nil
+	}
+	m, err := v1.ParseManifest(bytes.NewReader(desc.Manifest))
+	if err != nil {
+		return 0, err
+	}
+	if err := add(m.Config.Size); err != nil {
+		return 0, err
+	}
+	for _, l := range m.Layers {
+		if err := add(l.Size); err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
 }
 
 // normalize treats arm64 and arm64/v8 as the same platform, like containerd.

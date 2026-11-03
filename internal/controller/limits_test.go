@@ -17,17 +17,21 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
 var _ = Describe("minGap", func() {
@@ -181,5 +185,18 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 		newer.Spec.Target.Repository = "claimed/app"
 		createMirror(newer)
 		expectReady(newer)
+	})
+
+	It("passes maxArtifactSize to the sync Job", func() {
+		size := resource.MustParse("1Gi")
+		t := limited("limits-size", mirrorv1alpha1.TargetLimits{MaxArtifactSize: &size})
+		m := mirrorOf(t, teamA, "size")
+		createMirror(m)
+		expectReady(m)
+		var cm corev1.ConfigMap
+		Expect(k8sClient.Get(ctx, objectKey(m), &cm)).To(Succeed())
+		spec, err := syncspec.Decode(bytes.NewReader([]byte(cm.Data[specKey])))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spec.MaxArtifactSize).To(BeEquivalentTo(1 << 30))
 	})
 })
