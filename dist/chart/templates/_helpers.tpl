@@ -116,7 +116,7 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{- end }}
 
 {{/*
-Manager flags for the gate, empty unless trivy.enabled. The Trivy version is
+Manager flags for the gate, empty unless trivy.enabled (the only guard). The Trivy version is
 the image tag.
 */}}
 {{- define "tagwarden.trivyManagerArgs" -}}

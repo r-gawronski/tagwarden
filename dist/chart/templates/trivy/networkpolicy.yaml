@@ -7,6 +7,8 @@ metadata:
   labels:
     {{- include "tagwarden.trivyLabels" . | nindent 4 }}
 spec:
+  # Gated sync pods and the manager run in the release (operator) namespace,
+  # so plain podSelectors are enough: sync Jobs never run elsewhere.
   podSelector:
     matchLabels:
       {{- include "tagwarden.trivySelectorLabels" . | nindent 6 }}

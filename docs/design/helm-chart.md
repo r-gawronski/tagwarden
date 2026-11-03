@@ -100,8 +100,14 @@ operator namespace. Secrets referenced by targets must exist there.
 StatefulSet with a cache PVC (`trivy.persistence`, 10Gi), a Service on 4954,
 a ServiceAccount without token, a token Secret and, with
 `networkPolicy.enabled`, a NetworkPolicy. The Secret is generated once and
-kept on upgrades, or `trivy.token.existingSecret` names one with a `token`
-key. The schema requires `trivy.image` (repository, tag, digest),
+kept on upgrades (annotated `helm.sh/resource-policy: keep`), or
+`trivy.token.existingSecret` names one with a `token` key. The generated token
+is kept through `lookup`, which returns nothing under `helm template` and Argo
+CD, so every render there would rotate it: GitOps installs must set
+`trivy.token.existingSecret`. The server pod carries a `checksum/token`
+annotation, so a changed token restarts it. A startup probe on `/healthz`
+allows 15 minutes for the first DB download. With `networkPolicy.enabled:
+false` the server is protected by the token only. The schema requires `trivy.image` (repository, tag, digest),
 `trivy.db.repository` and a `trivy.tmp.sizeLimit` of at least 1Gi, and caps
 `trivy.replicas` at 1. `trivy.image.tag` is the Trivy version. The NetworkPolicy
 admits pods labeled `tagwarden.dev/scanner: trivy` and the manager, and

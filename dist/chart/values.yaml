@@ -143,7 +143,8 @@ networkPolicy:
 
 ## Trivy server for the vulnerability gate. See docs/design/vulnerability-gate.md.
 ## One replica, plain HTTP inside the cluster, guarded by a token and (with
-## networkPolicy.enabled) a NetworkPolicy. The manager gets --trivy-image,
+## networkPolicy.enabled) a NetworkPolicy. With networkPolicy.enabled=false the
+## server is protected by the token only. The manager gets --trivy-image,
 ## --trivy-version and --trivy-url from these values.
 trivy:
   enabled: false
@@ -172,7 +173,9 @@ trivy:
   tmp:
     sizeLimit: 2Gi
   ## Existing Secret with a "token" key. Empty: the chart generates one and
-  ## keeps it on upgrades.
+  ## keeps it on upgrades. The upgrade lookup returns nothing under Argo CD and
+  ## helm template, which would rotate the token on every render: GitOps
+  ## installs must set existingSecret.
   token:
     existingSecret: ""
   resources:

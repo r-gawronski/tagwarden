@@ -178,10 +178,17 @@ func TestTrivyEnabled(t *testing.T) {
 		"sizeLimit: 2Gi\n",
 		"tagwarden.dev/scanner: trivy\n",
 		"name: SSL_CERT_FILE\n",
+		"startupProbe:\n",
+		"failureThreshold: 90\n",
+		"checksum/token: ",
+		"helm.sh/resource-policy: keep\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered chart lacks %q", want)
 		}
+	}
+	if strings.Contains(out, "initialDelaySeconds: 30") {
+		t.Error("liveness probe still has initialDelaySeconds")
 	}
 	existing, err := render(t, "-f", "trivy-values.yaml", "--set", "trivy.token.existingSecret=mine")
 	if err != nil {

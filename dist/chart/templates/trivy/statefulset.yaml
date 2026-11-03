@@ -1,6 +1,33 @@
 {{- if .Values.trivy.enabled }}
 {{- $db := .Values.trivy.db }}
-{{- $tokenSecret := .Values.trivy.token.existingSecret | default (include "tagwarden.resourceName" (dict "suffix" "trivy-token" "context" .)) }}
+{{- /*
+The token Secret lives in this file so the Secret and the pod checksum share one
+generated value. A generated token is kept on upgrades through lookup, which
+returns nothing under helm template and Argo CD: GitOps installs must set
+trivy.token.existingSecret.
+*/}}
+{{- $generatedName := include "tagwarden.resourceName" (dict "suffix" "trivy-token" "context" .) }}
+{{- $tokenSecret := .Values.trivy.token.existingSecret | default $generatedName }}
+{{- $token := "" }}
+{{- with lookup "v1" "Secret" .Release.Namespace $tokenSecret }}
+{{- $token = get (.data | default dict) "token" }}
+{{- end }}
+{{- if not .Values.trivy.token.existingSecret }}
+{{- $token = $token | default (randAlphaNum 40 | b64enc) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $generatedName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tagwarden.trivyLabels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  token: {{ $token }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -18,6 +45,8 @@ spec:
     metadata:
       labels:
         {{- include "tagwarden.trivyLabels" . | nindent 8 }}
+      annotations:
+        checksum/token: {{ $token | sha256sum }}
     spec:
       serviceAccountName: {{ include "tagwarden.trivyName" . }}
       automountServiceAccountToken: false
@@ -82,11 +111,16 @@ spec:
               path: /healthz
               port: http
             periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
-            initialDelaySeconds: 30
             periodSeconds: 20
           resources:
             {{- toYaml .Values.trivy.resources | nindent 12 }}
