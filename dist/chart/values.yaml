@@ -1,77 +1,57 @@
-## String to partially override chart.fullname template (will maintain the release name)
-##
+## Hand-maintained: make helm keeps this file. values.schema.json rejects
+## unknown keys, so update both together. See docs/design/helm-chart.md.
+
+## Override the chart name in object names (the release name is kept).
 # nameOverride: ""
 
-## String to fully override chart.fullname template
-##
+## Override the full object name prefix.
 # fullnameOverride: ""
 
-## Configure the controller manager deployment
-##
+## Controller manager Deployment.
 manager:
-  ## Set to false to skip manager installation
-  ##
-  enabled: true
-
   replicas: 1
 
   image:
-    repository: controller
-    ## Image tag (defaults to Chart.appVersion if not set)
-    ##
-    # tag: ""
+    ## No image is published yet. Set the registry the operator image was
+    ## built or mirrored into.
+    repository: registry.example.internal/tagwarden/tagwarden
+    ## Defaults to the chart appVersion.
+    tag: ""
+    ## Optional sha256 digest. When set, the image is pulled by digest.
+    digest: ""
     pullPolicy: IfNotPresent
 
-  ## Arguments
-  ##
+  ## Manager flags. The chart wires the operator through these templates;
+  ## when overriding the list, keep them.
   args:
-    - --leader-elect
+    - --leader-elect={{ .Values.leaderElection.enabled }}
+    - --sync-image={{ include "tagwarden.syncImage" . }}
+    - --denied-cidrs={{ join "," .Values.deniedCIDRs }}
 
-  ## Health probes.
-  ## The manager serves the liveness (/healthz) and readiness (/readyz) endpoints on this port.
-  ##
   healthProbe:
-    # Health probe server port
     port: 8081
 
-  ## Environment variables
-  ##
+  ## POD_NAMESPACE makes the release namespace the operator namespace.
   env:
     - name: POD_NAMESPACE
       valueFrom:
         fieldRef:
           fieldPath: metadata.namespace
-    - name: SYNC_IMAGE
-      value: controller:latest
 
-  ## Env overrides (--set manager.envOverrides.VAR=value)
-  ## Same name in env above: this value takes precedence.
-  ##
-  envOverrides: {}
+  imagePullSecrets: []
 
-  ## Image pull secrets
-  ##
-  # imagePullSecrets:
-  #   - name: myregistrykey
-
-  ## Pod-level security settings
-  ##
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:
       type: RuntimeDefault
 
-  ## Container-level security settings
-  ##
   securityContext:
     allowPrivilegeEscalation: false
     capabilities:
       drop:
-      - ALL
+        - ALL
     readOnlyRootFilesystem: true
 
-  ## Resource limits and requests
-  ##
   resources:
     limits:
       cpu: 500m
@@ -80,137 +60,92 @@ manager:
       cpu: 10m
       memory: 64Mi
 
-  ## Manager pod's affinity
-  ##
   affinity: {}
-
-  ## Manager pod's node selector
-  ##
   nodeSelector: {}
-
-  ## Manager pod's tolerations
-  ##
   tolerations: []
 
-  ## Deployment strategy
-  ##
-  # strategy:
-  #   type: RollingUpdate
-  #   rollingUpdate:
-  #     maxSurge: 25%
-  #     maxUnavailable: 25%
-
-  ## Priority class name
-  ##
-  # priorityClassName: ""
-
-  ## Topology spread constraints
-  ##
-  # topologySpreadConstraints: []
-
-  ## Termination grace period seconds
-  ##
   terminationGracePeriodSeconds: 10
 
-  ## Custom Deployment labels
-  ##
-  # labels: {}
+  ## Also available: labels, annotations, pod.labels, pod.annotations,
+  ## strategy, priorityClassName, topologySpreadConstraints.
 
-  ## Custom Deployment annotations
-  ##
-  # annotations: {}
+## Image of the sync Jobs. An empty repository means the manager image.
+syncImage:
+  repository: ""
+  tag: ""
+  digest: ""
 
-  ## Custom Pod labels and annotations
-  ##
-  # pod:
-  #   labels: {}
-  #   annotations: {}
+## Pod and service CIDRs of the cluster, and any other ranges sources must
+## not resolve to. Rendered as --denied-cidrs.
+deniedCIDRs: []
+# - 10.244.0.0/16
+# - 10.96.0.0/12
 
-## RBAC configuration
-##
+leaderElection:
+  enabled: true
+
 rbac:
-  ## RBAC resource scope
-  ## - false (default): ClusterRole/ClusterRoleBinding (all namespaces)
-  ## - true: Role/RoleBinding (release namespace only)
-  ##
-  namespaced: false
-
-  ## Helper roles for CRD management (admin/editor/viewer)
-  ##
+  ## Install admin, editor and viewer ClusterRoles for the Tagwarden CRDs.
   helpers:
-    ## Install convenience admin/editor/viewer roles for CRDs
-    ##
     enabled: false
 
-## ServiceAccount configuration
-##
+## Manager ServiceAccount. The tagwarden-sync ServiceAccount of the sync
+## Jobs is always rendered.
 serviceAccount:
-  # Install default ServiceAccount provided
   enabled: true
-
-  ## Existing ServiceAccount name (required when enabled=false)
-  ## Set to "default" to use the namespace default ServiceAccount
-  ## Note: When enabled=true, respects nameOverride/fullnameOverride
-  ##
+  ## Existing ServiceAccount to use when enabled is false.
   # name: ""
-
-  ## Custom ServiceAccount annotations
-  ##
   # annotations: {}
-
-  ## Custom ServiceAccount labels
-  ##
   # labels: {}
 
-## Custom Resource Definitions
-##
 crd:
-  # Install CRDs with the chart
+  ## Install and upgrade the CRDs with the chart.
   enabled: true
-  # Keep CRDs when uninstalling
+  ## Keep the CRDs, and with them every mirror, on helm uninstall.
   keep: true
 
-## Controller metrics endpoint.
-## Enable to expose /metrics endpoint
-##
 metrics:
   enabled: true
-  # Metrics server port
   port: 8443
-  # Enable secure metrics: HTTPS with certs/auth (true) or HTTP (false).
-  # Note: Metrics authn/authz needs ClusterRole access.
+  ## HTTPS with authn and authz (true) or plain HTTP (false).
   secure: true
 
-## Cert-manager integration for TLS certificates.
-## Required for webhook certificates and metrics endpoint certificates.
-##
-certManager:
-  enabled: false
-
-## Webhook server configuration
-##
-webhook:
-  enabled: false
-  # Webhook server port
-  port: 9443
-
-## Prometheus ServiceMonitor for metrics scraping.
-## Requires prometheus-operator to be installed in the cluster.
-##
+## Prometheus Operator ServiceMonitor.
 prometheus:
   enabled: false
-
-  ## Custom ServiceMonitor labels
-  ##
+  ## tlsConfig of the endpoint when metrics.secure is true, for example a CA
+  ## that signed the metrics certificate. serverName is set by the chart.
+  tlsConfig: {}
   # labels: {}
-
-  ## Custom ServiceMonitor annotations
-  ##
   # annotations: {}
 
-## Network policies for controlling traffic flow.
-## Enable to restrict ingress to the controller manager.
-##
+## NetworkPolicy that allows metrics traffic from namespaces labelled
+## metrics: enabled.
 networkPolicy:
   enabled: false
 
+## ClusterMirrorTargets to create. Each item is {name, spec}; spec is passed
+## through as is. Secrets referenced by a target live in the release namespace.
+targets: []
+# - name: default
+#   spec:
+#     registry: registry.example.internal
+#     credentialsSecretRef:
+#       name: registry-push
+#     allowedSources: [registry.k8s.io]
+#     projects:
+#       - name: mirror
+#         namespaceSelector: {}
+
+## ArtifactMirrors to create. Each item is {name, namespace, spec}; spec is
+## passed through as is.
+mirrors: []
+# - name: pause
+#   namespace: team-a
+#   spec:
+#     targetRef: default
+#     schedule: "0 3 * * *"
+#     type: Image
+#     source: {registry: registry.k8s.io, repository: pause}
+#     target: {project: mirror}
+#     tags: {include: ['^\d+\.\d+$'], keepLatest: 3}

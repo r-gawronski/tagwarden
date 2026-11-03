@@ -1,0 +1,33 @@
+{{- /*
+Hand-maintained. The CRDs must exist before Helm can build these objects, so
+they render only once the API is served. On a first install with targets or
+mirrors, run helm upgrade once more after the install.
+*/}}
+{{- $served := .Capabilities.APIVersions.Has "mirror.tagwarden.dev/v1alpha1" }}
+{{- if $served }}
+{{- range .Values.targets }}
+---
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata:
+  name: {{ .name }}
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+spec:
+  {{- toYaml .spec | nindent 2 }}
+{{- end }}
+{{- range .Values.mirrors }}
+---
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+spec:
+  {{- toYaml .spec | nindent 2 }}
+{{- end }}
+{{- end }}

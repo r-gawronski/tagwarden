@@ -299,6 +299,11 @@ helm: manifests kustomize kubebuilder ## Regenerate the Helm chart in dist/chart
 	"$(KUSTOMIZE)" build config/helm > dist/helm-input.yaml
 	"$(KUBEBUILDER)" edit --plugins=helm/v2-alpha --manifests=dist/helm-input.yaml
 	rm -f .github/workflows/test-chart.yml
+	@# The manager template always regenerates. Point its image at the helper
+	@# that adds the optional digest, and fail if the generated line changed.
+	sed -i.bak 's#^        image: ".*manager\.image\.repository.*$$#        image: {{ include "tagwarden.managerImage" . | quote }}#' dist/chart/templates/manager/manager.yaml
+	rm dist/chart/templates/manager/manager.yaml.bak
+	grep -q 'include "tagwarden.managerImage"' dist/chart/templates/manager/manager.yaml
 
 .PHONY: install-helm
 install-helm: ## Check that Helm is installed.

@@ -61,3 +61,28 @@ When disabled, serviceAccount.name must be set; use "default" to pick the namesp
 {{- required "serviceAccount.name is required when serviceAccount.enabled=false (set name: default explicitly to use the namespace default ServiceAccount)" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Image reference from a dict with repository, tag and digest. Takes a dict with
+.image and .context. The tag defaults to the chart appVersion.
+*/}}
+{{- define "tagwarden.image" -}}
+{{- $ref := printf "%s:%s" .image.repository (.image.tag | default .context.Chart.AppVersion) }}
+{{- with .image.digest }}{{ $ref = printf "%s@%s" $ref . }}{{ end }}
+{{- $ref }}
+{{- end }}
+
+{{- define "tagwarden.managerImage" -}}
+{{- include "tagwarden.image" (dict "image" .Values.manager.image "context" .) }}
+{{- end }}
+
+{{/*
+Sync Job image: syncImage when its repository is set, else the manager image.
+*/}}
+{{- define "tagwarden.syncImage" -}}
+{{- if .Values.syncImage.repository }}
+{{- include "tagwarden.image" (dict "image" .Values.syncImage "context" .) }}
+{{- else }}
+{{- include "tagwarden.managerImage" . }}
+{{- end }}
+{{- end }}
