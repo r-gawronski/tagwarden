@@ -247,6 +247,14 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 			corev1.KeyToPath{Key: corev1.TLSPrivateKeyKey, Path: corev1.TLSPrivateKeyKey}))
 		mounts = append(mounts, readOnly("client-cert", syncspec.ClientCertDir))
 	}
+	// Only the Secrets of this mirror's source go into its pod.
+	srcCred, srcCA := sourceRefs(t, string(m.Spec.Source.Registry))
+	if srcCred != nil {
+		volumes = append(volumes, secretVolume("source-auth", srcCred.Name,
+			corev1.KeyToPath{Key: corev1.DockerConfigJsonKey, Path: filepath.Base(syncspec.SourceAuthFile)}))
+		mounts = append(mounts, readOnly("source-auth", filepath.Dir(syncspec.SourceAuthFile)))
+	}
+	addCA("source-ca", srcCA, syncspec.SourceCAFile)
 	var env []corev1.EnvVar
 	if p := t.Spec.Proxy; p != nil {
 		addCA("proxy-ca", p.CABundleSecretRef, syncspec.ProxyCAFile)
