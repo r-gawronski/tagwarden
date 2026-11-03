@@ -177,6 +177,9 @@ func checkOwner(kind string, obj client.Object, m *mirrorv1alpha1.ArtifactMirror
 func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, ev *pending) (ctrl.Result, error) {
 	notReady := func(reason, msg string) (ctrl.Result, error) {
 		r.setReady(m, metav1.ConditionFalse, reason, msg)
+		if v := pendingRequest(m); v != "" {
+			recordRequest(m, ev, v, mirrorv1alpha1.SyncRequestRefused, "ArtifactMirror is not Ready: "+reason)
+		}
 		var res ctrl.Result
 		if reason == ReasonTargetConflict {
 			res.RequeueAfter = conflictRetry
@@ -227,8 +230,8 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		return nil
 	})
 	var op controllerutil.OperationResult
+	cj := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}
 	if err == nil {
-		cj := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}
 		desired := cj.DeepCopy()
 		renderCronJob(desired, &t, m, r.SyncImage, spec)
 		op, err = controllerutil.CreateOrUpdate(ctx, r.Client, cj, func() error {
@@ -258,7 +261,10 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		ev.add(corev1.EventTypeNormal, "Created", "Reconcile", fmt.Sprintf("Created CronJob %s/%s", key.Namespace, key.Name))
 	}
 	r.setReady(m, metav1.ConditionTrue, ReasonReady, fmt.Sprintf("CronJob %s/%s mirrors to %s", key.Namespace, key.Name, targetRepo(&t, m)))
-	return ctrl.Result{}, r.syncStatus(ctx, m, ev)
+	if err := r.syncStatus(ctx, m, ev); err != nil {
+		return ctrl.Result{}, err
+	}
+	return r.syncNow(ctx, &t, m, cj, ev)
 }
 
 func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, status metav1.ConditionStatus, reason, msg string) {

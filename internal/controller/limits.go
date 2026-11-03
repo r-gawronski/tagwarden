@@ -69,6 +69,14 @@ func minGap(schedule string, from time.Time, stop time.Duration) (time.Duration,
 	return gap, nil
 }
 
+// minSyncInterval is limits.minSyncInterval of t or its default.
+func minSyncInterval(t *mirrorv1alpha1.ClusterMirrorTarget) time.Duration {
+	if l := t.Spec.Limits; l != nil && l.MinSyncInterval != nil {
+		return l.MinSyncInterval.Duration
+	}
+	return defaultMinSyncInterval
+}
+
 func limitOr(v *int32, def int32) int32 {
 	if v == nil {
 		return def
@@ -84,10 +92,7 @@ func (r *ArtifactMirrorReconciler) checkLimits(ctx context.Context, t *mirrorv1a
 	if l == nil {
 		l = &mirrorv1alpha1.TargetLimits{}
 	}
-	interval := defaultMinSyncInterval
-	if l.MinSyncInterval != nil {
-		interval = l.MinSyncInterval.Duration
-	}
+	interval := minSyncInterval(t)
 	gap, err := minGap(m.Spec.Schedule, time.Now().UTC(), interval)
 	if err != nil {
 		return ReasonInvalidSpec, fmt.Sprintf("schedule %q: %v", m.Spec.Schedule, err), nil
