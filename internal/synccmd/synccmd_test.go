@@ -431,28 +431,6 @@ func TestRunRefusesSources(t *testing.T) {
 	}
 }
 
-func TestAllowedSource(t *testing.T) {
-	cases := []struct {
-		host    string
-		allowed []string
-		want    bool
-	}{
-		{"registry.k8s.io", []string{"quay.io", "registry.k8s.io"}, true}, //nolint:goconst // readable fixtures
-		{"Registry.K8s.io", []string{"registry.k8s.io"}, true},
-		{"registry.k8s.io", []string{"registry.k8s.io:443"}, false},
-		{"registry.k8s.io:5000", []string{"registry.k8s.io"}, false},
-		{"index.docker.io", []string{"docker.io"}, true}, //nolint:goconst // readable fixtures
-		{"index.docker.io", []string{"registry-1.docker.io"}, true},
-		{"docker.io", []string{"index.docker.io"}, true},
-		{"evil.docker.io", []string{"docker.io"}, false},
-	}
-	for _, tc := range cases {
-		if got := allowedSource(tc.host, tc.allowed); got != tc.want {
-			t.Errorf("allowedSource(%q, %v) = %v", tc.host, tc.allowed, got)
-		}
-	}
-}
-
 func TestCheckAddrs(t *testing.T) {
 	denied := []netip.Prefix{netip.MustParsePrefix("10.96.0.0/12")}
 	cases := map[string]bool{

@@ -45,7 +45,7 @@ func TestDecode(t *testing.T) {
 	if s.SourceRepo.String() != "registry.k8s.io/pause" || s.TargetRepo.RegistryStr() != "registry.example.internal" {
 		t.Fatalf("repositories %v %v", s.SourceRepo, s.TargetRepo)
 	}
-	if s.AllowedSources[0] != "registry.k8s.io" || len(s.DeniedPrefixes) != 2 || s.DeniedPrefixes[0].String() != "10.96.0.0/12" {
+	if s.AllowedSources[0] != "registry.k8s.io" || len(s.DeniedPrefixes) != 2 || s.DeniedPrefixes[0].String() != "10.96.0.0/12" { //nolint:goconst // readable fixtures
 		t.Fatalf("source checks %v %v", s.AllowedSources, s.DeniedPrefixes)
 	}
 }
@@ -79,5 +79,27 @@ func TestDecodeRejects(t *testing.T) {
 				t.Fatal("want error")
 			}
 		})
+	}
+}
+
+func TestAllowedSource(t *testing.T) {
+	cases := []struct {
+		host    string
+		allowed []string
+		want    bool
+	}{
+		{"registry.k8s.io", []string{"quay.io", "registry.k8s.io"}, true}, //nolint:goconst // readable fixtures
+		{"Registry.K8s.io", []string{"registry.k8s.io"}, true},
+		{"registry.k8s.io", []string{"registry.k8s.io:443"}, false},
+		{"registry.k8s.io:5000", []string{"registry.k8s.io"}, false},
+		{"index.docker.io", []string{"docker.io"}, true}, //nolint:goconst // readable fixtures
+		{"index.docker.io", []string{"registry-1.docker.io"}, true},
+		{"docker.io", []string{"index.docker.io"}, true},
+		{"evil.docker.io", []string{"docker.io"}, false},
+	}
+	for _, tc := range cases {
+		if got := AllowedSource(tc.host, tc.allowed); got != tc.want {
+			t.Errorf("AllowedSource(%q, %v) = %v", tc.host, tc.allowed, got)
+		}
 	}
 }
