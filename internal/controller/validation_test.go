@@ -91,6 +91,22 @@ func useAWS(t *mirrorv1alpha1.ClusterMirrorTarget) {
 	}
 }
 
+const (
+	exampleGCPAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster"
+	exampleGAR         = "europe-west1-docker.pkg.dev"
+)
+
+// useGCP switches the target push to Google Cloud workload identity.
+func useGCP(t *mirrorv1alpha1.ClusterMirrorTarget) {
+	t.Spec.Registry = exampleGAR
+	t.Spec.CredentialsSecretRef = nil
+	t.Spec.Auth = &mirrorv1alpha1.RegistryAuth{GCPWorkloadIdentity: &mirrorv1alpha1.GCPWorkloadIdentityAuth{}}
+	t.Spec.WorkloadIdentity = &mirrorv1alpha1.WorkloadIdentity{
+		ServiceAccountName: "tagwarden-sync-gcp",
+		GCP:                &mirrorv1alpha1.GCPIdentity{Audience: exampleGCPAudience},
+	}
+}
+
 func validMirror(name string) *mirrorv1alpha1.ArtifactMirror {
 	return &mirrorv1alpha1.ArtifactMirror{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
@@ -189,6 +205,26 @@ var _ = Describe("API validation", func() {
 			o.Spec.WorkloadIdentity.AWS = &mirrorv1alpha1.AWSIdentity{
 				RoleARN: "arn:aws-cn:iam::123456789012:role/path/tagwarden-sync", Region: "cn-north-1",
 			}
+		}),
+		Entry("GCP workload identity", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.WorkloadIdentity.GCP.ServiceAccountEmail = "tagwarden-sync@example-project.iam.gserviceaccount.com"
+			gcp := &mirrorv1alpha1.GCPWorkloadIdentityAuth{}
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: "US-docker.pkg.dev:443", GCPWorkloadIdentity: gcp},
+				{Registry: "gcr.io", GCPWorkloadIdentity: gcp},
+				{Registry: "eu.gcr.io", GCPWorkloadIdentity: gcp},
+				{Registry: "asia.gcr.io", GCPWorkloadIdentity: gcp},
+			}
+		}),
+		Entry("all three providers", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: exampleECR, AWSWorkloadIdentity: &mirrorv1alpha1.AWSWorkloadIdentityAuth{}},
+				{Registry: "other.azurecr.io", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
+			}
+			o.Spec.WorkloadIdentity.AWS = &mirrorv1alpha1.AWSIdentity{RoleARN: exampleRoleARN, Region: exampleRegion}
+			o.Spec.WorkloadIdentity.Azure = &mirrorv1alpha1.AzureIdentity{ClientID: zeroGUID, TenantID: zeroGUID}
 		}),
 	)
 
@@ -407,6 +443,63 @@ var _ = Describe("API validation", func() {
 		Entry("role and region in different partitions", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			useAWS(o)
 			o.Spec.WorkloadIdentity.AWS.Region = "cn-north-1"
+		}),
+		Entry("auth with GCP and AWS", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.Auth.AWSWorkloadIdentity = &mirrorv1alpha1.AWSWorkloadIdentityAuth{}
+		}),
+		Entry("source credential with secret and GCP", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{{
+				Registry: exampleGAR, SecretRef: &mirrorv1alpha1.SecretRef{Name: "gar-pull"},
+				GCPWorkloadIdentity: &mirrorv1alpha1.GCPWorkloadIdentityAuth{},
+			}}
+		}),
+		Entry("GCP push to a non-GAR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.Registry = "other.example.internal"
+		}),
+		Entry("GCP push to an ECR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.Registry = exampleECR
+		}),
+		Entry("GCP push to a GAR host on another port", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.Registry = exampleGAR + ":5000"
+		}),
+		Entry("GCP pull from a look-alike host", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{{
+				Registry: exampleGAR + ".example.internal", GCPWorkloadIdentity: &mirrorv1alpha1.GCPWorkloadIdentityAuth{},
+			}}
+		}),
+		Entry("GCP pull from another gcr.io host", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{{
+				Registry: "mirror.gcr.io", GCPWorkloadIdentity: &mirrorv1alpha1.GCPWorkloadIdentityAuth{},
+			}}
+		}),
+		Entry("GCP pull from a non-ASCII look-alike", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{{
+				Registry: "us-doc\u212Aer.pkg.dev", GCPWorkloadIdentity: &mirrorv1alpha1.GCPWorkloadIdentityAuth{},
+			}}
+		}),
+		Entry("GCP audience with a URL scheme", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.WorkloadIdentity.GCP.Audience = "https:" + exampleGCPAudience
+		}),
+		Entry("GCP audience on another host", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.WorkloadIdentity.GCP.Audience = "//iam.example.internal/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster"
+		}),
+		Entry("GCP audience with a project ID", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.WorkloadIdentity.GCP.Audience = "//iam.googleapis.com/projects/example-project/locations/global/workloadIdentityPools/tagwarden/providers/cluster"
+		}),
+		Entry("GCP service account outside IAM", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.WorkloadIdentity.GCP.ServiceAccountEmail = "123456789012-compute@developer.gserviceaccount.com"
+		}),
+		Entry("GCP identity without audience", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useGCP(o)
+			o.Spec.WorkloadIdentity.GCP.Audience = ""
 		}),
 		Entry("invalid ServiceAccount name", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			useAzure(o)
