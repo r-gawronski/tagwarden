@@ -92,6 +92,7 @@ type ProxySpec struct {
 // SourceCredential holds the pull credentials for one source registry:
 // a Secret or a cloud workload identity.
 // +kubebuilder:validation:XValidation:rule="has(self.secretRef) != has(self.azureWorkloadIdentity)",message="set exactly one of secretRef or azureWorkloadIdentity"
+// +kubebuilder:validation:XValidation:rule=`!has(self.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
 type SourceCredential struct {
 	// registry is the source registry these credentials are for. The Docker
 	// Hub names docker.io, index.docker.io and registry-1.docker.io count as
@@ -155,21 +156,16 @@ type AzureIdentity struct {
 	// +required
 	TenantID string `json:"tenantID"`
 
-	// authorityHost is the Microsoft Entra endpoint, for example
-	// https://login.microsoftonline.us/ in a national cloud. Defaults to
-	// https://login.microsoftonline.com/.
+	// authorityHost is the Microsoft Entra endpoint: one of
+	// https://login.microsoftonline.com/ (the default),
+	// https://login.microsoftonline.us/,
+	// https://login.partner.microsoftonline.cn/ or
+	// https://login.chinacloudapi.cn/. The registry token is always
+	// requested for https://containerregistry.azure.net/.default.
 	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:XValidation:rule="isURL(self) && self.startsWith('https://') && !self.contains('@') && !self.contains('?') && !self.contains('#')",message="must be an https URL without credentials, query or fragment"
+	// +kubebuilder:validation:XValidation:rule=`self.matches(r'^https://(login\.microsoftonline\.(com|us)|login\.partner\.microsoftonline\.cn|login\.chinacloudapi\.cn)/?$')`,message="must be a known Microsoft Entra authority host"
 	// +optional
 	AuthorityHost string `json:"authorityHost,omitempty"`
-
-	// scope is the Microsoft Entra scope of the registry token. Defaults
-	// to https://containerregistry.azure.net/.default. Change it only for
-	// a cloud whose registries expect another resource.
-	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:XValidation:rule="isURL(self) && self.startsWith('https://') && self.endsWith('/.default')",message="must be an https resource URL ending in /.default"
-	// +optional
-	Scope string `json:"scope,omitempty"`
 }
 
 // SourceCABundle holds extra root CAs for one source registry.
@@ -270,6 +266,7 @@ type TargetLimits struct {
 
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
 // +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
+// +kubebuilder:validation:XValidation:rule=`!has(self.auth) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
 type ClusterMirrorTargetSpec struct {
 	// registry is the target registry as host[:port], without a scheme.
 	// +required

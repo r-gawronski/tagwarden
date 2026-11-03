@@ -77,9 +77,10 @@ const (
 	// DefaultAzureAuthorityHost is the Microsoft Entra endpoint of the
 	// global Azure cloud.
 	DefaultAzureAuthorityHost = "https://login.microsoftonline.com/"
-	// DefaultAzureScope is the Microsoft Entra scope of Azure Container
-	// Registry tokens.
-	DefaultAzureScope = "https://containerregistry.azure.net/.default"
+	// AzureScope is the Microsoft Entra scope of Azure Container Registry
+	// tokens in every cloud. A Resource Manager scope would mint a
+	// management token and send it to the registry, so no other is allowed.
+	AzureScope = "https://containerregistry.azure.net/.default"
 )
 
 // Azure is the Microsoft Entra workload identity of a sync run. It holds
@@ -88,8 +89,20 @@ type Azure struct {
 	ClientID      string `json:"clientID"`
 	TenantID      string `json:"tenantID"`
 	AuthorityHost string `json:"authorityHost"`
-	Scope         string `json:"scope"`
 }
+
+var (
+	acrHost        = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$`)
+	azureAuthority = regexp.MustCompile(`^https://(login\.microsoftonline\.(com|us)|login\.partner\.microsoftonline\.cn|login\.chinacloudapi\.cn)/?$`)
+)
+
+// ACRHost reports whether host is an Azure Container Registry login
+// server. The CRD has the same rule.
+func ACRHost(host string) bool { return acrHost.MatchString(strings.ToLower(host)) }
+
+// AzureAuthority reports whether u is a known Microsoft Entra authority
+// host. The CRD has the same rule; a new cloud needs both changed.
+func AzureAuthority(u string) bool { return azureAuthority.MatchString(u) }
 
 var guid = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
@@ -97,11 +110,9 @@ func (a *Azure) validate() error {
 	if !guid.MatchString(a.ClientID) || !guid.MatchString(a.TenantID) {
 		return errors.New("clientID and tenantID must be GUIDs")
 	}
-	for _, s := range []string{a.AuthorityHost, a.Scope} {
-		u, err := url.Parse(s)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return errors.New("authorityHost and scope must be https URLs")
-		}
+	u, err := url.Parse(a.AuthorityHost)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("authorityHost must be an https URL")
 	}
 	return nil
 }

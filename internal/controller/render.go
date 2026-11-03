@@ -212,7 +212,6 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 			ClientID:      wi.Azure.ClientID,
 			TenantID:      wi.Azure.TenantID,
 			AuthorityHost: cmp.Or(wi.Azure.AuthorityHost, syncspec.DefaultAzureAuthorityHost),
-			Scope:         cmp.Or(wi.Azure.Scope, syncspec.DefaultAzureScope),
 		}
 	}
 	return s

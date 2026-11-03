@@ -100,7 +100,7 @@ var _ = Describe("Azure workload identity in a sync CronJob", func() {
 		Expect(s.TargetAuth).To(BeEmpty())
 		Expect(*s.Azure).To(Equal(syncspec.Azure{
 			ClientID: zeroGUID, TenantID: zeroGUID,
-			AuthorityHost: syncspec.DefaultAzureAuthorityHost, Scope: syncspec.DefaultAzureScope,
+			AuthorityHost: syncspec.DefaultAzureAuthorityHost,
 		}))
 
 		p = podOf(plain)
