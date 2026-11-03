@@ -38,32 +38,26 @@ other change.
 ---
 config:
   look: handDrawn
-  theme: neutral
 ---
 flowchart LR
   subgraph cluster [Kubernetes cluster]
     direction TB
-    AM([ArtifactMirror]):::res
-    T([ClusterMirrorTarget]):::res
-    C(Controller):::ctl
-    J(Sync Job):::ctl
+    AM([ArtifactMirror])
+    T([ClusterMirrorTarget])
+    C(Controller)
+    J(Sync Job)
     AM -- team --> C
     T -- platform --> C
     C -- CronJob --> J
     J -. result .-> C
   end
-  P(HTTPS proxy):::ext
-  U[(Upstream)]:::ext
-  R[(Your registry)]:::reg
+  P(HTTPS proxy)
+  U[(Upstream)]
+  R[(Your registry)]
   J -- list, fetch --> P
   P --> U
   J == push by digest ==> R
 
-  classDef res fill:#ddf4ff,stroke:#0969da,stroke-width:2px,color:#0a3069
-  classDef ctl fill:#fbefff,stroke:#8250df,stroke-width:2px,color:#3e1f79
-  classDef ext fill:#fff8c5,stroke:#9a6700,stroke-width:2px,color:#4d2d00
-  classDef reg fill:#dafbe1,stroke:#1a7f37,stroke-width:2px,color:#044f1e
-  style cluster fill:transparent,stroke:#8b949e,color:#8b949e
   linkStyle default stroke-width:2px
 ```
 
@@ -87,7 +81,6 @@ status.
 ---
 config:
   look: handDrawn
-  theme: neutral
 ---
 sequenceDiagram
   autonumber
@@ -98,13 +91,13 @@ sequenceDiagram
   participant U as Upstream
   participant R as Your registry
 
-  rect rgb(221, 244, 255)
+  rect rgba(100, 149, 237, 0.15)
     Note over Team,J: on apply
     Team->>C: ArtifactMirror
     C->>C: check against target
     C->>J: CronJob
   end
-  rect rgb(218, 251, 225)
+  rect rgba(46, 160, 67, 0.15)
     Note over J,R: on schedule
     J->>P: list tags
     P->>U: list tags
