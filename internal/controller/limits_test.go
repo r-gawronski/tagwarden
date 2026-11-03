@@ -177,12 +177,13 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 
 		expectReady(a)
 		expectReady(b)
-		expectRefused(c, ReasonLimitExceeded, "maxMirrorsPerNamespace is 2")
+		expectRefused(c, ReasonLimitExceeded, "maxMirrorsPerNamespace 2 of ClusterMirrorTarget limits-count is used up by older ArtifactMirrors in namespace team-a")
 		expectReady(other)
 
 		deleteAndWait(a)
 		expectReady(c)
 		Expect(mirrorReady(b)()).To(HaveField("Status", metav1.ConditionTrue))
+
 	})
 
 	It("does not let a mirror over the count limit claim a path", func() {
@@ -194,7 +195,7 @@ var _ = Describe("ClusterMirrorTarget limits", func() {
 		over.Spec.Source.Registry = ghcrRegistry
 		over.Spec.Target.Repository = "claimed/app"
 		createMirror(over)
-		expectRefused(over, ReasonLimitExceeded, "maxMirrorsPerNamespace is 1")
+		expectRefused(over, ReasonLimitExceeded, "maxMirrorsPerNamespace 1 of")
 
 		newer := mirrorOf(t, teamB, "claim-3")
 		newer.Spec.Target.Repository = "claimed/app"

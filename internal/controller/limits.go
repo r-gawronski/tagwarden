@@ -115,8 +115,8 @@ func (r *ArtifactMirrorReconciler) checkLimits(ctx context.Context, t *mirrorv1a
 		}
 	}
 	if maxM := limitOr(l.MaxMirrorsPerNamespace, defaultMaxMirrorsPerNamespace); ahead >= int(maxM) {
-		return ReasonLimitExceeded, fmt.Sprintf("namespace %s already has %d older ArtifactMirrors for ClusterMirrorTarget %s, maxMirrorsPerNamespace is %d",
-			m.Namespace, ahead, t.Name, maxM), nil
+		return ReasonLimitExceeded, fmt.Sprintf("maxMirrorsPerNamespace %d of ClusterMirrorTarget %s is used up by older ArtifactMirrors in namespace %s",
+			maxM, t.Name, m.Namespace), nil
 	}
 	return "", "", nil
 }
