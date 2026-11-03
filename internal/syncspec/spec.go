@@ -55,8 +55,10 @@ const (
 	ProxyPasswordEnv = "TAGWARDEN_PROXY_PASSWORD" //nolint:gosec // env var name, not a credential
 )
 
-// Exit codes of the sync Job. 2 is not used: the Go runtime exits 2 on an
-// unrecovered panic.
+// Exit codes of the sync Job. The Job never returns 2 itself: the Go runtime
+// exits 2 on an unrecovered crash, such as a panic outside the recovered
+// code or a fatal runtime error. The controller treats 2 as a crash and
+// lets the next run retry.
 const (
 	// ExitOK means every selected tag is on the target.
 	ExitOK = 0

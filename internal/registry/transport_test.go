@@ -357,3 +357,64 @@ func TestCheckDial(t *testing.T) {
 		t.Fatalf("proxy dial checked: %v", checked)
 	}
 }
+
+func TestNoEnvProxy(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://proxy.example.internal:3128")
+	t.Setenv("HTTP_PROXY", "http://proxy.example.internal:3128")
+	var calls []bool
+	rt, err := NewTransport(Options{
+		NoEnvProxy: true,
+		CheckHost: func(_ context.Context, _ string, proxied bool) error {
+			calls = append(calls, proxied)
+			return errRefused
+		},
+		CheckDial: func(netip.Addr) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.(*checkedTransport).Proxy != nil {
+		t.Fatal("proxy func set without ProxyURL")
+	}
+	if _, err := (&http.Client{Transport: rt}).Get("https://ghcr.io/v2/"); !errors.Is(err, errRefused) {
+		t.Fatalf("err = %v", err)
+	}
+	if !slices.Equal(calls, []bool{false}) {
+		t.Fatalf("calls %v, want one direct request", calls)
+	}
+	if addrs := proxyAddrs(Options{NoEnvProxy: true}); len(addrs) != 0 {
+		t.Fatalf("proxy addrs from env: %v", addrs)
+	}
+}
+
+func TestCheckDialHTTP2(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	var checked []netip.Addr
+	allow := func(a netip.Addr) error { checked = append(checked, a); return nil }
+	rt, err := NewTransport(Options{CAPEM: caPEM(srv), CheckDial: allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := (&http.Client{Transport: rt}).Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("proto %s, want HTTP/2", resp.Proto)
+	}
+	if len(checked) != 1 || !checked[0].IsLoopback() {
+		t.Fatalf("checked %v", checked)
+	}
+
+	rt, err = NewTransport(Options{CAPEM: caPEM(srv), CheckDial: func(netip.Addr) error { return errRefused }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&http.Client{Transport: rt}).Get(srv.URL); !errors.Is(err, errRefused) {
+		t.Fatalf("err = %v, want refused", err)
+	}
+}

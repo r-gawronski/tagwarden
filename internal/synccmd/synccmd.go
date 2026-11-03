@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	stdsync "sync"
 	"time"
 	"unicode/utf8"
 
@@ -132,6 +133,7 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
+	p.lookup = cachedLookup(p.lookup)
 	if err := checkSource(ctx, spec, p, getenv("HTTPS_PROXY") != ""); err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
@@ -217,7 +219,9 @@ func transports(p options, denied []netip.Prefix, getenv func(string) string) (s
 	if err != nil {
 		return nil, nil, err
 	}
-	o := registry.Options{CAPEM: proxyCA}
+	// Only the proxy from the spec applies, never a lowercase or HTTP_PROXY
+	// variable that the image or node happens to set.
+	o := registry.Options{CAPEM: proxyCA, NoEnvProxy: true}
 	user, pass := getenv(syncspec.ProxyUserEnv), getenv(syncspec.ProxyPasswordEnv)
 	if proxy := getenv("HTTPS_PROXY"); proxy != "" {
 		// Never quote the URL: it may hold credentials.
@@ -284,17 +288,16 @@ func checkSource(ctx context.Context, spec syncspec.Spec, o options, proxied boo
 }
 
 // checkHost refuses a host name or literal address that resolves to an
-// internal address. A proxy resolves names itself, so a name the Job
-// cannot resolve passes only when the request is proxied. Other DNS
-// errors are transient.
+// internal address. A proxy resolves names itself and its ACL is the
+// control there, so a name the Job cannot resolve passes when the request
+// is proxied. Without a proxy a lookup error is transient.
 func (o options) checkHost(ctx context.Context, name string, proxied bool, denied []netip.Prefix) error {
 	if a, err := netip.ParseAddr(name); err == nil {
 		return o.checkAddrs([]netip.Addr{a}, denied)
 	}
 	ips, err := o.lookup(ctx, name)
-	var dnsErr *net.DNSError
 	switch {
-	case errors.As(err, &dnsErr) && dnsErr.IsNotFound && proxied:
+	case err != nil && proxied:
 		return nil
 	case err != nil:
 		return transientError{fmt.Errorf("resolve %s: %w", name, err)}
@@ -309,6 +312,27 @@ func (o options) checkHost(ctx context.Context, name string, proxied bool, denie
 		return fmt.Errorf("%s %w", name, err)
 	}
 	return nil
+}
+
+// cachedLookup resolves each host once per run, so every request to a host
+// is checked against the same answer.
+func cachedLookup(lookup func(context.Context, string) ([]net.IPAddr, error)) func(context.Context, string) ([]net.IPAddr, error) {
+	type answer struct {
+		ips []net.IPAddr
+		err error
+	}
+	var mu stdsync.Mutex
+	cache := map[string]answer{}
+	return func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		a, ok := cache[host]
+		if !ok {
+			a.ips, a.err = lookup(ctx, host)
+			cache[host] = a
+		}
+		return a.ips, a.err
+	}
 }
 
 // dockerHub lists the names of the same registry.
