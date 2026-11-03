@@ -57,9 +57,10 @@ const maxTermination = 4096
 
 type options struct {
 	targetAuth, targetCA, proxyCA, clientCertDir string
-	// allowInternal skips the internal address check. Only tests set it,
-	// for in-process registries on 127.0.0.1.
-	allowInternal bool
+	// allowLoopback lets loopback addresses pass the source checks. Only
+	// tests set it, for in-process registries on 127.0.0.1; every other
+	// internal address is still refused.
+	allowLoopback bool
 	// lookup resolves host names. Tests replace it.
 	lookup func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
@@ -130,14 +131,14 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
-	if err := checkSource(ctx, spec, p); err != nil {
+	if err := checkSource(ctx, spec, p, getenv("HTTPS_PROXY") != ""); err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
 	auth, err := targetAuth(p.targetAuth, spec.TargetRepo.RegistryStr())
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
-	srcT, dstT, err := transports(p, getenv)
+	srcT, dstT, err := transports(p, spec.DeniedPrefixes, getenv)
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
@@ -201,7 +202,7 @@ func registryHost(key string) string {
 // transports builds the source and target transports. The source trusts
 // only the proxy CA; the target also trusts its own CA and presents the
 // client certificate.
-func transports(p options, getenv func(string) string) (src, dst http.RoundTripper, err error) {
+func transports(p options, denied []netip.Prefix, getenv func(string) string) (src, dst http.RoundTripper, err error) {
 	proxyCA, err := readOptional(p.proxyCA)
 	if err != nil {
 		return nil, nil, err
@@ -224,7 +225,12 @@ func transports(p options, getenv func(string) string) (src, dst http.RoundTripp
 	} else if user != "" || pass != "" {
 		return nil, nil, errors.New("proxy credentials are set but HTTPS_PROXY is not")
 	}
-	if src, err = registry.NewTransport(o); err != nil {
+	so := o
+	so.CheckHost = func(ctx context.Context, host string, proxied bool) error {
+		return p.checkHost(ctx, host, proxied, denied)
+	}
+	so.CheckDial = func(a netip.Addr) error { return p.checkAddrs([]netip.Addr{a}, denied) }
+	if src, err = registry.NewTransport(so); err != nil {
 		return nil, nil, fmt.Errorf("source transport: %w", err)
 	}
 
@@ -253,42 +259,48 @@ func transports(p options, getenv func(string) string) (src, dst http.RoundTripp
 }
 
 // checkSource refuses a source registry that the target does not allow or
-// that resolves to an internal address (threat model T6, T16). It runs
-// before any registry call. With a proxy the proxy resolves names itself,
-// so this check covers literal addresses and the Job's own DNS view only.
-func checkSource(ctx context.Context, spec syncspec.Spec, o options) error {
+// that is an internal address (threat model T6, T16). It runs before any
+// registry call; the source transport repeats the address check on every
+// request and connection.
+func checkSource(ctx context.Context, spec syncspec.Spec, o options, proxied bool) error {
 	host := spec.SourceRepo.RegistryStr()
 	if !allowedSource(host, spec.AllowedSources) {
 		return fmt.Errorf("source: registry %s is not in allowedSources", host)
-	}
-	if o.allowInternal {
-		return nil
 	}
 	name := host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		name = h
 	}
-	name = strings.Trim(name, "[]")
-	var addrs []netip.Addr
+	if err := o.checkHost(ctx, strings.Trim(name, "[]"), proxied, spec.DeniedPrefixes); err != nil {
+		return fmt.Errorf("source: %w", err)
+	}
+	return nil
+}
+
+// checkHost refuses a host name or literal address that resolves to an
+// internal address. A proxy resolves names itself, so a name the Job
+// cannot resolve passes only when the request is proxied. Other DNS
+// errors are transient.
+func (o options) checkHost(ctx context.Context, name string, proxied bool, denied []netip.Prefix) error {
 	if a, err := netip.ParseAddr(name); err == nil {
-		addrs = []netip.Addr{a}
-	} else {
-		ips, err := o.lookup(ctx, name)
-		var dnsErr *net.DNSError
-		switch {
-		// An air-gapped Job often cannot resolve upstream names; the proxy does.
-		case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
-		case err != nil:
-			return transientError{fmt.Errorf("source: resolve %s: %w", name, err)}
-		}
-		for _, ip := range ips {
-			if a, ok := netip.AddrFromSlice(ip.IP); ok {
-				addrs = append(addrs, a)
-			}
+		return o.checkAddrs([]netip.Addr{a}, denied)
+	}
+	ips, err := o.lookup(ctx, name)
+	var dnsErr *net.DNSError
+	switch {
+	case errors.As(err, &dnsErr) && dnsErr.IsNotFound && proxied:
+		return nil
+	case err != nil:
+		return transientError{fmt.Errorf("resolve %s: %w", name, err)}
+	}
+	addrs := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		if a, ok := netip.AddrFromSlice(ip.IP); ok {
+			addrs = append(addrs, a)
 		}
 	}
-	if err := checkAddrs(addrs, spec.DeniedPrefixes); err != nil {
-		return fmt.Errorf("source: registry %s: %w", host, err)
+	if err := o.checkAddrs(addrs, denied); err != nil {
+		return fmt.Errorf("%s %w", name, err)
 	}
 	return nil
 }
@@ -309,16 +321,29 @@ func allowedSource(host string, allowed []string) bool {
 	return slices.ContainsFunc(allowed, func(a string) bool { return canon(a) == canon(host) })
 }
 
-// metadataAddrs are cloud metadata endpoints outside the link-local range.
-var metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254")}
+var (
+	// metadataAddrs are cloud metadata endpoints outside the link-local range.
+	metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254"), netip.MustParseAddr("100.100.100.200")}
+	// thisNetwork is 0.0.0.0/8, which some stacks route to the local host.
+	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
+	// nat64 embeds an IPv4 address in its last four bytes.
+	nat64 = netip.MustParsePrefix("64:ff9b::/96")
+)
 
 // checkAddrs refuses loopback, link-local, unspecified and metadata
-// addresses and any address in denied.
-func checkAddrs(addrs []netip.Addr, denied []netip.Prefix) error {
+// addresses, 0.0.0.0/8, NAT64 addresses that embed any of these, and any
+// address in denied.
+func (o options) checkAddrs(addrs []netip.Addr, denied []netip.Prefix) error {
 	for _, a := range addrs {
 		a = a.Unmap()
-		if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsUnspecified() ||
-			slices.Contains(metadataAddrs, a) {
+		if nat64.Contains(a) {
+			b := a.As16()
+			if err := o.checkAddrs([]netip.Addr{netip.AddrFrom4([4]byte(b[12:]))}, denied); err != nil {
+				return err
+			}
+		}
+		if a.IsLoopback() && !o.allowLoopback || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
+			a.IsUnspecified() || thisNetwork.Contains(a) || slices.Contains(metadataAddrs, a) {
 			return fmt.Errorf("resolves to internal address %s", a)
 		}
 		for _, p := range denied {
