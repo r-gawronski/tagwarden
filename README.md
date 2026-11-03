@@ -308,7 +308,7 @@ spec:
       secretRef: {name: ghcr-pull}
     - registry: docker.io       # also covers index.docker.io and friends
       secretRef: {name: hub-pull}
-  sourceCABundles:              # extra roots, trusted for this source only
+  sourceCABundles:              # extra roots, for this source's pods only
     - registry: registry.corp.example.internal
       secretRef: {name: corp-registry-ca, key: ca.crt}
 ```
