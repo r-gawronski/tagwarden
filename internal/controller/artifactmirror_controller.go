@@ -268,8 +268,9 @@ func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, st
 
 // authorize checks that the mirror may use the target: the project allows
 // its namespace and any target.repository override, the source is allowed
-// and not an internal address, and the spec is valid (threat model T5, T6,
-// T7, T16, T23). It returns a reason and message when it may not.
+// and not an internal address, the spec is valid and within the target's
+// limits (threat model T5, T6, T7, T10, T16, T23). It returns a reason and
+// message when it may not.
 func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (string, string, error) {
 	i := slices.IndexFunc(t.Spec.Projects, func(p mirrorv1alpha1.TargetProject) bool { return p.Name == m.Spec.Target.Project })
 	if i < 0 {
@@ -314,7 +315,7 @@ func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alp
 	if _, err := name.NewRepository(targetRepo(t, m), name.StrictValidation); err != nil {
 		return ReasonInvalidSpec, fmt.Sprintf("target %s is not a valid repository, set target.repository", targetRepo(t, m)), nil
 	}
-	return "", "", nil
+	return r.checkLimits(ctx, t, m)
 }
 
 func (r *ArtifactMirrorReconciler) deniedPrefixes() []netip.Prefix {
