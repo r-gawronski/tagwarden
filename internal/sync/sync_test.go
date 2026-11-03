@@ -27,6 +27,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	stdsync "sync"
 	"sync/atomic"
 	"testing"
 
@@ -55,6 +56,15 @@ const (
 type testRegistry struct {
 	repo   name.Repository
 	writes atomic.Int32
+	mu     stdsync.Mutex
+	// puts lists the paths of manifest PUT requests.
+	puts []string
+}
+
+func (r *testRegistry) manifestPuts() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.puts)
 }
 
 type regOpts struct {
@@ -77,6 +87,11 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 		}
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			r.writes.Add(1)
+		}
+		if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/manifests/") {
+			r.mu.Lock()
+			r.puts = append(r.puts, req.URL.Path)
+			r.mu.Unlock()
 		}
 		if o.noHeadDigest && req.Method == http.MethodHead {
 			rec := httptest.NewRecorder()
@@ -240,6 +255,52 @@ func TestRunCopiesSelectedTagsByDigest(t *testing.T) {
 	}
 	if n := dst.writes.Load() - writes; n != 0 {
 		t.Fatalf("second run wrote %d requests", n)
+	}
+}
+
+// Signatures published after a tag was mirrored still reach the target,
+// without copying the image again.
+func TestRunSyncsReferrersOfUpToDateTags(t *testing.T) {
+	src := newRegistry(t, regOpts{referrers: true})
+	dst := newRegistry(t, regOpts{referrers: true})
+	img := image(t)
+	d := push(t, src.repo, v100, img)
+	req := Request{Source: src.repo, Target: dst.repo, Policy: tags.Policy{Tags: []string{v100}}}
+	if _, err := Run(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	referrer := pushReferrer(t, src.repo, *must(partial.Descriptor(img)))
+	sig := fallbackTag(d) + ".sig"
+	sigDigest := push(t, src.repo, sig, image(t))
+	before := len(dst.manifestPuts())
+
+	res, err := Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run: %v (%+v)", err, res)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Referrers != 2 || len(res.Copied) != 0 {
+		t.Fatalf("result %+v", res)
+	}
+	if _, ok := headDigest(t, dst.repo.Digest(referrer.String())); !ok {
+		t.Fatal("new referrer not copied")
+	}
+	if got, _ := headDigest(t, dst.repo.Tag(sig)); got != sigDigest.String() {
+		t.Fatalf("signature tag digest %s, want %s", got, sigDigest)
+	}
+	for _, p := range dst.manifestPuts()[before:] {
+		if strings.HasSuffix(p, "/"+v100) || strings.HasSuffix(p, "/"+d.String()) {
+			t.Fatalf("image re-copied: PUT %s", p)
+		}
+	}
+
+	writes := dst.writes.Load()
+	res, err = Run(context.Background(), req)
+	if err != nil || len(res.Skipped) != 1 || res.Skipped[0].Referrers != 2 {
+		t.Fatalf("third run: %v %+v", err, res)
+	}
+	if n := dst.writes.Load() - writes; n != 0 {
+		t.Fatalf("third run wrote %d requests", n)
 	}
 }
 
