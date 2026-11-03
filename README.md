@@ -35,16 +35,25 @@ other change.
 ## How it works
 
 ```mermaid
-flowchart LR
-  subgraph cluster [Kubernetes cluster]
-    AM[ArtifactMirror<br/>team namespace] --> C[Tagwarden controller]
-    T[ClusterMirrorTarget<br/>platform team] --> C
-    C -->|CronJob + spec| J[sync Job<br/>operator namespace]
-    J -->|result| C
-  end
-  J -->|list tags, copy by digest| P[HTTPS proxy<br/>optional]
-  P --> U[(Upstream registries)]
-  J -->|push| R[(Your OCI registry)]
+sequenceDiagram
+  actor Team
+  participant C as Controller
+  participant J as Sync Job
+  participant P as Proxy
+  participant U as Upstream
+  participant R as Your registry
+
+  Team->>C: apply ArtifactMirror
+  C->>C: check against ClusterMirrorTarget
+  C->>J: create CronJob
+  Note over J: on schedule
+  J->>P: list tags
+  P->>U: list tags
+  J->>P: fetch manifests and blobs
+  P->>U: fetch
+  J->>R: push by digest, with signatures
+  J->>C: report result
+  C->>Team: update mirror status
 ```
 
 There are two resources:
