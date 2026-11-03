@@ -261,6 +261,14 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "clustermirrortarget")
 		os.Exit(1)
 	}
+	if err := (&controller.AutoMirrorReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Recorder:  mgr.GetEventRecorder("tagwarden"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "automirror")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

@@ -6,11 +6,17 @@ import (
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 )
 
+const (
+	tag127       = "1.27"
+	libraryNginx = "library/nginx"
+	repoAB       = "a/b"
+)
+
 func TestParseImage(t *testing.T) {
 	tgt := &mirrorv1alpha1.ClusterMirrorTarget{Spec: mirrorv1alpha1.ClusterMirrorTargetSpec{
-		Registry:       "registry.example.internal:8443",
-		AllowedSources: []mirrorv1alpha1.RegistryHost{"docker.io", "ghcr.io", "reg.example.com:5000"},
-		AutoMirror:     &mirrorv1alpha1.AutoMirror{Project: "shared"},
+		Registry:       targetRegistry,
+		AllowedSources: []mirrorv1alpha1.RegistryHost{dockerHubHost, ghcrRegistry, "reg.example.com:5000"},
+		AutoMirror:     &mirrorv1alpha1.AutoMirror{Project: sharedProject},
 	}}
 	dig := "@sha256:" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	tests := []struct {
@@ -18,14 +24,14 @@ func TestParseImage(t *testing.T) {
 		want    imageSource
 		wantErr bool
 	}{
-		{"nginx:1.27", imageSource{"docker.io", "library/nginx", "1.27"}, false},
-		{"nginx", imageSource{"docker.io", "library/nginx", "latest"}, false},
-		{"ghcr.io/org/app:v1" + dig, imageSource{"ghcr.io", "org/app", "v1"}, false},
+		{"nginx:" + tag127, imageSource{dockerHubHost, libraryNginx, tag127}, false},
+		{"nginx", imageSource{dockerHubHost, libraryNginx, "latest"}, false},
+		{"ghcr.io/org/app:v1" + dig, imageSource{ghcrRegistry, "org/app", "v1"}, false},
 		{"ghcr.io/org/app" + dig, imageSource{}, true},
-		{"registry.example.internal:8443/shared/docker.io/library/nginx:1.27", imageSource{"docker.io", "library/nginx", "1.27"}, false},
-		{"registry.example.internal:8443/shared/reg.example.com-5000/a/b:2", imageSource{"reg.example.com:5000", "a/b", "2"}, false},
-		{"registry.example.internal:8443/shared/quay.io/a/b:2", imageSource{}, true},
-		{"registry.example.internal:8443/other/app:2", imageSource{"registry.example.internal:8443", "other/app", "2"}, false},
+		{targetRegistry + "/shared/docker.io/library/nginx:" + tag127, imageSource{dockerHubHost, libraryNginx, tag127}, false},
+		{targetRegistry + "/shared/reg.example.com-5000/a/b:2", imageSource{"reg.example.com:5000", repoAB, "2"}, false},
+		{targetRegistry + "/shared/quay.io/a/b:2", imageSource{}, true},
+		{targetRegistry + "/other/app:2", imageSource{targetRegistry, "other/app", "2"}, false},
 		{"UPPER/case:1", imageSource{}, true},
 	}
 	for _, tc := range tests {
