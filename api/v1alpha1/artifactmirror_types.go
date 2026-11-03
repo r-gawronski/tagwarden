@@ -59,7 +59,9 @@ type Target struct {
 	Project ProjectName `json:"project"`
 
 	// repository overrides the path inside the project.
-	// Defaults to <source registry>/<source repository>.
+	// Defaults to <source registry>/<source repository>. A different path
+	// requires allowRepositoryOverride: true on the project in the
+	// ClusterMirrorTarget; otherwise the mirror is refused.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*$`
