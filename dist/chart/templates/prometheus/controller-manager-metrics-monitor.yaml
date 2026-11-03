@@ -30,20 +30,8 @@ spec:
     {{- if .Values.metrics.secure }}
     tlsConfig:
       serverName: {{ include "tagwarden.resourceName" (dict "suffix" "controller-manager-metrics-service" "context" $) }}.{{ .Release.Namespace }}.svc
-      {{- if .Values.certManager.enabled }}
-      ca:
-        secret:
-          name: metrics-server-cert
-          key: ca.crt
-      cert:
-        secret:
-          name: metrics-server-cert
-          key: tls.crt
-      keySecret:
-        name: metrics-server-cert
-        key: tls.key
-      {{- else }}
-      insecureSkipVerify: true
+      {{- with .Values.prometheus.tlsConfig }}
+      {{- toYaml . | nindent 6 }}
       {{- end }}
     {{- end }}
   selector:
