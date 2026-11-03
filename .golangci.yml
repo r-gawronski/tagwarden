@@ -1,6 +1,8 @@
 version: "2"
 run:
   allow-parallel-runners: true
+  build-tags:
+    - e2e
 linters:
   default: none
   enable:
@@ -57,7 +59,11 @@ linters:
       - linters:
           - gosec
         text: G204
-        path: test/utils/
+        path: test/(utils|e2e)/
+      # kubectl argument lists repeat verbs and flags by nature.
+      - linters:
+          - goconst
+        path: test/e2e/
     paths:
       - third_party$
       - builtin$
