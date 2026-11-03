@@ -303,12 +303,26 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		expectLabels(proxied, mirrorTarget, EgressProxy)
 
 		// NetworkPolicies select by these labels, so a hand edit is reverted.
+		// Labels outside tagwarden.dev/, such as from a webhook, stay.
 		cj, _ := cronJob(proxied)()
 		podLabels := cj.Spec.JobTemplate.Spec.Template.Labels
-		delete(podLabels, LabelEgress)
-		podLabels[LabelTarget] = "other-target"
+		podLabels["example.com/injected"] = "yes"
 		Expect(k8sClient.Update(ctx, cj)).To(Succeed())
-		expectLabels(proxied, mirrorTarget, EgressProxy)
+		Consistently(func() map[string]string {
+			got, _ := cronJob(proxied)()
+			return got.Spec.JobTemplate.Spec.Template.Labels
+		}, "2s").Should(HaveKeyWithValue("example.com/injected", "yes"))
+
+		for _, edit := range []func(map[string]string){
+			func(l map[string]string) { delete(l, LabelEgress) },
+			func(l map[string]string) { l[LabelEgress] = EgressDirect },
+			func(l map[string]string) { l[LabelTarget] = "other-target" },
+		} {
+			cj, _ = cronJob(proxied)()
+			edit(cj.Spec.JobTemplate.Spec.Template.Labels)
+			Expect(k8sClient.Update(ctx, cj)).To(Succeed())
+			expectLabels(proxied, mirrorTarget, EgressProxy)
+		}
 
 		t := createReadyTarget("direct-target", func(t *mirrorv1alpha1.ClusterMirrorTarget) { t.Spec.Proxy = nil })
 		direct := newMirror(teamA, "egress-direct")
