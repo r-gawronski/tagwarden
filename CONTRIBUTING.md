@@ -31,6 +31,25 @@ go tool govulncheck ./...
 
 Commit any generated files that change. CI runs the same checks.
 
+## End-to-end tests
+
+`make test-e2e` needs Docker, kubectl and Helm. It creates a kind cluster
+(kindnet enforces NetworkPolicy), builds the operator image, loads it into
+kind, installs the chart from `dist/chart` and deletes the cluster when the
+tests pass.
+
+The mirror tests deploy into `e2e-infra` a source and a target registry
+(zot, TLS from a CA the test generates, basic auth on the target) and a
+Squid proxy with basic auth. The source is reachable as
+`source.example.internal` only through the proxy. NetworkPolicies let the
+sync pods reach DNS, the proxy and the target, nothing else. The tests seed
+the source, start sync Jobs with `kubectl create job --from=cronjob/...`
+and check the target, the referrers and the mirror status. CI needs no
+internet access beyond pulling images.
+
+`E2E_INTERNET=1 make test-e2e` also mirrors `registry.k8s.io/pause`
+through the proxy.
+
 ## Security
 
 Never report vulnerabilities in public issues or pull requests. See [SECURITY.md](SECURITY.md).
