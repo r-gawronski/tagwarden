@@ -231,3 +231,17 @@ patches:
 #     fieldPath: .metadata.name
 #   targets: # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
 # +kubebuilder:scaffold:crdkustomizecainjectionname
+
+# Sync Jobs run the manager image in sync mode. The replacement runs here,
+# after the image is set, so SYNC_IMAGE always follows the manager image.
+# Merge the commented cert-manager replacements above into this list when
+# enabling them.
+replacements:
+- source:
+    kind: Deployment
+    fieldPath: spec.template.spec.containers.[name=manager].image
+  targets:
+  - select:
+      kind: Deployment
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=SYNC_IMAGE].value
