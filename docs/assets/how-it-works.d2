@@ -1,0 +1,24 @@
+# Source of how-it-works-light.svg and how-it-works-dark.svg.
+# Render:
+#   d2 --theme 0 --pad 20 how-it-works.d2 how-it-works-light.svg
+#   d2 --theme 200 --pad 20 how-it-works.d2 how-it-works-dark.svg
+direction: right
+
+cluster: Kubernetes cluster {
+  mirror: ArtifactMirror {shape: page}
+  target: ClusterMirrorTarget {shape: page}
+  controller: Controller {shape: hexagon}
+  job: Sync Job {style.multiple: true}
+
+  mirror -> controller: team
+  target -> controller: platform
+  controller -> job: CronJob
+}
+
+proxy: HTTPS proxy
+upstream: Upstream {shape: cylinder}
+registry: Your registry {shape: cylinder}
+
+cluster.job -> proxy: list, fetch
+proxy -> upstream
+cluster.job -> registry: push by digest {style.stroke-width: 3}
