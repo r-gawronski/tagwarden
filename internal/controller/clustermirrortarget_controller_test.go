@@ -90,11 +90,14 @@ func newTarget(name string) *mirrorv1alpha1.ClusterMirrorTarget {
 }
 
 // createReadyTarget creates a target with valid Secrets and waits for Ready.
-func createReadyTarget(name string) *mirrorv1alpha1.ClusterMirrorTarget {
+func createReadyTarget(name string, mutate ...func(*mirrorv1alpha1.ClusterMirrorTarget)) *mirrorv1alpha1.ClusterMirrorTarget {
 	for _, s := range targetSecrets(name) {
 		Expect(k8sClient.Create(ctx, s)).To(Succeed())
 	}
 	t := newTarget(name)
+	for _, f := range mutate {
+		f(t)
+	}
 	Expect(k8sClient.Create(ctx, t)).To(Succeed())
 	Eventually(func() *metav1.Condition { return targetReady(name) }).Should(
 		HaveField("Status", metav1.ConditionTrue))

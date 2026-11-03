@@ -18,15 +18,20 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -43,8 +48,41 @@ import (
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
-// operatorNamespace holds the Secrets, CronJobs and Jobs in the tests.
-const operatorNamespace = "tagwarden-system"
+const (
+	// operatorNamespace holds the Secrets, CronJobs and Jobs in the tests.
+	operatorNamespace = "tagwarden-system"
+	syncImage         = "registry.example.internal/tagwarden:test"
+	deniedCIDR        = "10.96.0.0/12"
+)
+
+// recorder keeps the Events of the mirror controller.
+var recorder = &testRecorder{}
+
+type testRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+// Eventf records "namespace/name type reason note".
+func (t *testRecorder) Eventf(regarding, _ runtime.Object, eventtype, reason, _, note string, args ...any) {
+	o := regarding.(client.Object)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.events = append(t.events, fmt.Sprintf("%s/%s %s %s %s", o.GetNamespace(), o.GetName(), eventtype, reason, fmt.Sprintf(note, args...)))
+}
+
+// Events returns the recorded Events for a mirror.
+func (t *testRecorder) Events(namespace, name string) []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []string
+	for _, e := range t.events {
+		if strings.HasPrefix(e, namespace+"/"+name+" ") {
+			out = append(out, e)
+		}
+	}
+	return out
+}
 
 var (
 	ctx       context.Context
@@ -64,6 +102,7 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
+	SetDefaultEventuallyTimeout(10 * time.Second)
 
 	var err error
 	err = mirrorv1alpha1.AddToScheme(scheme.Scheme)
@@ -104,6 +143,14 @@ var _ = BeforeSuite(func() {
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Namespace: operatorNamespace,
+	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&ArtifactMirrorReconciler{
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    recorder,
+		Namespace:   operatorNamespace,
+		SyncImage:   syncImage,
+		DeniedCIDRs: []string{deniedCIDR},
 	}).SetupWithManager(mgr)).To(Succeed())
 	go func() {
 		defer GinkgoRecover()
