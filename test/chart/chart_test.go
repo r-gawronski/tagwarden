@@ -142,8 +142,11 @@ func TestTrivyDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	if strings.Contains(strings.ToLower(out), "trivy") {
-		t.Error("trivy.enabled=false renders trivy objects or flags")
+	// CRD descriptions name Trivy; objects and flags must not.
+	for doc := range strings.SplitSeq(out, "\n---\n") {
+		if !strings.Contains(doc, "kind: CustomResourceDefinition\n") && strings.Contains(strings.ToLower(doc), "trivy") {
+			t.Errorf("trivy.enabled=false renders trivy objects or flags:\n%s", doc)
+		}
 	}
 }
 
