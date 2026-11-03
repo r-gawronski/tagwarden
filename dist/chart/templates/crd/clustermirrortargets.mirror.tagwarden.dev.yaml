@@ -1,0 +1,356 @@
+{{- if .Values.crd.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crd.keep }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: clustermirrortargets.mirror.tagwarden.dev
+spec:
+  group: mirror.tagwarden.dev
+  names:
+    kind: ClusterMirrorTarget
+    listKind: ClusterMirrorTargetList
+    plural: clustermirrortargets
+    singular: clustermirrortarget
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.registry
+      name: Registry
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ClusterMirrorTarget is a target registry owned by the platform
+          team.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ClusterMirrorTarget
+            properties:
+              allowedSources:
+                description: allowedSources lists the upstream registry hosts that
+                  mirrors may pull from.
+                items:
+                  description: |-
+                    RegistryHost is a registry host name or bracketed IP address with an
+                    optional port, for example registry.example.internal:8443 or [::1]:5000.
+                    It has no scheme, credentials or path.
+                  maxLength: 253
+                  minLength: 1
+                  type: string
+                  x-kubernetes-validations:
+                  - message: must be host[:port] without a scheme, credentials or
+                      path
+                    rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
+                maxItems: 100
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              caBundleSecretRef:
+                description: caBundleSecretRef holds the CA bundle for the target
+                  registry.
+                properties:
+                  key:
+                    default: ca.crt
+                    description: key in the Secret that holds the PEM data.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  name:
+                    description: name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              clientCertSecretRef:
+                description: |-
+                  clientCertSecretRef holds a client certificate for mTLS to the target registry
+                  (a kubernetes.io/tls Secret).
+                properties:
+                  name:
+                    description: name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              credentialsSecretRef:
+                description: |-
+                  credentialsSecretRef holds the push credentials for the target registry
+                  (a kubernetes.io/dockerconfigjson Secret in the operator namespace).
+                properties:
+                  name:
+                    description: name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              policy:
+                default: {}
+                description: policy holds the default policy for mirrors that use
+                  this target.
+                properties:
+                  onTagMutation:
+                    default: Fail
+                    description: onTagMutation is the action taken when an upstream
+                      tag points to a new digest.
+                    enum:
+                    - Fail
+                    - Overwrite
+                    - Ignore
+                    type: string
+                type: object
+              projects:
+                description: |-
+                  projects lists the target registry projects that mirrors may push to,
+                  and which namespaces may use each one. A mirror may push only to a
+                  listed project whose namespaceSelector matches the mirror's namespace.
+                  The controller enforces this at reconcile.
+                items:
+                  description: TargetProject is a project in the target registry and
+                    the namespaces allowed to use it.
+                  properties:
+                    name:
+                      description: name of the project, a single path segment.
+                      maxLength: 255
+                      minLength: 1
+                      pattern: ^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*$
+                      type: string
+                    namespaceSelector:
+                      description: |-
+                        namespaceSelector selects the namespaces whose ArtifactMirrors may push
+                        to this project. It is required so that access is always an explicit
+                        decision. An empty selector ({}) allows every namespace, which suits a
+                        shared project. Team projects use a label selector.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                  required:
+                  - name
+                  - namespaceSelector
+                  type: object
+                maxItems: 100
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              proxy:
+                description: proxy configures the proxy for upstream traffic.
+                properties:
+                  caBundleSecretRef:
+                    description: |-
+                      caBundleSecretRef holds the CA that signs the proxy certificates, for example a TLS-inspection CA.
+                      It is trusted only by the sync Job.
+                    properties:
+                      key:
+                        default: ca.crt
+                        description: key in the Secret that holds the PEM data.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        description: name of the Secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  credentialsSecretRef:
+                    description: |-
+                      credentialsSecretRef holds the proxy username and password
+                      (a kubernetes.io/basic-auth Secret).
+                    properties:
+                      name:
+                        description: name of the Secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  httpsProxy:
+                    description: |-
+                      httpsProxy is the proxy URL, for example http://proxy.example.internal:3128.
+                      Credentials must not be part of the URL. Use credentialsSecretRef.
+                    maxLength: 2048
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be an http or https URL
+                      rule: isURL(self) && (self.startsWith('http://') || self.startsWith('https://'))
+                    - message: must not contain credentials, use credentialsSecretRef
+                      rule: '!self.contains(''@'')'
+                  noProxy:
+                    description: noProxy lists hosts, domains and CIDRs that bypass
+                      the proxy.
+                    items:
+                      maxLength: 253
+                      type: string
+                    maxItems: 100
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - httpsProxy
+                type: object
+              registry:
+                description: registry is the target registry as host[:port], without
+                  a scheme.
+                maxLength: 253
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: must be host[:port] without a scheme, credentials or path
+                  rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
+            required:
+            - allowedSources
+            - credentialsSecretRef
+            - projects
+            - registry
+            type: object
+          status:
+            description: status defines the observed state of ClusterMirrorTarget
+            properties:
+              conditions:
+                description: |-
+                  conditions represent the current state. The Ready condition reports
+                  whether the resource is usable.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

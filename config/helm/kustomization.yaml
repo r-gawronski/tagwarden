@@ -1,0 +1,14 @@
+# Input for make helm. The kubebuilder helm plugin keeps only one
+# ServiceAccount, so the sync ServiceAccount is removed here and the chart
+# renders it from a hand-maintained template.
+resources:
+- ../default
+
+patches:
+- patch: |-
+    $patch: delete
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: tagwarden-sync
+      namespace: tagwarden-system

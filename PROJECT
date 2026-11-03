@@ -6,6 +6,10 @@ cliVersion: 4.16.0
 domain: tagwarden.dev
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v2-alpha:
+    manifests: dist/helm-input.yaml
+    output: dist
 projectName: tagwarden
 repo: github.com/r-gawronski/tagwarden
 resources:

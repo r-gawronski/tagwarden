@@ -1,0 +1,59 @@
+apiVersion: rbac.authorization.k8s.io/v1
+{{- if .Values.rbac.namespaced }}
+kind: Role
+{{- else }}
+kind: ClusterRole
+{{- end }}
+metadata:
+{{- if .Values.rbac.namespaced }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+  name: {{ include "tagwarden.resourceName" (dict "suffix" "manager-role" "context" $) }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - mirror.tagwarden.dev
+  resources:
+  - artifactmirrors
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - mirror.tagwarden.dev
+  resources:
+  - artifactmirrors/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - mirror.tagwarden.dev
+  resources:
+  - artifactmirrors/status
+  - clustermirrortargets/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - mirror.tagwarden.dev
+  resources:
+  - clustermirrortargets
+  verbs:
+  - get
+  - list
+  - watch

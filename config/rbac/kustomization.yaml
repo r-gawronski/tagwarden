@@ -31,3 +31,15 @@ resources:
 - clustermirrortarget_editor_role.yaml
 - clustermirrortarget_viewer_role.yaml
 
+
+# The namespace=system RBAC markers generate a Role with the same name as the
+# ClusterRole. The Helm chart generator writes one template per name, so the
+# Role gets its own name.
+patches:
+- target:
+    kind: Role
+    name: manager-role
+  patch: |-
+    - op: replace
+      path: /metadata/name
+      value: manager-namespaced-role
