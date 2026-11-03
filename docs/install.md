@@ -97,8 +97,14 @@ spec:
   `registry-1.docker.io` count as one registry, and listing a registry
   twice, under any of its names, gives `Ready=False` with reason
   `InvalidSpec`.
-- The CA Secret holds PEM certificates under the key. The CA is trusted
-  only for that source registry, on top of the system roots.
+- The CA Secret holds PEM certificates under the key. The CA is mounted
+  only in sync pods of that source, and trusted there for every host the
+  source transport reaches (the registry, its redirect and token hosts),
+  never for the target. It adds to the system roots.
+- Ports are not folded: `ghcr.io` and `ghcr.io:443` are different entries.
+  Use the host exactly as mirrors name it.
+- Use one Secret per source. One invalid source Secret sets the target
+  `Ready=False` and stops all its mirrors.
 - A missing or malformed Secret turns the target `Ready=False`
   (`SecretNotFound` or `InvalidSecret`); the message names the Secret and
   never its content.
