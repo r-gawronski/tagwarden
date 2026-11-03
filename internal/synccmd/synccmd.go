@@ -59,6 +59,9 @@ const maxTermination = syncspec.MaxReportSize
 
 type options struct {
 	targetAuth, targetCA, proxyCA, clientCertDir string
+	// sourceAuth and sourceCA are optional: a missing file means anonymous
+	// pulls and no extra source root.
+	sourceAuth, sourceCA string
 	// allowLoopback lets loopback addresses pass the source checks. Only
 	// tests set it, for in-process registries on 127.0.0.1; every other
 	// internal address is still refused.
@@ -79,6 +82,7 @@ func Run(ctx context.Context, args []string, stdout io.Writer, termPath string) 
 	o := options{
 		targetAuth: syncspec.TargetAuthFile, targetCA: syncspec.TargetCAFile,
 		proxyCA: syncspec.ProxyCAFile, clientCertDir: syncspec.ClientCertDir,
+		sourceAuth: syncspec.SourceAuthFile, sourceCA: syncspec.SourceCAFile,
 		lookup: net.DefaultResolver.LookupIPAddr,
 	}
 	return run(ctx, args, stdout, termPath, o, os.Getenv)
@@ -140,9 +144,15 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	if err := checkSource(ctx, spec, p, getenv("HTTPS_PROXY") != ""); err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
-	auth, err := targetAuth(p.targetAuth, spec.TargetRepo.RegistryStr())
+	auth, err := dockerAuth(p.targetAuth, spec.TargetRepo.RegistryStr(), "target")
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
+	}
+	srcAuth := authn.Anonymous
+	if _, err := os.Stat(p.sourceAuth); !errors.Is(err, fs.ErrNotExist) {
+		if srcAuth, err = dockerAuth(p.sourceAuth, spec.SourceRepo.RegistryStr(), "source"); err != nil {
+			return syncspec.Spec{}, sync.Request{}, err
+		}
 	}
 	srcT, dstT, err := transports(p, spec.DeniedPrefixes, getenv)
 	if err != nil {
@@ -156,19 +166,19 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 		OnTagMutation:     spec.OnTagMutation,
 		MaxTags:           spec.MaxTags,
 		MaxArtifactSize:   spec.MaxArtifactSize,
-		// Phase 1 pulls anonymously; per-source credentials come later.
-		SourceOpts: []remote.Option{remote.WithTransport(srcT), remote.WithAuth(authn.Anonymous)},
-		TargetOpts: []remote.Option{remote.WithTransport(dstT), remote.WithAuth(auth)},
+		SourceOpts:        []remote.Option{remote.WithTransport(srcT), remote.WithAuth(srcAuth)},
+		TargetOpts:        []remote.Option{remote.WithTransport(dstT), remote.WithAuth(auth)},
 	}, nil
 }
 
-// targetAuth reads the credentials for host from a dockerconfigjson file.
-// Only static auths are read: credsStore and credHelpers would run binaries.
-// Errors never quote the file content.
-func targetAuth(path, host string) (authn.Authenticator, error) {
+// dockerAuth reads the credentials for host from a dockerconfigjson file;
+// what names the registry role in errors. Only static auths are read:
+// credsStore and credHelpers would run binaries. Docker Hub names match
+// each other. Errors never quote the file content.
+func dockerAuth(path, host, what string) (authn.Authenticator, error) {
 	b, err := os.ReadFile(path) //nolint:gosec // fixed in-pod path
 	if err != nil {
-		return nil, fmt.Errorf("target credentials: %w", err)
+		return nil, fmt.Errorf("%s credentials: %w", what, err)
 	}
 	var cfg struct {
 		Auths map[string]struct {
@@ -176,14 +186,15 @@ func targetAuth(path, host string) (authn.Authenticator, error) {
 		} `json:"auths"`
 	}
 	if json.Unmarshal(b, &cfg) != nil {
-		return nil, errors.New("target credentials: not a valid dockerconfigjson")
+		return nil, fmt.Errorf("%s credentials: not a valid dockerconfigjson", what)
 	}
 	// Prefer the key that is exactly the host, else the first matching key
 	// in sorted order, so the choice never depends on map order.
 	keys := slices.Sorted(maps.Keys(cfg.Auths))
-	i := slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(k, host) })
+	same := func(a, b string) bool { return syncspec.CanonicalRegistry(a) == syncspec.CanonicalRegistry(b) }
+	i := slices.IndexFunc(keys, func(k string) bool { return same(k, host) })
 	if i < 0 {
-		i = slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(syncspec.AuthKeyHost(k), host) })
+		i = slices.IndexFunc(keys, func(k string) bool { return same(syncspec.AuthKeyHost(k), host) })
 	}
 	if i >= 0 {
 		a := cfg.Auths[keys[i]]
@@ -195,18 +206,18 @@ func targetAuth(path, host string) (authn.Authenticator, error) {
 			dec, err := base64.StdEncoding.DecodeString(a.Auth)
 			user, pass, ok := strings.Cut(string(dec), ":")
 			if err != nil || !ok {
-				return nil, fmt.Errorf("target credentials: invalid auth for %s", host)
+				return nil, fmt.Errorf("%s credentials: invalid auth for %s", what, host)
 			}
 			c.Username, c.Password = user, pass
 		}
 		return authn.FromConfig(c), nil
 	}
-	return nil, fmt.Errorf("target credentials: no entry for %s", host)
+	return nil, fmt.Errorf("%s credentials: no entry for %s", what, host)
 }
 
 // transports builds the source and target transports. The source trusts
-// only the proxy CA; the target also trusts its own CA and presents the
-// client certificate.
+// the proxy CA and the source CA; the target trusts the proxy CA and its
+// own CA and presents the client certificate.
 func transports(p options, denied []netip.Prefix, getenv func(string) string) (src, dst http.RoundTripper, err error) {
 	proxyCA, err := readOptional(p.proxyCA)
 	if err != nil {
@@ -232,7 +243,14 @@ func transports(p options, denied []netip.Prefix, getenv func(string) string) (s
 	} else if user != "" || pass != "" {
 		return nil, nil, errors.New("proxy credentials are set but HTTPS_PROXY is not")
 	}
+	sourceCA, err := readOptional(p.sourceCA)
+	if err != nil {
+		return nil, nil, err
+	}
 	so := o
+	if len(sourceCA) > 0 {
+		so.CAPEM = append(append(slices.Clone(o.CAPEM), '\n'), sourceCA...)
+	}
 	so.CheckHost = func(ctx context.Context, host string, proxied bool) error {
 		return p.checkHost(ctx, host, proxied, denied)
 	}
