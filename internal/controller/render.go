@@ -98,14 +98,19 @@ func canonicalSource(s mirrorv1alpha1.Source) string {
 	return reg + "/" + repo
 }
 
+// defaultTargetPath is the canonical source with the port separator and
+// IPv6 brackets turned into characters a repository path allows.
+func defaultTargetPath(m *mirrorv1alpha1.ArtifactMirror) string {
+	return strings.NewReplacer("[", "", "]", "", ":", "-").Replace(canonicalSource(m.Spec.Source))
+}
+
 // targetPath is the repository inside the project: the override, or the
-// canonical source with the port separator and IPv6 brackets turned into
-// characters a repository path allows.
+// default path.
 func targetPath(m *mirrorv1alpha1.ArtifactMirror) string {
 	if m.Spec.Target.Repository != "" {
 		return m.Spec.Target.Repository
 	}
-	return strings.NewReplacer("[", "", "]", "", ":", "-").Replace(canonicalSource(m.Spec.Source))
+	return defaultTargetPath(m)
 }
 
 // targetKey identifies the target repository of a mirror within the

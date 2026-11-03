@@ -33,20 +33,21 @@ const (
 
 // Condition reasons.
 const (
-	ReasonReady             = "Ready"
-	ReasonSecretNotFound    = "SecretNotFound"
-	ReasonInvalidSecret     = "InvalidSecret"
-	ReasonTargetNotReady    = "TargetNotReady"
-	ReasonProjectNotAllowed = "ProjectNotAllowed"
-	ReasonSourceNotAllowed  = "SourceNotAllowed"
-	ReasonInvalidSpec       = "InvalidSpec"
-	ReasonTargetConflict    = "TargetConflict"
-	ReasonSynced            = "Synced"
-	ReasonTruncated         = "Truncated"
-	ReasonSyncFailed        = "SyncFailed"
-	ReasonConfigRejected    = "ConfigRejected"
-	ReasonCrashed           = "Crashed"
-	ReasonOwnershipConflict = "OwnershipConflict"
+	ReasonReady                        = "Ready"
+	ReasonSecretNotFound               = "SecretNotFound"
+	ReasonInvalidSecret                = "InvalidSecret"
+	ReasonTargetNotReady               = "TargetNotReady"
+	ReasonProjectNotAllowed            = "ProjectNotAllowed"
+	ReasonSourceNotAllowed             = "SourceNotAllowed"
+	ReasonInvalidSpec                  = "InvalidSpec"
+	ReasonTargetConflict               = "TargetConflict"
+	ReasonSynced                       = "Synced"
+	ReasonTruncated                    = "Truncated"
+	ReasonSyncFailed                   = "SyncFailed"
+	ReasonConfigRejected               = "ConfigRejected"
+	ReasonCrashed                      = "Crashed"
+	ReasonOwnershipConflict            = "OwnershipConflict"
+	ReasonRepositoryOverrideNotAllowed = "RepositoryOverrideNotAllowed"
 )
 
 // CacheOptions limits the cache for the operator namespace types to that

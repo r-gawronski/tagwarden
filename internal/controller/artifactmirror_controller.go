@@ -267,9 +267,9 @@ func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, st
 }
 
 // authorize checks that the mirror may use the target: the project allows
-// its namespace, the source is allowed and not an internal address, and
-// the spec is valid (threat model T5, T6, T7, T16). It returns a reason and
-// message when it may not.
+// its namespace and any target.repository override, the source is allowed
+// and not an internal address, and the spec is valid (threat model T5, T6,
+// T7, T16, T23). It returns a reason and message when it may not.
 func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (string, string, error) {
 	i := slices.IndexFunc(t.Spec.Projects, func(p mirrorv1alpha1.TargetProject) bool { return p.Name == m.Spec.Target.Project })
 	if i < 0 {
@@ -282,6 +282,10 @@ func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alp
 	sel, err := metav1.LabelSelectorAsSelector(t.Spec.Projects[i].NamespaceSelector)
 	if err != nil || !sel.Matches(labels.Set(ns.Labels)) {
 		return ReasonProjectNotAllowed, fmt.Sprintf("project %s does not allow namespace %s", m.Spec.Target.Project, m.Namespace), nil
+	}
+	if p := targetPath(m); p != defaultTargetPath(m) && !t.Spec.Projects[i].AllowRepositoryOverride {
+		return ReasonRepositoryOverrideNotAllowed, fmt.Sprintf("project %s does not allow target.repository %s, use the default path %s",
+			m.Spec.Target.Project, p, defaultTargetPath(m)), nil
 	}
 
 	host := string(m.Spec.Source.Registry)
@@ -337,7 +341,8 @@ func (r *ArtifactMirrorReconciler) conflict(ctx context.Context, t *mirrorv1alph
 		if o.UID == m.UID || !o.DeletionTimestamp.IsZero() || !older(o, owner) {
 			continue
 		}
-		// A mirror that may not use the project cannot claim a path in it.
+		// A mirror that may not use the project or its override cannot
+		// claim a path in it.
 		reason, _, err := r.authorize(ctx, t, o)
 		if err != nil {
 			return "", "", err
