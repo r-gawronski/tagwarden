@@ -117,8 +117,9 @@ helm install tagwarden dist/chart --namespace tagwarden-system --create-namespac
 `targets` and `mirrors` in the values create `ClusterMirrorTarget` and
 `ArtifactMirror` objects. On the first install the CRDs are not served yet,
 so run `helm upgrade` with the same values once more to create them.
-Before `helm uninstall`, remove the mirrors and wait until their CronJobs are
-gone; the CRDs stay installed. See
+`helm uninstall` keeps the CRDs, targets and mirrors; reinstalling with the
+same release name adopts them. To remove mirrors, delete them while the
+operator still runs. See
 [docs/design/helm-chart.md](docs/design/helm-chart.md) for the values and
 for how the chart is generated (`make helm`).
 
