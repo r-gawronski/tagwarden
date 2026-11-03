@@ -4,6 +4,29 @@ metadata:
   labels:
     app.kubernetes.io/name: tagwarden
     app.kubernetes.io/managed-by: kustomize
-  name: clustermirrortarget-sample
+  name: default
 spec:
-  # TODO(user): Add fields here
+  registry: registry.example.internal
+  # Secrets live in the operator namespace.
+  credentialsSecretRef:
+    name: registry-push
+  caBundleSecretRef:
+    name: registry-ca
+    key: ca.crt
+  proxy:
+    httpsProxy: http://proxy.example.internal:3128
+    noProxy:
+      - .example.internal
+    caBundleSecretRef:
+      name: proxy-ca
+    credentialsSecretRef:
+      name: proxy-auth
+  allowedSources:
+    - registry.k8s.io
+    - ghcr.io
+  # Required. Use {} to allow all namespaces.
+  allowedNamespaces:
+    matchLabels:
+      mirror.tagwarden.dev/allowed: "true"
+  policy:
+    onTagMutation: Fail
