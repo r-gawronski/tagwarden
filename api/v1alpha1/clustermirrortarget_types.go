@@ -306,7 +306,49 @@ type TargetLimits struct {
 	MaxArtifactSize *resource.Quantity `json:"maxArtifactSize,omitempty"`
 }
 
+// Auto-mirror names. A pod annotated with AutoMirrorAnnotation: <target>
+// gets its images mirrored by generated ArtifactMirrors.
+const (
+	AutoMirrorAnnotation = "tagwarden.dev/auto-mirror"
+	// LabelGenerated is "true" on ArtifactMirrors the controller generated.
+	LabelGenerated = "tagwarden.dev/generated"
+	// LabelAutoTarget names the ClusterMirrorTarget of a generated mirror.
+	LabelAutoTarget = "tagwarden.dev/auto-target"
+)
+
+// AutoMirror lets pods ask for their images to be mirrored with the
+// tagwarden.dev/auto-mirror annotation. Generated mirrors go through the
+// same checks as any ArtifactMirror: project, allowedSources and limits.
+type AutoMirror struct {
+	// enabled turns annotation-driven mirroring on for this target. Without
+	// it the annotation only produces a Warning Event on the pod.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// project is the target project of generated mirrors. It must be listed
+	// in projects and allow the namespace of the pod.
+	// +required
+	Project ProjectName `json:"project"`
+
+	// schedule is the cron schedule of generated mirrors. It must respect
+	// limits.minSyncInterval. New tags also trigger a sync right away.
+	// +kubebuilder:default="0 */6 * * *"
+	// +kubebuilder:validation:MaxLength=100
+	// +kubebuilder:validation:XValidation:rule="self.matches('^(@(yearly|annually|monthly|weekly|daily|midnight|hourly)|[0-9A-Za-z*/,?-]+( +[0-9A-Za-z*/,?-]+){4})$')",message="must be a 5-field cron expression or a macro such as @daily"
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+
+	// maxMirrorsPerNamespace caps the generated mirrors of one namespace for
+	// this target. Defaults to 20.
+	// +kubebuilder:default=20
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=200
+	// +optional
+	MaxMirrorsPerNamespace *int32 `json:"maxMirrorsPerNamespace,omitempty"`
+}
+
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
+// +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.exists(p, p.name == self.autoMirror.project)",message="autoMirror.project must be listed in projects"
 // +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$')`,message="auth.awsWorkloadIdentity needs an Amazon ECR private registry host (<account>.dkr.ecr.<region>.amazonaws.com)"
@@ -397,6 +439,10 @@ type ClusterMirrorTargetSpec struct {
 	// Defaults apply when it is absent.
 	// +optional
 	Limits *TargetLimits `json:"limits,omitempty"`
+
+	// autoMirror lets annotated pods request mirrors of their images.
+	// +optional
+	AutoMirror *AutoMirror `json:"autoMirror,omitempty"`
 }
 
 // ClusterMirrorTargetStatus defines the observed state of ClusterMirrorTarget.

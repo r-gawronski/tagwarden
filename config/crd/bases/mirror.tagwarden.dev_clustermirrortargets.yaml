@@ -88,6 +88,47 @@ spec:
                 x-kubernetes-validations:
                 - message: set exactly one provider
                   rule: has(self.azureWorkloadIdentity) != has(self.awsWorkloadIdentity)
+              autoMirror:
+                description: autoMirror lets annotated pods request mirrors of their
+                  images.
+                properties:
+                  enabled:
+                    description: |-
+                      enabled turns annotation-driven mirroring on for this target. Without
+                      it the annotation only produces a Warning Event on the pod.
+                    type: boolean
+                  maxMirrorsPerNamespace:
+                    default: 20
+                    description: |-
+                      maxMirrorsPerNamespace caps the generated mirrors of one namespace for
+                      this target. Defaults to 20.
+                    format: int32
+                    maximum: 200
+                    minimum: 1
+                    type: integer
+                  project:
+                    description: |-
+                      project is the target project of generated mirrors. It must be listed
+                      in projects and allow the namespace of the pod.
+                    maxLength: 255
+                    minLength: 1
+                    pattern: ^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*$
+                    type: string
+                  schedule:
+                    default: 0 */6 * * *
+                    description: |-
+                      schedule is the cron schedule of generated mirrors. It must respect
+                      limits.minSyncInterval. New tags also trigger a sync right away.
+                    maxLength: 100
+                    type: string
+                    x-kubernetes-validations:
+                    - message: must be a 5-field cron expression or a macro such as
+                        @daily
+                      rule: self.matches('^(@(yearly|annually|monthly|weekly|daily|midnight|hourly)|[0-9A-Za-z*/,?-]+(
+                        +[0-9A-Za-z*/,?-]+){4})$')
+                required:
+                - project
+                type: object
               caBundleSecretRef:
                 description: caBundleSecretRef holds the CA bundle for the target
                   registry.
@@ -552,6 +593,8 @@ spec:
             - registry
             type: object
             x-kubernetes-validations:
+            - message: autoMirror.project must be listed in projects
+              rule: '!has(self.autoMirror) || self.projects.exists(p, p.name == self.autoMirror.project)'
             - message: set exactly one of credentialsSecretRef or auth
               rule: has(self.credentialsSecretRef) != has(self.auth)
             - message: auth.azureWorkloadIdentity needs an Azure Container Registry
