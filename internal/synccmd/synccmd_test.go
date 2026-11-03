@@ -159,7 +159,7 @@ func newEnv(t *testing.T, source, target name.Repository, pass string) *env {
 			proxyCA:       filepath.Join(dir, "missing", "proxy.crt"),
 			clientCertDir: filepath.Join(dir, "missing"),
 			// The in-process registries listen on 127.0.0.1.
-			allowInternal: true,
+			allowLoopback: true,
 			lookup:        net.DefaultResolver.LookupIPAddr,
 		},
 		vars:   map[string]string{},
@@ -319,6 +319,10 @@ func TestRunProxyCredentials(t *testing.T) {
 	}
 	e := newEnv(t, src, newRegistry(t, true), password)
 	e.vars["HTTPS_PROXY"] = proxy.URL
+	// The Job cannot resolve upstream names; the proxy does.
+	e.opts.lookup = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
 	e.vars[syncspec.ProxyUserEnv] = "proxy-user"
 	e.vars[syncspec.ProxyPasswordEnv] = proxyPassword
 
@@ -387,7 +391,7 @@ func TestRunRefusesSources(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.source, func(t *testing.T) {
 			e := newEnv(t, newRegistry(t, false), newRegistry(t, true), password)
-			e.opts.allowInternal = false
+			e.opts.allowLoopback = false
 			e.writeSpec(t, tc.source, `"allowedSources":[`+tc.allowed+`],"deniedCIDRs":[`+tc.denied+`]`)
 			code, out, msg := e.run(t)
 			if code != syncspec.ExitConfig || !strings.Contains(msg, tc.want) || out != "" {
@@ -439,16 +443,46 @@ func TestCheckAddrs(t *testing.T) {
 		"0.0.0.0":             false,
 		"::":                  false,
 		"::ffff:169.254.0.10": false,
+		"100.100.100.200":     false,
+		"0.1.2.3":             false,
+		"64:ff9b::7f00:1":     false,
+		"64:ff9b::a9fe:a9fe":  false,
+		"64:ff9b::cb00:710a":  true,
 	}
+	var o options
 	for a, ok := range cases {
-		err := checkAddrs([]netip.Addr{netip.MustParseAddr(a)}, denied)
+		err := o.checkAddrs([]netip.Addr{netip.MustParseAddr(a)}, denied)
 		if (err == nil) != ok {
 			t.Errorf("%s: err %v, want ok=%v", a, err, ok)
 		}
 	}
 	// Any internal address refuses the host.
-	if checkAddrs([]netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("127.0.0.1")}, nil) == nil {
+	if o.checkAddrs([]netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("127.0.0.1")}, nil) == nil {
 		t.Error("mixed addresses allowed")
+	}
+	// The test escape hatch allows loopback only.
+	o.allowLoopback = true
+	if o.checkAddrs([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil) != nil ||
+		o.checkAddrs([]netip.Addr{netip.MustParseAddr("169.254.169.254")}, nil) == nil {
+		t.Error("allowLoopback must allow loopback and nothing else")
+	}
+}
+
+// A redirect from an allowed source to an internal address is refused
+// before the dial, even with the loopback test escape hatch on.
+func TestRunRefusesRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254"+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+	src, err := name.NewRepository(strings.TrimPrefix(srv.URL, "http://")+"/team/app", name.StrictValidation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t, src, newRegistry(t, true), password)
+	code, out, msg := e.run(t)
+	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, "internal address 169.254.169.254") {
+		t.Fatalf("exit %d: %s\n%s", code, msg, out)
 	}
 }
 
@@ -475,11 +509,13 @@ func TestRunDNSErrors(t *testing.T) {
 	}{
 		{&net.DNSError{Err: "timeout", IsTimeout: true}, syncspec.ExitSyncFailed},
 		{&net.DNSError{Err: "server misbehaving", IsTemporary: true}, syncspec.ExitSyncFailed},
+		// Without a proxy nothing else can resolve the name.
+		{&net.DNSError{Err: "no such host", IsNotFound: true}, syncspec.ExitSyncFailed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.err.Err, func(t *testing.T) {
 			e := newEnv(t, src, newRegistry(t, true), password)
-			e.opts.allowInternal = false
+			e.opts.allowLoopback = false
 			e.opts.lookup = func(context.Context, string) ([]net.IPAddr, error) { return nil, tc.err }
 			e.writeSpec(t, "registry.example.internal/team/app", `"allowedSources":["registry.example.internal"]`)
 			code, out, msg := e.run(t)
