@@ -18,13 +18,17 @@ package registry
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -248,5 +252,108 @@ func TestRedactURL(t *testing.T) {
 	}
 	if got := RedactURL(nil); got != "" {
 		t.Fatalf("RedactURL(nil) = %q", got)
+	}
+}
+
+var errRefused = errors.New("refused")
+
+func TestCheckHost(t *testing.T) {
+	// The redirect target must be refused before any dial.
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	type call struct {
+		host    string
+		proxied bool
+	}
+	var calls []call
+	rt, err := NewTransport(Options{
+		CheckHost: func(_ context.Context, host string, proxied bool) error {
+			calls = append(calls, call{host, proxied})
+			if host == "169.254.169.254" {
+				return errRefused
+			}
+			return nil
+		},
+		CheckDial: func(a netip.Addr) error {
+			if a.IsLinkLocalUnicast() {
+				t.Fatal("dialed the refused redirect target")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&http.Client{Transport: rt}).Get(redirect.URL); !errors.Is(err, errRefused) {
+		t.Fatalf("err = %v, want refused", err)
+	}
+	want := []call{{"127.0.0.1", false}, {"169.254.169.254", false}}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls %v, want %v", calls, want)
+	}
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	ps := httptest.NewServer(&connectProxy{upstream: srv.Listener.Addr().String(), status: http.StatusOK})
+	defer ps.Close()
+	proxy, _ := url.Parse(ps.URL)
+	calls = nil
+	rt, err = NewTransport(Options{
+		CAPEM: caPEM(srv), ProxyURL: proxy,
+		CheckHost: func(_ context.Context, host string, proxied bool) error {
+			calls = append(calls, call{host, proxied})
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := get(t, rt, "https://example.com/v2/"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(calls, []call{{"example.com", true}}) {
+		t.Fatalf("calls %v", calls)
+	}
+}
+
+func TestCheckDial(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	var checked []netip.Addr
+	refuse := func(a netip.Addr) error {
+		checked = append(checked, a)
+		return errRefused
+	}
+
+	// localhost resolves to loopback; the connect is refused.
+	rt, err := NewTransport(Options{CAPEM: caPEM(srv), CheckDial: refuse})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := "https://localhost:" + strings.Split(srv.Listener.Addr().String(), ":")[1] + "/v2/"
+	if _, err := (&http.Client{Transport: rt}).Get(u); !errors.Is(err, errRefused) {
+		t.Fatalf("err = %v, want refused", err)
+	}
+	if len(checked) == 0 || !checked[0].IsLoopback() {
+		t.Fatalf("checked %v", checked)
+	}
+
+	// The proxy itself is not checked.
+	ps := httptest.NewServer(&connectProxy{upstream: srv.Listener.Addr().String(), status: http.StatusOK})
+	defer ps.Close()
+	proxy, _ := url.Parse(ps.URL)
+	checked = nil
+	rt, err = NewTransport(Options{CAPEM: caPEM(srv), ProxyURL: proxy, CheckDial: refuse})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := get(t, rt, "https://example.com/v2/"); err != nil {
+		t.Fatalf("via proxy: %v", err)
+	}
+	if len(checked) != 0 {
+		t.Fatalf("proxy dial checked: %v", checked)
 	}
 }
