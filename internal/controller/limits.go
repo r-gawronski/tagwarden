@@ -35,26 +35,32 @@ const (
 	defaultMaxKeepLatest          = 20
 	defaultMaxExplicitTags        = 50
 
-	// scheduleHorizon is how many runs of a schedule minGap looks at.
-	scheduleHorizon = 1000
+	// scheduleHorizon is how far ahead minGap looks. Every pattern of
+	// month days and weekdays, 29 February included, recurs within it.
+	scheduleHorizon = 5 * 365 * 24 * time.Hour
+	// maxScheduleRuns bounds the work of minGap. It is above the runs of a
+	// schedule every 5 minutes, the smallest minSyncInterval, in five years.
+	maxScheduleRuns = 600000
 )
 
 // minGap returns the shortest gap between consecutive runs of a cron
-// schedule over the next scheduleHorizon runs after from. It parses the
-// schedule the way the Kubernetes CronJob controller does. A schedule that
-// never runs has no gap and returns math.MaxInt64. Gaps are measured in
-// the location of from; a daylight saving change in the time zone of the
-// CronJob controller can shorten one gap.
-func minGap(schedule string, from time.Time) (time.Duration, error) {
+// schedule from from to scheduleHorizon later, or the first gap below
+// stop. It parses the schedule the way the Kubernetes CronJob controller
+// does. A schedule that never runs has no gap and returns math.MaxInt64.
+// Gaps are measured in the location of from; a daylight saving change in
+// the time zone of the CronJob controller can shorten one gap.
+func minGap(schedule string, from time.Time, stop time.Duration) (time.Duration, error) {
 	s, err := cron.ParseStandard(schedule)
 	if err != nil {
 		return 0, err
 	}
+	end := from.Add(scheduleHorizon)
 	gap := time.Duration(math.MaxInt64)
 	prev := s.Next(from)
-	for i := 0; i < scheduleHorizon && !prev.IsZero(); i++ {
+	// One minute is the smallest gap cron can express.
+	for i := 0; i < maxScheduleRuns && !prev.IsZero() && gap >= stop && gap > time.Minute; i++ {
 		next := s.Next(prev)
-		if next.IsZero() {
+		if next.IsZero() || next.After(end) {
 			break
 		}
 		gap = min(gap, next.Sub(prev))
@@ -82,12 +88,12 @@ func (r *ArtifactMirrorReconciler) checkLimits(ctx context.Context, t *mirrorv1a
 	if l.MinSyncInterval != nil {
 		interval = l.MinSyncInterval.Duration
 	}
-	gap, err := minGap(m.Spec.Schedule, time.Now().UTC())
+	gap, err := minGap(m.Spec.Schedule, time.Now().UTC(), interval)
 	if err != nil {
 		return ReasonInvalidSpec, fmt.Sprintf("schedule %q: %v", m.Spec.Schedule, err), nil
 	}
 	if gap < interval {
-		return ReasonScheduleTooFrequent, fmt.Sprintf("schedule %q runs every %s at its most frequent, below minSyncInterval %s of ClusterMirrorTarget %s",
+		return ReasonScheduleTooFrequent, fmt.Sprintf("schedule %q runs %s apart at least once, below minSyncInterval %s of ClusterMirrorTarget %s",
 			m.Spec.Schedule, gap, interval, t.Name), nil
 	}
 	if k, maxK := m.Spec.Tags.KeepLatest, limitOr(l.MaxKeepLatest, defaultMaxKeepLatest); k != nil && *k > maxK {
