@@ -69,7 +69,8 @@ manager:
   ## Also available: labels, annotations, pod.labels, pod.annotations,
   ## strategy, priorityClassName, topologySpreadConstraints.
 
-## Image of the sync Jobs. An empty repository means the manager image.
+## Image of the sync Jobs. An empty repository means the manager image; an
+## empty tag means manager.image.tag.
 syncImage:
   repository: ""
   tag: ""
