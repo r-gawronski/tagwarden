@@ -151,7 +151,11 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	labels, annotations := mirrorMeta(m)
 	cj.Labels, cj.Annotations = labels, annotations
 	sum := sha256.Sum256(spec)
-	podAnnotations := map[string]string{annotationSpecChecksum: hex.EncodeToString(sum[:])}
+	podAnnotations := map[string]string{
+		AnnotationMirrorNamespace: m.Namespace,
+		AnnotationMirrorName:      m.Name,
+		annotationSpecChecksum:    hex.EncodeToString(sum[:]),
+	}
 
 	readOnly := func(name, path string) corev1.VolumeMount {
 		return corev1.VolumeMount{Name: name, MountPath: path, ReadOnly: true}

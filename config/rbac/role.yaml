@@ -74,6 +74,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods
   - secrets
   verbs:
   - get
@@ -91,4 +92,12 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - get
+  - list
   - watch

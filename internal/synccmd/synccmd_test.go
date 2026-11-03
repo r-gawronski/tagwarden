@@ -76,7 +76,7 @@ func golden(t *testing.T, file string, got []byte) {
 func TestEncodeReport(t *testing.T) {
 	r := report{
 		Copied: 1, Skipped: 1, Mutated: 1, Failed: 1,
-		Synced: []syncedTag{{v110, "sha256:" + strings.Repeat("a", 64)}, {"v1.0.0", "sha256:" + strings.Repeat("b", 64)}},
+		Synced: []syncedTag{{Tag: v110, Digest: "sha256:" + strings.Repeat("a", 64)}, {Tag: "v1.0.0", Digest: "sha256:" + strings.Repeat("b", 64)}},
 		Errors: []string{"v0.9.0: resolve source tag: not found"},
 	}
 	golden(t, "report.golden", encode(r))
@@ -85,7 +85,7 @@ func TestEncodeReport(t *testing.T) {
 func TestEncodeReportTruncates(t *testing.T) {
 	var r report
 	for i := range 200 {
-		r.Synced = append(r.Synced, syncedTag{fmt.Sprintf("v1.0.%d-%s", 200-i, strings.Repeat("x", 100)), "sha256:" + strings.Repeat("c", 64)})
+		r.Synced = append(r.Synced, syncedTag{Tag: fmt.Sprintf("v1.0.%d-%s", 200-i, strings.Repeat("x", 100)), Digest: "sha256:" + strings.Repeat("c", 64)})
 	}
 	for i := range 10 {
 		r.Errors = append(r.Errors, fmt.Sprintf("v0.%d.0: %s", i, strings.Repeat("e", 200)))

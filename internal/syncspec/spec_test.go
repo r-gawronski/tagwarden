@@ -103,3 +103,28 @@ func TestAllowedSource(t *testing.T) {
 		}
 	}
 }
+
+func TestParseReport(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	r, err := ParseReport(`{"v":1,"copied":1,"synced":[{"tag":"v1.0.0","digest":"` + digest + `"}],"future":true}`)
+	if err != nil || r.Copied != 1 || len(r.Synced) != 1 || r.Synced[0].Digest != digest {
+		t.Fatalf("report %+v, err %v", r, err)
+	}
+	bad := map[string]string{
+		"empty":        ``,
+		"garbage":      `not json`,
+		"too large":    `{"v":1,"errors":["` + strings.Repeat("x", MaxReportSize) + `"]}`,
+		"no version":   `{"copied":1}`,
+		"new version":  `{"v":2}`,
+		"negative":     `{"v":1,"failed":-1}`,
+		"bad tag":      `{"v":1,"synced":[{"tag":"../x","digest":"` + digest + `"}]}`,
+		"bad digest":   `{"v":1,"synced":[{"tag":"v1","digest":"sha256:abc"}]}`,
+		"wrong type":   `{"v":1,"synced":"v1"}`,
+		"trailing obj": `{"v":1}{"v":1}`,
+	}
+	for name, msg := range bad {
+		if _, err := ParseReport(msg); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}

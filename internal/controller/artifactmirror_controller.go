@@ -67,6 +67,8 @@ const (
 // ArtifactMirrorReconciler renders each ArtifactMirror into a CronJob and a
 // spec ConfigMap in the operator namespace, after checking it against its
 // ClusterMirrorTarget, and reports sync results from finished Jobs.
+// Jobs and pods carry the mirror annotations, so their events map back to
+// the mirror.
 type ArtifactMirrorReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -195,7 +197,7 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		r.Recorder.Eventf(m, nil, corev1.EventTypeNormal, "Created", "Reconcile", "Created CronJob %s/%s", key.Namespace, key.Name)
 	}
 	r.setReady(m, metav1.ConditionTrue, ReasonReady, fmt.Sprintf("CronJob %s/%s mirrors to %s", key.Namespace, key.Name, targetRepo(&t, m)))
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.syncStatus(ctx, m)
 }
 
 func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, status metav1.ConditionStatus, reason, msg string) {
@@ -361,6 +363,8 @@ func (r *ArtifactMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return r.mirrorsMatching(ctx, client.InNamespace(o.GetName()))
 			}), builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		Watches(&batchv1.CronJob{}, byAnnotations).
+		Watches(&batchv1.Job{}, byAnnotations).
+		Watches(&corev1.Pod{}, byAnnotations).
 		Watches(&corev1.ConfigMap{}, byAnnotations).
 		Named("artifactmirror").
 		Complete(r)
