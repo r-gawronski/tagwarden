@@ -1,0 +1,49 @@
+# Second helm upgrade of the mirror e2e tests: targets and mirrors. The
+# Secrets and namespaces they reference exist before the upgrade.
+targets:
+  - name: e2e-proxy
+    spec:
+      registry: target.e2e-infra.svc.cluster.local:5000
+      credentialsSecretRef: {name: target-push}
+      caBundleSecretRef: {name: e2e-ca}
+      proxy:
+        httpsProxy: http://proxy.e2e-infra.svc.cluster.local:3128
+        noProxy: [target.e2e-infra.svc.cluster.local]
+        # The source has a private CA. The source transport trusts only the
+        # system roots and the proxy CA bundle, so the test CA goes here.
+        caBundleSecretRef: {name: e2e-ca}
+        credentialsSecretRef: {name: proxy-auth}
+      allowedSources: [source.example.internal:5000, registry.k8s.io]
+      projects:
+        - name: mirror
+          namespaceSelector:
+            matchLabels: {e2e.tagwarden.dev/team: "true"}
+  # e2e-proxy without the proxy.
+  - name: e2e-direct
+    spec:
+      registry: target.e2e-infra.svc.cluster.local:5000
+      credentialsSecretRef: {name: target-push}
+      caBundleSecretRef: {name: e2e-ca}
+      allowedSources: [source.example.internal:5000]
+      projects:
+        - name: mirror
+          namespaceSelector:
+            matchLabels: {e2e.tagwarden.dev/team: "true"}
+mirrors:
+  - name: app
+    namespace: e2e-team
+    spec:
+      targetRef: e2e-proxy
+      # Never due during a test run; the tests start Jobs by hand.
+      schedule: "0 0 1 1 *"
+      source: {registry: source.example.internal:5000, repository: e2e/app}
+      target: {project: mirror, repository: e2e/app}
+      tags: {keepLatest: 2}
+  - name: app-direct
+    namespace: e2e-team
+    spec:
+      targetRef: e2e-direct
+      schedule: "0 0 1 1 *"
+      source: {registry: source.example.internal:5000, repository: e2e/app}
+      target: {project: mirror, repository: e2e/app-direct}
+      tags: {keepLatest: 2}
