@@ -74,6 +74,23 @@ func useAzure(t *mirrorv1alpha1.ClusterMirrorTarget) {
 	}
 }
 
+const (
+	exampleRoleARN = "arn:aws:iam::123456789012:role/tagwarden-sync"
+	exampleRegion  = "eu-west-1"
+	exampleECR     = "123456789012.dkr.ecr." + exampleRegion + ".amazonaws.com"
+)
+
+// useAWS switches the target push to AWS workload identity.
+func useAWS(t *mirrorv1alpha1.ClusterMirrorTarget) {
+	t.Spec.Registry = exampleECR
+	t.Spec.CredentialsSecretRef = nil
+	t.Spec.Auth = &mirrorv1alpha1.RegistryAuth{AWSWorkloadIdentity: &mirrorv1alpha1.AWSWorkloadIdentityAuth{}}
+	t.Spec.WorkloadIdentity = &mirrorv1alpha1.WorkloadIdentity{
+		ServiceAccountName: "tagwarden-sync-aws",
+		AWS:                &mirrorv1alpha1.AWSIdentity{RoleARN: exampleRoleARN, Region: exampleRegion},
+	}
+}
+
 func validMirror(name string) *mirrorv1alpha1.ArtifactMirror {
 	return &mirrorv1alpha1.ArtifactMirror{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
@@ -155,6 +172,22 @@ var _ = Describe("API validation", func() {
 				{Registry: "src.azurecr.io", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
 				{Registry: "Other-ab12cd.AzureCR.us:443", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
 				{Registry: ghcrRegistry, SecretRef: &mirrorv1alpha1.SecretRef{Name: "ghcr-pull"}},
+			}
+		}),
+		Entry("AWS workload identity", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: "210987654321.dkr.ecr.eu-west-1.amazonaws.com", AWSWorkloadIdentity: &mirrorv1alpha1.AWSWorkloadIdentityAuth{}},
+				{Registry: "123456789012.DKR.ECR-FIPS.us-gov-west-1.amazonaws.com:443", AWSWorkloadIdentity: &mirrorv1alpha1.AWSWorkloadIdentityAuth{}},
+				{Registry: "other.azurecr.io", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
+			}
+			o.Spec.WorkloadIdentity.Azure = &mirrorv1alpha1.AzureIdentity{ClientID: zeroGUID, TenantID: zeroGUID}
+		}),
+		Entry("AWS role in China", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.Registry = "123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn"
+			o.Spec.WorkloadIdentity.AWS = &mirrorv1alpha1.AWSIdentity{
+				RoleARN: "arn:aws-cn:iam::123456789012:role/path/tagwarden-sync", Region: "cn-north-1",
 			}
 		}),
 	)
@@ -321,6 +354,59 @@ var _ = Describe("API validation", func() {
 			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
 				{Registry: "src.azurecr.io.example.internal", AzureWorkloadIdentity: &mirrorv1alpha1.AzureWorkloadIdentityAuth{}},
 			}
+		}),
+		Entry("auth with two providers", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.Auth.AzureWorkloadIdentity = &mirrorv1alpha1.AzureWorkloadIdentityAuth{}
+		}),
+		Entry("source credential with secret and AWS", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{{
+				Registry: exampleECR, SecretRef: &mirrorv1alpha1.SecretRef{Name: "ecr-pull"},
+				AWSWorkloadIdentity: &mirrorv1alpha1.AWSWorkloadIdentityAuth{},
+			}}
+		}),
+		Entry("AWS push to a non-ECR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.Registry = "registry.example.internal"
+		}),
+		Entry("AWS push to an ACR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.Registry = "myregistry.azurecr.io"
+		}),
+		Entry("Azure push to an ECR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAzure(o)
+			o.Spec.Registry = exampleECR
+		}),
+		Entry("AWS push to an ECR host on another port", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.Registry = exampleECR + ":5000"
+		}),
+		Entry("AWS pull from public ECR", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
+				{Registry: "public.ecr.aws", AWSWorkloadIdentity: &mirrorv1alpha1.AWSWorkloadIdentityAuth{}},
+			}
+		}),
+		Entry("AWS pull from a look-alike host", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{{
+				Registry:            exampleECR + ".example.internal",
+				AWSWorkloadIdentity: &mirrorv1alpha1.AWSWorkloadIdentityAuth{},
+			}}
+		}),
+		Entry("role ARN of a user", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.WorkloadIdentity.AWS.RoleARN = "arn:aws:iam::123456789012:user/sync"
+		}),
+		Entry("role ARN with a short account", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.WorkloadIdentity.AWS.RoleARN = "arn:aws:iam::12345:role/sync"
+		}),
+		Entry("unknown region", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.WorkloadIdentity.AWS.Region = "eu-west-1.example.internal"
+		}),
+		Entry("role and region in different partitions", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			useAWS(o)
+			o.Spec.WorkloadIdentity.AWS.Region = "cn-north-1"
 		}),
 		Entry("invalid ServiceAccount name", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			useAzure(o)
