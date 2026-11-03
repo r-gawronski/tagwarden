@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -392,11 +393,226 @@ type AutoMirror struct {
 	// +kubebuilder:validation:Maximum=200
 	// +optional
 	MaxMirrorsPerNamespace *int32 `json:"maxMirrorsPerNamespace,omitempty"`
+
+	// vulnerabilityGate scans the images of generated mirrors with a Trivy
+	// server and acts on known vulnerabilities. User-defined mirrors are
+	// never scanned.
+	// +optional
+	VulnerabilityGate *VulnerabilityGate `json:"vulnerabilityGate,omitempty"`
+}
+
+// GateAction is what the vulnerability gate does with a tag it cannot pass.
+// +kubebuilder:validation:Enum=Report;Block
+type GateAction string
+
+const (
+	// GateActionReport copies the tag and records the findings or the scan
+	// error.
+	GateActionReport GateAction = "Report"
+	// GateActionBlock does not copy the tag.
+	GateActionBlock GateAction = "Block"
+)
+
+// SeverityThreshold is the lowest severity that counts against a tag.
+// +kubebuilder:validation:Enum=Critical;High;Medium;Low
+type SeverityThreshold string
+
+// Severity thresholds.
+const (
+	SeverityThresholdCritical SeverityThreshold = "Critical"
+	SeverityThresholdHigh     SeverityThreshold = "High"
+	SeverityThresholdMedium   SeverityThreshold = "Medium"
+	SeverityThresholdLow      SeverityThreshold = "Low"
+)
+
+// OnVulnerableTag is what a re-scan does with a mirrored tag that has
+// findings.
+// +kubebuilder:validation:Enum=Report;Untag
+type OnVulnerableTag string
+
+const (
+	// OnVulnerableTagReport keeps the tag and reports it.
+	OnVulnerableTagReport OnVulnerableTag = "Report"
+	// OnVulnerableTagUntag deletes the target tag, not the digest.
+	OnVulnerableTagUntag OnVulnerableTag = "Untag"
+)
+
+// JavaDBMode selects how the scanner gets the Trivy Java DB.
+// +kubebuilder:validation:Enum=Disabled;PerJob
+type JavaDBMode string
+
+const (
+	// JavaDBDisabled skips JAR, WAR, EAR and PAR files. Their findings are
+	// missing, which status and audit report as javaScanned: false.
+	JavaDBDisabled JavaDBMode = "Disabled"
+	// JavaDBPerJob pulls the Java DB from javaDBRepository in each sync
+	// Job that has something to scan.
+	JavaDBPerJob JavaDBMode = "PerJob"
+)
+
+// VulnerabilityGate is the scan policy for the generated mirrors of a
+// target. Generated mirrors carry no policy of their own.
+// +kubebuilder:validation:XValidation:rule="!has(self.onVulnerableTag) || self.onVulnerableTag != 'Untag' || (has(self.action) && self.action == 'Block')",message="onVulnerableTag Untag needs action Block"
+type VulnerabilityGate struct {
+	// enabled turns the gate on. With action or onScanError Block,
+	// autoMirror.project is reserved for generated mirrors: a user-defined
+	// mirror there gets Ready=False with reason ProjectReservedForAutoMirror.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// action is what happens to a tag with findings: Report copies it and
+	// records the findings, Block does not copy it.
+	// +kubebuilder:default=Report
+	// +optional
+	Action GateAction `json:"action,omitempty"`
+
+	// severity is the lowest severity that counts against a tag.
+	// +kubebuilder:default=Critical
+	// +optional
+	Severity SeverityThreshold `json:"severity,omitempty"`
+
+	// ignoreUnfixed does not count findings without a fixed version.
+	// +optional
+	IgnoreUnfixed bool `json:"ignoreUnfixed,omitempty"`
+
+	// includeUnknown counts findings without a vendor severity as if they
+	// were at the severity threshold. They are always reported.
+	// +optional
+	IncludeUnknown bool `json:"includeUnknown,omitempty"`
+
+	// maxDBAge is the oldest server vulnerability DB a scan may use. An
+	// older DB is a scan error. At least 1h.
+	// +kubebuilder:default="72h"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h')",message="must be at least 1h"
+	// +optional
+	MaxDBAge *metav1.Duration `json:"maxDBAge,omitempty"`
+
+	// onScanError is what happens to a tag the gate could not judge:
+	// Report copies it and records the error, Block does not copy it.
+	// +kubebuilder:default=Report
+	// +optional
+	OnScanError GateAction `json:"onScanError,omitempty"`
+
+	// rescanInterval re-scans mirrored tags from the target registry this
+	// often. No re-scan when unset. At least 1h.
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h')",message="must be at least 1h"
+	// +optional
+	RescanInterval *metav1.Duration `json:"rescanInterval,omitempty"`
+
+	// onVulnerableTag is what a re-scan does with a mirrored tag that has
+	// findings. Untag needs action Block.
+	// +kubebuilder:default=Report
+	// +optional
+	OnVulnerableTag OnVulnerableTag `json:"onVulnerableTag,omitempty"`
+
+	// maxExceptionDuration caps how far after its creation a
+	// VulnerabilityException for this target may expire. Longer ones are
+	// ignored. Between 1h and 2160h (90 days).
+	// +kubebuilder:default="2160h"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1h') && duration(self) <= duration('2160h')",message="must be between 1h and 2160h"
+	// +optional
+	MaxExceptionDuration *metav1.Duration `json:"maxExceptionDuration,omitempty"`
+
+	// scanner configures the Trivy server and the client sidecar. All
+	// fields are optional with the server the chart deploys.
+	// +optional
+	Scanner *ScannerSpec `json:"scanner,omitempty"`
+}
+
+// TokenSecretKeyRef names a key in a Secret in the operator namespace
+// that holds a token.
+type TokenSecretKeyRef struct {
+	// name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Name string `json:"name"`
+
+	// key in the Secret that holds the token.
+	// +kubebuilder:default="token"
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// ScannerSpec is the Trivy server and the client image of the gate.
+// +kubebuilder:validation:XValidation:rule="has(self.image) == has(self.version)",message="set image and version together"
+// +kubebuilder:validation:XValidation:rule="!has(self.javaDB) || self.javaDB != 'PerJob' || has(self.javaDBRepository)",message="javaDB PerJob needs javaDBRepository"
+type ScannerSpec struct {
+	// url of the Trivy server. Defaults to the server the chart deploys.
+	// It must be https unless the host is a cluster Service name
+	// (<service>.<namespace>.svc[.<cluster domain>]).
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule="isURL(self) && (self.startsWith('https://') || self.startsWith('http://'))",message="must be an http or https URL"
+	// +kubebuilder:validation:XValidation:rule="!self.contains('@') && !self.contains('?') && !self.contains('#')",message="must not contain credentials, a query or a fragment"
+	// +kubebuilder:validation:XValidation:rule=`self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:[0-9]{1,5})?(/[^/]*)*$')`,message="must be https unless the host is a cluster Service name"
+	// +optional
+	URL string `json:"url,omitempty"`
+
+	// caBundleSecretRef holds the CA of an https server. It is mounted
+	// only in the scanner sidecar and read by the controller.
+	// +optional
+	CABundleSecretRef *SecretKeyRef `json:"caBundleSecretRef,omitempty"`
+
+	// tokenSecretRef holds the server token, sent in the Trivy-Token
+	// header. Defaults to the token Secret the chart creates. Only the
+	// scanner sidecar gets it.
+	// +optional
+	TokenSecretRef *TokenSecretKeyRef `json:"tokenSecretRef,omitempty"`
+
+	// image is the Trivy client image, pinned by digest, for example
+	// registry.example.internal/platform/ghcr.io/aquasecurity/trivy@sha256:<digest>.
+	// Defaults to the chart's Trivy image. Set it together with version.
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule=`self.matches(r'^[^@\s]+@sha256:[0-9a-f]{64}$')`,message="must be pinned by digest: <repository>@sha256:<64 hex>"
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// version is the Trivy version of image, for example 0.76.1. The
+	// server must have the same major and minor version.
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+\.[0-9]+$`
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// javaDB selects how JAR files are scanned. Disabled skips them and
+	// reports javaScanned: false; PerJob pulls the Java DB in each Job.
+	// +kubebuilder:default=Disabled
+	// +optional
+	JavaDB JavaDBMode `json:"javaDB,omitempty"`
+
+	// javaDBRepository is the Java DB in spec.registry with its tag, for
+	// example registry.example.internal/platform/ghcr.io/aquasecurity/trivy-java-db:1.
+	// Required with javaDB PerJob.
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule=`self.matches(r'^[^/@\s]+(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)+:[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$')`,message="must be <registry>/<repository>:<tag>"
+	// +optional
+	JavaDBRepository string `json:"javaDBRepository,omitempty"`
+
+	// timeout of one manifest scan. Between 1m and 1h.
+	// +kubebuilder:default="10m"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m') && duration(self) <= duration('1h')",message="must be between 1m and 1h"
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// storage is the size limit of the emptyDir that holds the artifact
+	// being scanned.
+	// +kubebuilder:default="20Gi"
+	// +kubebuilder:validation:XValidation:rule="quantity(string(self)).isGreaterThan(quantity('0'))",message="must be positive"
+	// +optional
+	Storage *resource.Quantity `json:"storage,omitempty"`
+
+	// resources of the scanner sidecar. Defaults to requests 100m and
+	// 256Mi, limits 2 CPUs and 2Gi.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.exists(p, p.name == self.autoMirror.project)",message="autoMirror.project must be listed in projects"
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.all(p, p.name != self.autoMirror.project || !has(p.allowRepositoryOverride) || !p.allowRepositoryOverride)",message="autoMirror.project must not allow repository overrides, so node pulls through a path rewrite stay bound to one source"
+// +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || !has(self.autoMirror.vulnerabilityGate) || !has(self.autoMirror.vulnerabilityGate.scanner) || !has(self.autoMirror.vulnerabilityGate.scanner.javaDBRepository) || self.autoMirror.vulnerabilityGate.scanner.javaDBRepository.startsWith(self.registry + '/')",message="autoMirror.vulnerabilityGate.scanner.javaDBRepository must be in spec.registry"
 // +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$')`,message="auth.awsWorkloadIdentity needs an Amazon ECR private registry host (<account>.dkr.ecr.<region>.amazonaws.com)"

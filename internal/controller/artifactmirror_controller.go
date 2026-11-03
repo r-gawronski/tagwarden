@@ -310,9 +310,14 @@ func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, st
 // authorize checks that the mirror may use the target: the project allows
 // its namespace and any target.repository override, the source is allowed
 // and not an internal address, the spec is valid and within the target's
-// limits (threat model T5, T6, T7, T10, T16, T23). It returns a reason and
+// limits, and stays out of a project reserved for generated mirrors (threat
+// model T5, T6, T7, T10, T16, T23, T36). It returns a reason and
 // message when it may not.
 func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (string, string, error) {
+	if projectReserved(t) && m.Spec.Target.Project == t.Spec.AutoMirror.Project && !isGenerated(t, m) {
+		return ReasonProjectReservedForAutoMirror, fmt.Sprintf("project %s of ClusterMirrorTarget %s is reserved for generated mirrors while its vulnerability gate can block; use another project",
+			m.Spec.Target.Project, t.Name), nil
+	}
 	i := slices.IndexFunc(t.Spec.Projects, func(p mirrorv1alpha1.TargetProject) bool { return p.Name == m.Spec.Target.Project })
 	if i < 0 {
 		return ReasonProjectNotAllowed, fmt.Sprintf("project %s is not listed in ClusterMirrorTarget %s", m.Spec.Target.Project, t.Name), nil

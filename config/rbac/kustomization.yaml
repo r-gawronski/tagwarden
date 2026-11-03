@@ -30,6 +30,10 @@ resources:
 - clustermirrortarget_admin_role.yaml
 - clustermirrortarget_editor_role.yaml
 - clustermirrortarget_viewer_role.yaml
+# VulnerabilityException gets only a viewer helper. Writing exceptions is
+# the job of the security team: the chart ships an approver ClusterRole
+# with an opt-in binding.
+- vulnerabilityexception_viewer_role.yaml
 
 
 # The namespace=system RBAC markers generate a Role with the same name as the

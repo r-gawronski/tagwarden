@@ -30,4 +30,12 @@ resources:
   kind: ArtifactMirror
   path: github.com/r-gawronski/tagwarden/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: tagwarden.dev
+  group: mirror
+  kind: VulnerabilityException
+  path: github.com/r-gawronski/tagwarden/api/v1alpha1
+  version: v1alpha1
 version: "3"

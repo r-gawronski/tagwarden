@@ -29,6 +29,20 @@ const (
 	ConditionReady = "Ready"
 	// ConditionSynced reports the result of the last finished sync.
 	ConditionSynced = "Synced"
+	// ConditionVulnerabilitiesFound is True on a generated mirror when a
+	// selected tag has findings.
+	ConditionVulnerabilitiesFound = "VulnerabilitiesFound"
+	// ConditionVulnerabilityGate is False on a generated mirror when tags
+	// could not be judged.
+	ConditionVulnerabilityGate = "VulnerabilityGate"
+	// ConditionScannerReady reports on a gated target whether the Trivy
+	// server is reachable and runs the client's major.minor version.
+	ConditionScannerReady = "ScannerReady"
+	// ConditionVulnerabilityDBReady reports on a gated target whether the
+	// server DB is younger than maxDBAge.
+	ConditionVulnerabilityDBReady = "VulnerabilityDBReady"
+	// ConditionActive reports whether a VulnerabilityException applies.
+	ConditionActive = "Active"
 )
 
 // Condition reasons.
@@ -51,6 +65,22 @@ const (
 	ReasonAmbiguousAllowedSources      = "AmbiguousAllowedSources"
 	ReasonScheduleTooFrequent          = "ScheduleTooFrequent"
 	ReasonLimitExceeded                = "LimitExceeded"
+	ReasonProjectReservedForAutoMirror = "ProjectReservedForAutoMirror"
+
+	// Vulnerability gate.
+	ReasonReported           = "Reported"
+	ReasonBlocked            = "Blocked"
+	ReasonClear              = "Clear"
+	ReasonDBStale            = "DBStale"
+	ReasonScannerUnavailable = "ScannerUnavailable"
+	ReasonVersionMismatch    = "VersionMismatch"
+	ReasonScanFailed         = "ScanFailed"
+
+	// VulnerabilityException.
+	ReasonActive         = "Active"
+	ReasonExpired        = "Expired"
+	ReasonTooLong        = "TooLong"
+	ReasonTargetNotFound = "TargetNotFound"
 )
 
 // CacheOptions limits the cache for the operator namespace types to that

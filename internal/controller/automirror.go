@@ -241,9 +241,37 @@ func (r *AutoMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 // generatedName is auto-<16 hex of sha256(registry/repository)>.
-func generatedName(s imageSource) string {
-	sum := sha256.Sum256([]byte(s.key()))
+func generatedName(s imageSource) string { return generatedNameOf(s.key()) }
+
+func generatedNameOf(src string) string {
+	sum := sha256.Sum256([]byte(src))
 	return "auto-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// isGenerated reports whether m is a generated mirror of t: the labels, the
+// name, the project and the default path that auto-mirror sets. A mirror
+// missing any of them, such as a generated name without the label, is a
+// user mirror.
+func isGenerated(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) bool {
+	return t.Spec.AutoMirror != nil &&
+		m.Labels[mirrorv1alpha1.LabelGenerated] == trueValue &&
+		m.Labels[mirrorv1alpha1.LabelAutoTarget] == targetLabel(t.Name) &&
+		m.Spec.TargetRef == t.Name &&
+		m.Spec.Type == mirrorv1alpha1.ArtifactTypeImage &&
+		m.Spec.Target.Project == t.Spec.AutoMirror.Project &&
+		m.Spec.Target.Repository == "" &&
+		m.Name == generatedNameOf(canonicalSource(m.Spec.Source))
+}
+
+// projectReserved reports whether autoMirror.project of t is reserved for
+// generated mirrors: the vulnerability gate is on and can block, so a user
+// mirror there would let an image skip the block (threat model T36).
+func projectReserved(t *mirrorv1alpha1.ClusterMirrorTarget) bool {
+	if t.Spec.AutoMirror == nil || t.Spec.AutoMirror.VulnerabilityGate == nil {
+		return false
+	}
+	g := t.Spec.AutoMirror.VulnerabilityGate
+	return g.Enabled && (g.Action == mirrorv1alpha1.GateActionBlock || g.OnScanError == mirrorv1alpha1.GateActionBlock)
 }
 
 // ensure creates or extends the generated mirror of one source repository
@@ -263,17 +291,15 @@ func (r *AutoMirrorReconciler) ensure(ctx context.Context, pod *corev1.Pod, t *m
 	}
 	state := s.key()
 
-	// A user-defined mirror of the same source and path wins.
-	var list mirrorv1alpha1.ArtifactMirrorList
-	if err := r.List(ctx, &list, client.InNamespace(pod.Namespace), client.MatchingFields{indexTargetKey: targetKey(desired)}); err != nil {
-		return err
-	}
-	for i := range list.Items {
-		o := &list.Items[i]
-		if o.Labels[mirrorv1alpha1.LabelGenerated] != trueValue && o.DeletionTimestamp.IsZero() && canonicalSource(o.Spec.Source) == canonicalSource(desired.Spec.Source) {
-			r.report(pod, state, "already:"+o.Name, corev1.EventTypeNormal, reasonAlreadyMirrored,
-				fmt.Sprintf("%s is mirrored by ArtifactMirror %s/%s", state, o.Namespace, o.Name))
-			return nil
+	// A user-defined mirror of the same source and path wins, unless the
+	// project is reserved: then it is refused and the generated one is used.
+	if !projectReserved(t) {
+		if o, err := r.userMirror(ctx, desired); err != nil || o != nil {
+			if o != nil {
+				r.report(pod, state, "already:"+o.Name, corev1.EventTypeNormal, reasonAlreadyMirrored,
+					fmt.Sprintf("%s is mirrored by ArtifactMirror %s/%s", state, o.Namespace, o.Name))
+			}
+			return err
 		}
 	}
 
@@ -370,6 +396,22 @@ func (r *AutoMirrorReconciler) ensure(ctx context.Context, pod *corev1.Pod, t *m
 
 	r.relay(pod, state, &cur, want)
 	return nil
+}
+
+// userMirror returns a user-defined mirror with the source and target path
+// of desired, or nil.
+func (r *AutoMirrorReconciler) userMirror(ctx context.Context, desired *mirrorv1alpha1.ArtifactMirror) (*mirrorv1alpha1.ArtifactMirror, error) {
+	var list mirrorv1alpha1.ArtifactMirrorList
+	if err := r.List(ctx, &list, client.InNamespace(desired.Namespace), client.MatchingFields{indexTargetKey: targetKey(desired)}); err != nil {
+		return nil, err
+	}
+	for i := range list.Items {
+		o := &list.Items[i]
+		if o.Labels[mirrorv1alpha1.LabelGenerated] != trueValue && o.DeletionTimestamp.IsZero() && canonicalSource(o.Spec.Source) == canonicalSource(desired.Spec.Source) {
+			return o, nil
+		}
+	}
+	return nil, nil
 }
 
 // relay reports the state of a generated mirror on the pod, whatever the

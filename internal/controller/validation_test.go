@@ -135,8 +135,9 @@ func validMirror(name string) *mirrorv1alpha1.ArtifactMirror {
 var _ = Describe("API validation", func() {
 	It("accepts the samples", func() {
 		samples := map[string]client.Object{
-			"mirror_v1alpha1_clustermirrortarget.yaml": &mirrorv1alpha1.ClusterMirrorTarget{},
-			"mirror_v1alpha1_artifactmirror.yaml":      &mirrorv1alpha1.ArtifactMirror{},
+			"mirror_v1alpha1_clustermirrortarget.yaml":    &mirrorv1alpha1.ClusterMirrorTarget{},
+			"mirror_v1alpha1_artifactmirror.yaml":         &mirrorv1alpha1.ArtifactMirror{},
+			"mirror_v1alpha1_vulnerabilityexception.yaml": &mirrorv1alpha1.VulnerabilityException{},
 		}
 		dir := os.DirFS("../../config/samples")
 		for file, obj := range samples {
