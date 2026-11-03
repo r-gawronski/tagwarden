@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
+	"slices"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -70,9 +72,18 @@ type Spec struct {
 	// MaxTags caps the upstream listing. Zero means tags.MaxTags.
 	MaxTags int `json:"maxTags,omitempty"`
 
-	// SourceRepo and TargetRepo are set by Decode.
-	SourceRepo name.Repository `json:"-"`
-	TargetRepo name.Repository `json:"-"`
+	// AllowedSources are the registry hosts, as host[:port], that the
+	// ClusterMirrorTarget allows. The Job re-checks Source against them.
+	AllowedSources []string `json:"allowedSources"`
+	// DeniedCIDRs are refused as source addresses on top of loopback,
+	// link-local and metadata addresses, for example the cluster pod and
+	// service CIDRs.
+	DeniedCIDRs []string `json:"deniedCIDRs,omitempty"`
+
+	// SourceRepo, TargetRepo and DeniedPrefixes are set by Decode.
+	SourceRepo     name.Repository `json:"-"`
+	TargetRepo     name.Repository `json:"-"`
+	DeniedPrefixes []netip.Prefix  `json:"-"`
 }
 
 // Decode reads and validates a spec. Unknown fields are rejected, so a
@@ -120,6 +131,16 @@ func (s *Spec) validate() error {
 	}
 	if s.MaxTags < 0 {
 		return errors.New("maxTags: must not be negative")
+	}
+	if len(s.AllowedSources) == 0 || slices.Contains(s.AllowedSources, "") {
+		return errors.New("allowedSources: at least one non-empty host is required")
+	}
+	for _, c := range s.DeniedCIDRs {
+		p, err := netip.ParsePrefix(c)
+		if err != nil {
+			return fmt.Errorf("deniedCIDRs: %w", err)
+		}
+		s.DeniedPrefixes = append(s.DeniedPrefixes, p)
 	}
 	return nil
 }

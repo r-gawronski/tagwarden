@@ -28,10 +28,13 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -130,10 +133,11 @@ func newRegistry(t *testing.T, auth bool) name.Repository {
 }
 
 type env struct {
-	dir   string
-	paths paths
-	vars  map[string]string
-	spec  string
+	dir    string
+	opts   options
+	vars   map[string]string
+	spec   string
+	target string
 }
 
 // newEnv writes a dockerconfigjson for target with pass and a spec.
@@ -142,21 +146,30 @@ func newEnv(t *testing.T, source, target name.Repository, pass string) *env {
 	dir := t.TempDir()
 	e := &env{
 		dir: dir,
-		paths: paths{
+		opts: options{
 			targetAuth:    filepath.Join(dir, "auth.json"),
 			targetCA:      filepath.Join(dir, "missing", "ca.crt"),
 			proxyCA:       filepath.Join(dir, "missing", "proxy.crt"),
 			clientCertDir: filepath.Join(dir, "missing"),
+			// The in-process registries listen on 127.0.0.1.
+			allowInternal: true,
 		},
-		vars: map[string]string{},
-		spec: filepath.Join(dir, "spec.json"),
+		vars:   map[string]string{},
+		spec:   filepath.Join(dir, "spec.json"),
+		target: target.String(),
 	}
 	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
 	cfg := fmt.Sprintf(`{"auths":{"https://%s/v1/":{"auth":%q}}}`, target.RegistryStr(), auth)
-	e.write(t, e.paths.targetAuth, cfg)
-	e.write(t, e.spec, fmt.Sprintf(`{"mirror":{"namespace":"team-a","name":"app"},"source":%q,"target":%q,
-		"tags":{"keepLatest":2},"onTagMutation":"Fail"}`, source.String(), target.String()))
+	e.write(t, e.opts.targetAuth, cfg)
+	e.writeSpec(t, source.String(), `"allowedSources":[`+strconv.Quote(source.RegistryStr())+`]`)
 	return e
+}
+
+// writeSpec writes a spec for source; extra holds the source check fields.
+func (e *env) writeSpec(t *testing.T, source, extra string) {
+	t.Helper()
+	e.write(t, e.spec, fmt.Sprintf(`{"mirror":{"namespace":"team-a","name":"app"},"source":%q,"target":%q,
+		"tags":{"keepLatest":2},"onTagMutation":"Fail",%s}`, source, e.target, extra))
 }
 
 func (e *env) write(t *testing.T, path, content string) {
@@ -171,7 +184,7 @@ func (e *env) run(t *testing.T) (int, string, string) {
 	t.Helper()
 	var out bytes.Buffer
 	term := filepath.Join(e.dir, "termination-log")
-	code := run(context.Background(), []string{"--spec", e.spec}, &out, term, e.paths, func(k string) string { return e.vars[k] })
+	code := run(context.Background(), []string{"--spec", e.spec}, &out, term, e.opts, func(k string) string { return e.vars[k] })
 	msg, err := os.ReadFile(term) //nolint:gosec // test temp dir
 	if err != nil {
 		t.Fatal(err)
@@ -317,13 +330,13 @@ func TestRunConfigErrors(t *testing.T) {
 	cases := map[string]func(e *env){
 		"bad spec":       func(e *env) { e.write(t, e.spec, `{"source":"x"}`) },
 		"missing spec":   func(e *env) { e.spec = filepath.Join(e.dir, "nope.json") },
-		"missing auth":   func(e *env) { e.paths.targetAuth = filepath.Join(e.dir, "nope") },
-		"auth elsewhere": func(e *env) { e.write(t, e.paths.targetAuth, `{"auths":{"other.example.internal":{"auth":"eDp5"}}}`) },
-		"bad auth":       func(e *env) { e.write(t, e.paths.targetAuth, `{"auths":`) },
-		"unreadable CA":  func(e *env) { e.paths.targetCA = e.dir },
-		"empty CA":       func(e *env) { e.paths.proxyCA = e.spec },
+		"missing auth":   func(e *env) { e.opts.targetAuth = filepath.Join(e.dir, "nope") },
+		"auth elsewhere": func(e *env) { e.write(t, e.opts.targetAuth, `{"auths":{"other.example.internal":{"auth":"eDp5"}}}`) },
+		"bad auth":       func(e *env) { e.write(t, e.opts.targetAuth, `{"auths":`) },
+		"unreadable CA":  func(e *env) { e.opts.targetCA = e.dir },
+		"empty CA":       func(e *env) { e.opts.proxyCA = e.spec },
 		"key without cert": func(e *env) {
-			e.paths.clientCertDir = e.dir
+			e.opts.clientCertDir = e.dir
 			e.write(t, filepath.Join(e.dir, "tls.key"), "x")
 		},
 		"proxy password without proxy": func(e *env) { e.vars[syncspec.ProxyPasswordEnv] = proxyPassword },
@@ -346,5 +359,87 @@ func TestRunConfigErrors(t *testing.T) {
 			t.Log(r.Errors[0])
 			assertNoSecrets(t, out, msg)
 		})
+	}
+}
+
+func TestRunRefusesSources(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	t.Cleanup(srv.Close)
+	local := strings.TrimPrefix(srv.URL, "http://")
+	cases := []struct{ source, allowed, denied, want string }{
+		{local + "/team/app", `"` + local + `"`, "", "internal"}, //nolint:goconst // readable fixtures
+		{"169.254.169.254/team/app", `"169.254.169.254"`, "", "internal"},
+		{"[::1]:5000/team/app", `"[::1]:5000"`, "", "internal"},
+		{"localhost:5000/team/app", `"localhost:5000"`, "", "internal"},
+		{"10.96.0.10/team/app", `"10.96.0.10"`, `"10.96.0.0/12"`, "denied"},
+		{"registry.example.internal/team/app", `"other.example.internal"`, "", "not in allowedSources"},
+		{"registry.example.internal:5000/team/app", `"registry.example.internal"`, "", "not in allowedSources"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.source, func(t *testing.T) {
+			e := newEnv(t, newRegistry(t, false), newRegistry(t, true), password)
+			e.opts.allowInternal = false
+			e.writeSpec(t, tc.source, `"allowedSources":[`+tc.allowed+`],"deniedCIDRs":[`+tc.denied+`]`)
+			code, out, msg := e.run(t)
+			if code != 2 || !strings.Contains(msg, tc.want) || out != "" {
+				t.Fatalf("exit %d: %s\n%s", code, msg, out)
+			}
+		})
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("refused source got %d requests", n)
+	}
+}
+
+func TestAllowedSource(t *testing.T) {
+	cases := []struct {
+		host    string
+		allowed []string
+		want    bool
+	}{
+		{"registry.k8s.io", []string{"quay.io", "registry.k8s.io"}, true}, //nolint:goconst // readable fixtures
+		{"Registry.K8s.io", []string{"registry.k8s.io"}, true},
+		{"registry.k8s.io", []string{"registry.k8s.io:443"}, false},
+		{"registry.k8s.io:5000", []string{"registry.k8s.io"}, false},
+		{"index.docker.io", []string{"docker.io"}, true}, //nolint:goconst // readable fixtures
+		{"index.docker.io", []string{"registry-1.docker.io"}, true},
+		{"docker.io", []string{"index.docker.io"}, true},
+		{"evil.docker.io", []string{"docker.io"}, false},
+	}
+	for _, tc := range cases {
+		if got := allowedSource(tc.host, tc.allowed); got != tc.want {
+			t.Errorf("allowedSource(%q, %v) = %v", tc.host, tc.allowed, got)
+		}
+	}
+}
+
+func TestCheckAddrs(t *testing.T) {
+	denied := []netip.Prefix{netip.MustParsePrefix("10.96.0.0/12")}
+	cases := map[string]bool{
+		"203.0.113.10":        true,
+		"2001:db8::1":         true,
+		"10.0.0.1":            true,
+		"10.96.0.10":          false,
+		"127.0.0.1":           false,
+		"::1":                 false,
+		"::ffff:127.0.0.1":    false,
+		"169.254.10.1":        false,
+		"169.254.169.254":     false,
+		"fe80::1":             false,
+		"fd00:ec2::254":       false,
+		"0.0.0.0":             false,
+		"::":                  false,
+		"::ffff:169.254.0.10": false,
+	}
+	for a, ok := range cases {
+		err := checkAddrs([]netip.Addr{netip.MustParseAddr(a)}, denied)
+		if (err == nil) != ok {
+			t.Errorf("%s: err %v, want ok=%v", a, err, ok)
+		}
+	}
+	// Any internal address refuses the host.
+	if checkAddrs([]netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("127.0.0.1")}, nil) == nil {
+		t.Error("mixed addresses allowed")
 	}
 }
