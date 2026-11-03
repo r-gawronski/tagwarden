@@ -89,6 +89,33 @@ type ProxySpec struct {
 	CredentialsSecretRef *SecretRef `json:"credentialsSecretRef,omitempty"`
 }
 
+// SourceCredential holds the pull credentials for one source registry.
+type SourceCredential struct {
+	// registry is the source registry these credentials are for. The Docker
+	// Hub names docker.io, index.docker.io and registry-1.docker.io count as
+	// one registry.
+	// +required
+	Registry RegistryHost `json:"registry"`
+
+	// secretRef is a kubernetes.io/dockerconfigjson Secret in the operator
+	// namespace with an auths entry for the registry.
+	// +required
+	SecretRef SecretRef `json:"secretRef"`
+}
+
+// SourceCABundle holds extra root CAs for one source registry.
+type SourceCABundle struct {
+	// registry is the source registry that trusts the CA. The Docker Hub
+	// names count as one registry.
+	// +required
+	Registry RegistryHost `json:"registry"`
+
+	// secretRef is a Secret in the operator namespace with PEM
+	// certificates under the key.
+	// +required
+	SecretRef SecretKeyRef `json:"secretRef"`
+}
+
 // OnTagMutation is the action taken when an upstream tag points to a new digest.
 // +kubebuilder:validation:Enum=Fail;Overwrite;Ignore
 type OnTagMutation string
@@ -195,6 +222,29 @@ type ClusterMirrorTargetSpec struct {
 	// proxy configures the proxy for upstream traffic.
 	// +optional
 	Proxy *ProxySpec `json:"proxy,omitempty"`
+
+	// sourceCredentials lists pull credentials per source registry. A sync
+	// Job gets only the entry for its own source; a source without an entry
+	// is pulled anonymously. Tenants never see or reference these Secrets:
+	// the platform team decides which sources have accounts. At most one
+	// entry per registry; the controller rejects duplicates, Docker Hub
+	// names included.
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=map
+	// +listMapKey=registry
+	// +optional
+	SourceCredentials []SourceCredential `json:"sourceCredentials,omitempty"`
+
+	// sourceCABundles lists extra root CAs per source registry, for
+	// upstreams signed by a private CA. They are trusted only for that
+	// source registry, on top of the system roots. Tenants never see or
+	// reference these Secrets: the platform team decides which sources
+	// have private CAs. At most one entry per registry.
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=map
+	// +listMapKey=registry
+	// +optional
+	SourceCABundles []SourceCABundle `json:"sourceCABundles,omitempty"`
 
 	// allowedSources lists the upstream registry hosts that mirrors may pull from.
 	// +kubebuilder:validation:MinItems=1
