@@ -40,7 +40,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum', 'Makefile') }}
+          key: go-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum', 'go.mod', 'Makefile') }}
           restore-keys: go-${{ runner.os }}-${{ github.job }}-
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -64,7 +64,7 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             bin
-          key: go-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum', 'Makefile') }}
+          key: go-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum', 'go.mod', 'Makefile') }}
           restore-keys: go-${{ runner.os }}-${{ github.job }}-
       - run: make test
 
