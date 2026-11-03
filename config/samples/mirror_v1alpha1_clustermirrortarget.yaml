@@ -21,9 +21,21 @@ spec:
       name: proxy-ca
     credentialsSecretRef:
       name: proxy-auth
+  # Optional pull credentials and extra CAs per source. Without an entry a
+  # source is pulled anonymously.
+  sourceCredentials:
+    - registry: ghcr.io
+      secretRef:
+        name: ghcr-pull
+  sourceCABundles:
+    - registry: registry.corp.example.internal
+      secretRef:
+        name: corp-registry-ca
+        key: ca.crt
   allowedSources:
     - registry.k8s.io
     - ghcr.io
+    - registry.corp.example.internal
   # A mirror pushes only to a listed project whose namespaceSelector
   # matches its namespace. {} allows every namespace.
   projects:

@@ -67,6 +67,46 @@ Add `--denied-cidrs=<pod CIDR>,<service CIDR>` to the manager args in
 `config/manager/manager.yaml`. Remove with `make undeploy` and
 `make uninstall`.
 
+## Private sources
+
+Sources are pulled anonymously unless the target says otherwise. Create the
+Secrets in the operator namespace and list them on the
+`ClusterMirrorTarget`. Tenants never reference them.
+
+```sh
+kubectl -n tagwarden-system create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io \
+  --docker-username=<user> --docker-password=<token>
+kubectl -n tagwarden-system create secret generic corp-registry-ca \
+  --from-file=ca.crt=./corp-registry-ca.pem
+```
+
+```yaml
+spec:
+  sourceCredentials:
+    - registry: ghcr.io
+      secretRef: {name: ghcr-pull}
+  sourceCABundles:
+    - registry: registry.corp.example.internal
+      secretRef: {name: corp-registry-ca}   # key defaults to ca.crt
+```
+
+- The credentials Secret must be of type `kubernetes.io/dockerconfigjson`
+  with an `auths` entry for that registry. Credential helpers are not
+  supported. The Docker Hub names `docker.io`, `index.docker.io` and
+  `registry-1.docker.io` count as one registry, and listing a registry
+  twice, under any of its names, gives `Ready=False` with reason
+  `InvalidSpec`.
+- The CA Secret holds PEM certificates under the key. The CA is trusted
+  only for that source registry, on top of the system roots.
+- A missing or malformed Secret turns the target `Ready=False`
+  (`SecretNotFound` or `InvalidSecret`); the message names the Secret and
+  never its content.
+- Each sync Job mounts only the Secrets of its own source registry.
+- Before this, the only way to trust a private source CA was
+  `proxy.caBundleSecretRef`. Use `sourceCABundles` instead; the proxy CA
+  is for the proxy.
+
 ## Tenant limits
 
 `ClusterMirrorTarget.spec.limits` caps schedules, mirrors per namespace,
