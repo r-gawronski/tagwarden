@@ -6,7 +6,7 @@ Kubebuilder layout, generated files and scaffold rules: @AGENTS.md
 
 ## Hard rules
 
-- **Open source from day one.** No personal names, company names, homelab hostnames or internal domains in code, docs, tests, CRD groups, image names or commit messages. Use `example.internal` / `example.com` in examples.
+- **Open source from day one.** No personal names, company, customer or industry names, homelab hostnames or internal domains in code, docs, tests, CRD groups, image names or commit messages. Use `example.internal` / `example.com` in examples.
 - **API group is `mirror.tagwarden.dev`.** Do not add groups or rename without an explicit decision; CRD group changes break users.
 - **Security first.** Never add `InsecureSkipVerify`, disabled signature checks or plaintext credentials as defaults. Secrets come only from Secret references and must never appear in status, Events, logs or errors (test for it).
 - **Least privilege.** Sync Jobs get no ServiceAccount token, run distroless nonroot with read-only root FS, drop ALL capabilities, seccomp RuntimeDefault. Controller RBAC only for what reconcile needs; RBAC markers are the source of truth.
