@@ -129,6 +129,8 @@ func (a azureProvider) Authenticator(ctx context.Context, reg name.Registry) (au
 	if r.AccessToken == "" {
 		return nil, errors.New("token request to Microsoft Entra ID: no access_token in the response")
 	}
+	// ACR names itself without the default port.
+	host = strings.TrimSuffix(host, ":443")
 	r, err = postForm(ctx, a.client, "registry token exchange", "https://"+host+"/oauth2/exchange", url.Values{
 		"grant_type":   {"access_token"},
 		"service":      {host},
