@@ -48,7 +48,9 @@ const (
 	ClientCertDir = "/var/run/tagwarden/client-cert"
 
 	// ProxyUserEnv and ProxyPasswordEnv hold the proxy credentials. The
-	// proxy itself comes from the standard HTTPS_PROXY and NO_PROXY.
+	// proxy itself comes from HTTPS_PROXY and NO_PROXY. Only these
+	// uppercase names are read; proxy credentials without HTTPS_PROXY,
+	// for example next to a lowercase https_proxy, are a config error.
 	ProxyUserEnv     = "TAGWARDEN_PROXY_USER"
 	ProxyPasswordEnv = "TAGWARDEN_PROXY_PASSWORD" //nolint:gosec // env var name, not a credential
 )

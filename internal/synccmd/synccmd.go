@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -171,10 +172,15 @@ func targetAuth(path, host string) (authn.Authenticator, error) {
 	if json.Unmarshal(b, &cfg) != nil {
 		return nil, errors.New("target credentials: not a valid dockerconfigjson")
 	}
-	for key, a := range cfg.Auths {
-		if registryHost(key) != host {
-			continue
-		}
+	// Prefer the key that is exactly the host, else the first matching key
+	// in sorted order, so the choice never depends on map order.
+	keys := slices.Sorted(maps.Keys(cfg.Auths))
+	i := slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(k, host) })
+	if i < 0 {
+		i = slices.IndexFunc(keys, func(k string) bool { return strings.EqualFold(registryHost(k), host) })
+	}
+	if i >= 0 {
+		a := cfg.Auths[keys[i]]
 		c := authn.AuthConfig{
 			Username: a.Username, Password: a.Password,
 			IdentityToken: a.IdentityToken, RegistryToken: a.RegistryToken,
@@ -219,7 +225,7 @@ func transports(p options, denied []netip.Prefix, getenv func(string) string) (s
 			return nil, nil, errors.New("HTTPS_PROXY is not a valid URL")
 		}
 		if noProxy := getenv("NO_PROXY"); noProxy != "" {
-			o.NoProxy = strings.Split(noProxy, ",")
+			o.NoProxy = []string{noProxy}
 		}
 		o.ProxyUser, o.ProxyPassword = user, pass
 	} else if user != "" || pass != "" {
@@ -372,7 +378,9 @@ type auditLine struct {
 	Target    string `json:"target"`
 	Action    string `json:"action"`
 	Referrers int    `json:"referrers"`
-	Error     string `json:"error,omitempty"`
+	// UpstreamDigest is set for a mutation-ignored line.
+	UpstreamDigest string `json:"upstreamDigest,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // audit writes one JSON line per selected tag, newest first.
@@ -404,19 +412,25 @@ func audit(w io.Writer, spec syncspec.Spec, res sync.Result) {
 		if !ok {
 			continue
 		}
-		src := spec.SourceRepo.String() + ":" + tag
-		if e.a.Digest != "" {
-			src += "@" + e.a.Digest
-		}
-		_ = enc.Encode(auditLine{
-			TS:        time.Now().UTC().Format(time.RFC3339),
+		l := auditLine{
+			TS:        e.a.Finished.UTC().Format(time.RFC3339Nano),
 			Mirror:    spec.Mirror.Namespace + "/" + spec.Mirror.Name,
-			Source:    src,
+			Source:    spec.SourceRepo.String() + ":" + tag,
 			Target:    spec.TargetRepo.String() + ":" + tag,
 			Action:    e.action,
 			Referrers: e.a.Referrers,
 			Error:     errs[tag],
-		})
+		}
+		switch {
+		case e.a.UpstreamDigest != "":
+			// The target keeps its digest; the source moved on.
+			l.Action, l.UpstreamDigest = "mutation-ignored", e.a.UpstreamDigest
+			l.Source += "@" + e.a.UpstreamDigest
+			l.Target += "@" + e.a.Digest
+		case e.a.Digest != "":
+			l.Source += "@" + e.a.Digest
+		}
+		_ = enc.Encode(l)
 	}
 }
 
