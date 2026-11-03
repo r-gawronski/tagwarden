@@ -320,8 +320,9 @@ A sync Job gets only the Secrets of its own source. The
 ### Cloud registries
 
 Push to or pull from a cloud registry with the cluster's workload
-identity instead of a static Secret. Azure Container Registry works
-today; Amazon ECR and Google Artifact Registry are planned.
+identity instead of a static Secret: Azure Container Registry with
+workload identity and Amazon ECR with IRSA. Google Artifact Registry is
+planned.
 
 ```yaml
 spec:
@@ -338,10 +339,25 @@ spec:
       azureWorkloadIdentity: {}
 ```
 
-Only the sync pods that need it get a projected token for the Microsoft
-Entra audience; they still get no Kubernetes API token. The
-[install guide](docs/install.md#azure-container-registry-with-workload-identity)
-covers the Azure side.
+For Amazon ECR:
+
+```yaml
+spec:
+  registry: 123456789012.dkr.ecr.eu-west-1.amazonaws.com
+  auth:
+    awsWorkloadIdentity: {}
+  workloadIdentity:
+    serviceAccountName: tagwarden-sync-aws
+    aws:
+      roleARN: arn:aws:iam::123456789012:role/tagwarden-sync
+      region: eu-west-1
+```
+
+Only the sync pods that need it get a projected token for the cloud
+audience; they still get no Kubernetes API token. The install guide
+covers the
+[Azure](docs/install.md#azure-container-registry-with-workload-identity)
+and [AWS](docs/install.md#amazon-ecr-with-irsa) side.
 
 ### Staying under Docker Hub pull limits
 
@@ -404,8 +420,9 @@ The project's `namespaceSelector` has to match both teams' namespaces.
   your registry.
 - **Private sources:** pull credentials and extra CAs per source
   registry, held by the platform team (see [Private sources](#private-sources)).
-- **Cloud registries:** Azure Container Registry with workload identity,
-  no static Secret (see [Cloud registries](#cloud-registries)).
+- **Cloud registries:** Azure Container Registry with workload identity
+  and Amazon ECR with IRSA, no static Secret (see
+  [Cloud registries](#cloud-registries)).
 - **Moving tags:** when an upstream tag points to a new digest, the
   target decides: `Fail` (default), `Overwrite` or `Ignore`.
 - **Multi-tenancy:** teams can only push to projects the platform team
