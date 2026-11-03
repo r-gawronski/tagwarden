@@ -309,8 +309,8 @@ func TestRunWrongPassword(t *testing.T) {
 }
 
 // Behind a proxy any lookup failure passes: the proxy resolves names and
-// its ACL is the control. Each host is resolved once per run, after the
-// retries of a temporary error.
+// its ACL is the control. A temporary error is retried on every check
+// while the startup window is open.
 func TestRunProxiedLookupFailure(t *testing.T) {
 	stubWait(t)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -332,8 +332,8 @@ func TestRunProxiedLookupFailure(t *testing.T) {
 	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, "list source tags") {
 		t.Fatalf("exit %d: %s\n%s", code, msg, out)
 	}
-	if lookups["registry.example.internal"] != len(twregistry.Backoff)+1 {
-		t.Fatalf("lookups %v, want one per host", lookups)
+	if n := lookups["registry.example.internal"]; n == 0 || n%(len(twregistry.Backoff)+1) != 0 {
+		t.Fatalf("lookups %v, want full retry schedules", lookups)
 	}
 }
 
@@ -652,7 +652,7 @@ func TestLookupRetry(t *testing.T) {
 					return nil, tc.errs[calls-1]
 				}
 				return tc.ips, nil
-			})}
+			}, twregistry.NewWindow())}
 			for range 2 { // the second check hits the cache
 				err := o.checkHost(context.Background(), "registry.example.internal", tc.proxy, nil)
 				if (err == nil) != tc.wantOK {
@@ -674,11 +674,37 @@ func TestLookupRetryGivesUp(t *testing.T) {
 	o := options{lookup: cachedLookup(func(context.Context, string) ([]net.IPAddr, error) {
 		calls++
 		return nil, &net.DNSError{Err: dnsTimeout, IsTimeout: true}
-	})}
-	if err := o.checkHost(context.Background(), "registry.example.internal", false, nil); !errors.As(err, new(transientError)) {
-		t.Fatalf("err = %v, want transient", err)
+	}, twregistry.NewWindow())}
+	// The failure is not cached while the window is open: the next check
+	// tries again.
+	for i := 1; i <= 2; i++ {
+		if err := o.checkHost(context.Background(), "registry.example.internal", false, nil); !errors.As(err, new(transientError)) {
+			t.Fatalf("err = %v, want transient", err)
+		}
+		if calls != i*(len(twregistry.Backoff)+1) || *waits != i*len(twregistry.Backoff) {
+			t.Fatalf("%d lookups, %d waits", calls, *waits)
+		}
 	}
-	if calls != len(twregistry.Backoff)+1 || *waits != len(twregistry.Backoff) {
-		t.Fatalf("%d lookups, %d waits", calls, *waits)
+}
+
+// A host waiting for a retry does not block lookups of other hosts.
+func TestLookupRetryUnlocked(t *testing.T) {
+	var o options
+	orig := twregistry.Wait
+	twregistry.Wait = func(ctx context.Context, _ time.Duration) error {
+		_, err := o.lookup(ctx, "other.example.internal")
+		return err
+	}
+	t.Cleanup(func() { twregistry.Wait = orig })
+	failed := false
+	o.lookup = cachedLookup(func(_ context.Context, host string) ([]net.IPAddr, error) {
+		if host == "registry.example.internal" && !failed {
+			failed = true
+			return nil, &net.DNSError{Err: dnsTimeout, IsTimeout: true}
+		}
+		return []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}}, nil
+	}, twregistry.NewWindow())
+	if _, err := o.lookup(context.Background(), "registry.example.internal"); err != nil {
+		t.Fatal(err)
 	}
 }
