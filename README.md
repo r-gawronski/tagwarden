@@ -295,6 +295,27 @@ spec:
 The chart's default image references still point upstream, so set its
 image repositories to the mirrored paths in your values.
 
+### Private sources
+
+Some upstreams want a login, or sit behind a CA that isn't in the system
+roots. The platform team handles both on the target, so tenants never
+see the Secrets. Without an entry, a source is pulled anonymously.
+
+```yaml
+spec:
+  sourceCredentials:            # kubernetes.io/dockerconfigjson Secrets
+    - registry: ghcr.io
+      secretRef: {name: ghcr-pull}
+    - registry: docker.io       # also covers index.docker.io and friends
+      secretRef: {name: hub-pull}
+  sourceCABundles:              # extra roots, trusted for this source only
+    - registry: registry.corp.example.internal
+      secretRef: {name: corp-registry-ca, key: ca.crt}
+```
+
+A sync Job gets only the Secrets of its own source. The
+[install guide](docs/install.md#private-sources) shows how to create them.
+
 ### Staying under Docker Hub pull limits
 
 Fifty nodes pulling the same image from Docker Hub count as fifty pulls.
@@ -354,6 +375,8 @@ The project's `namespaceSelector` has to match both teams' namespaces.
 - **Proxy-only egress:** an HTTPS proxy with credentials and its own CA
   (for TLS-inspecting proxies), plus `noProxy`. mTLS and a private CA for
   your registry.
+- **Private sources:** pull credentials and extra CAs per source
+  registry, held by the platform team (see [Private sources](#private-sources)).
 - **Moving tags:** when an upstream tag points to a new digest, the
   target decides: `Fail` (default), `Overwrite` or `Ignore`.
 - **Multi-tenancy:** teams can only push to projects the platform team
