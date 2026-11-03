@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -97,7 +98,7 @@ func TestMinTLSVersion(t *testing.T) {
 	if err := get(t, rt, srv.URL); err == nil {
 		t.Fatal("want handshake failure against a TLS 1.1 server")
 	}
-	if v := rt.(*http.Transport).TLSClientConfig.MinVersion; v != tls.VersionTLS12 {
+	if v := rt.(retryTransport).next.(*http.Transport).TLSClientConfig.MinVersion; v != tls.VersionTLS12 {
 		t.Fatalf("MinVersion = %x, want TLS 1.2", v)
 	}
 }
@@ -150,7 +151,7 @@ func TestProxySelection(t *testing.T) {
 		{"https://cache.example.internal:5000/v2/", false},
 		{"https://cache.example.internal/v2/", true},
 	}
-	pf := rt.(*http.Transport).Proxy
+	pf := rt.(retryTransport).next.(*http.Transport).Proxy
 	for _, tc := range cases {
 		req, _ := http.NewRequest(http.MethodGet, tc.target, nil)
 		got, err := pf(req)
@@ -201,6 +202,7 @@ func (p *connectProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestProxyConnect(t *testing.T) {
+	noRetry(t)
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
 
@@ -373,7 +375,7 @@ func TestNoEnvProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rt.(*checkedTransport).Proxy != nil {
+	if rt.(retryTransport).next.(*checkedTransport).Proxy != nil {
 		t.Fatal("proxy func set without ProxyURL")
 	}
 	if _, err := (&http.Client{Transport: rt}).Get("https://ghcr.io/v2/"); !errors.Is(err, errRefused) {
@@ -416,5 +418,224 @@ func TestCheckDialHTTP2(t *testing.T) {
 	}
 	if _, err := (&http.Client{Transport: rt}).Get(srv.URL); !errors.Is(err, errRefused) {
 		t.Fatalf("err = %v, want refused", err)
+	}
+}
+
+// freeAddr returns a loopback address that nothing listens on.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// stubWait replaces the backoff wait for the test. f gets the attempt
+// number (1 for the first retry) and the scheduled delay.
+func stubWait(t *testing.T, f func(ctx context.Context, n int, d time.Duration) error) {
+	t.Helper()
+	orig := wait
+	n := 0
+	wait = func(ctx context.Context, d time.Duration) error {
+		n++
+		return f(ctx, n, d)
+	}
+	t.Cleanup(func() { wait = orig })
+}
+
+func noRetry(t *testing.T) {
+	t.Helper()
+	stubWait(t, func(context.Context, int, time.Duration) error {
+		t.Fatal("unexpected retry")
+		return nil
+	})
+}
+
+// serveOn starts an HTTP server on addr, which was refused until now.
+func serveOn(t *testing.T, addr string, h http.Handler) {
+	t.Helper()
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	_ = srv.Listener.Close()
+	srv.Listener = l
+	srv.Start()
+	t.Cleanup(srv.Close)
+}
+
+func TestRetryDialRefused(t *testing.T) {
+	addr := freeAddr(t)
+	var delays []time.Duration
+	var got string
+	stubWait(t, func(_ context.Context, n int, d time.Duration) error {
+		delays = append(delays, d)
+		if n == 3 {
+			serveOn(t, addr, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				got = string(b)
+			}))
+		}
+		return nil
+	})
+	rt, err := NewTransport(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// NewRequest sets GetBody for a bytes reader, so the body is re-sent.
+	req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/v2/", strings.NewReader("blob"))
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if !slices.Equal(delays, backoff[:3]) {
+		t.Fatalf("delays %v, want %v", delays, backoff[:3])
+	}
+	if got != "blob" {
+		t.Fatalf("body %q", got)
+	}
+}
+
+func TestRetryGivesUp(t *testing.T) {
+	addr := freeAddr(t)
+	var delays []time.Duration
+	stubWait(t, func(_ context.Context, _ int, d time.Duration) error {
+		delays = append(delays, d)
+		return nil
+	})
+	rt, err := NewTransport(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := get(t, rt, "http://"+addr+"/v2/"); err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("err = %v", err)
+	}
+	if !slices.Equal(delays, backoff) {
+		t.Fatalf("delays %v, want %v", delays, backoff)
+	}
+}
+
+func TestNoRetryBodyWithoutGetBody(t *testing.T) {
+	noRetry(t)
+	rt, err := NewTransport(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://"+freeAddr(t)+"/v2/", io.NopCloser(strings.NewReader("blob")))
+	if _, err := rt.RoundTrip(req); err == nil {
+		t.Fatal("want error")
+	}
+}
+
+func TestNoRetryPolicyRefusal(t *testing.T) {
+	noRetry(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	calls := 0
+	rt, err := NewTransport(Options{CheckDial: func(netip.Addr) error { calls++; return errRefused }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&http.Client{Transport: rt}).Get(srv.URL)
+	var pe *PolicyError
+	if !errors.As(err, &pe) || !errors.Is(err, errRefused) {
+		t.Fatalf("err = %v, want PolicyError wrapping refused", err)
+	}
+	if calls != 1 {
+		t.Fatalf("CheckDial ran %d times", calls)
+	}
+
+	rt, err = NewTransport(Options{CheckHost: func(context.Context, string, bool) error { return errRefused }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = (&http.Client{Transport: rt}).Get(srv.URL); !errors.As(err, &pe) || !errors.Is(err, errRefused) {
+		t.Fatalf("err = %v, want PolicyError wrapping refused", err)
+	}
+}
+
+func TestRetryStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	orig := wait
+	retries := 0
+	stubWait(t, func(ctx context.Context, _ int, d time.Duration) error {
+		retries++
+		cancel()
+		return orig(ctx, d)
+	})
+	rt, err := NewTransport(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+freeAddr(t)+"/v2/", nil)
+	if _, err := rt.RoundTrip(req); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want canceled", err)
+	}
+	if retries != 1 {
+		t.Fatalf("%d retries", retries)
+	}
+}
+
+func TestNoRetryServerError(t *testing.T) {
+	noRetry(t)
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	rt, err := NewTransport(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := (&http.Client{Transport: rt}).Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError || hits != 1 {
+		t.Fatalf("status %d, %d hits", resp.StatusCode, hits)
+	}
+}
+
+func TestNoRetryTLSError(t *testing.T) {
+	noRetry(t)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	rt, err := NewTransport(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := get(t, rt, srv.URL); err == nil || !strings.Contains(err.Error(), "x509") {
+		t.Fatalf("err = %v, want x509", err)
+	}
+}
+
+func TestRetryProxyRefused(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	addr := freeAddr(t)
+	p := &connectProxy{upstream: srv.Listener.Addr().String(), status: http.StatusOK}
+	stubWait(t, func(_ context.Context, n int, _ time.Duration) error {
+		if n == 1 {
+			serveOn(t, addr, p)
+		}
+		return nil
+	})
+	proxy, _ := url.Parse("http://" + addr)
+	rt, err := NewTransport(Options{CAPEM: caPEM(srv), ProxyURL: proxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := get(t, rt, "https://example.com/v2/"); err != nil {
+		t.Fatalf("via proxy: %v", err)
+	}
+	if len(p.auth) != 1 {
+		t.Fatalf("%d CONNECT requests", len(p.auth))
 	}
 }
