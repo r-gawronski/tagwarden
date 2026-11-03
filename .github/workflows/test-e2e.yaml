@@ -2,8 +2,18 @@ name: E2E Tests
 
 on:
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - LICENSE
+      - .github/CODEOWNERS
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - LICENSE
+      - .github/CODEOWNERS
 
 permissions:
   contents: read
