@@ -143,6 +143,10 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 	for _, a := range t.Spec.AllowedSources {
 		allowed = append(allowed, string(a))
 	}
+	var maxSize int64
+	if l := t.Spec.Limits; l != nil && l.MaxArtifactSize != nil {
+		maxSize = l.MaxArtifactSize.Value()
+	}
 	return syncspec.Spec{
 		Mirror:            syncspec.Mirror{Namespace: m.Namespace, Name: m.Name},
 		Source:            canonicalSource(m.Spec.Source),
@@ -151,6 +155,7 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 		RequiredPlatforms: m.Spec.RequiredPlatforms,
 		OnTagMutation:     mutation,
 		MaxTags:           maxListedTags,
+		MaxArtifactSize:   maxSize,
 		AllowedSources:    allowed,
 		DeniedCIDRs:       denied,
 	}

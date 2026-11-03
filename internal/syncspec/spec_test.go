@@ -29,6 +29,7 @@ const valid = `{
   "requiredPlatforms": ["linux/amd64"],
   "onTagMutation": "Fail",
   "maxTags": 100,
+  "maxArtifactSize": 1048576,
   "allowedSources": ["registry.k8s.io"],
   "deniedCIDRs": ["10.96.0.0/12", "fd00:10::/108"]
 }`
@@ -39,7 +40,7 @@ func TestDecode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.Mirror.Namespace != "team-a" || s.Mirror.Name != "pause" || s.Tags.KeepLatest != 2 ||
-		s.Tags.Include[0] != `^3\.` || s.MaxTags != 100 || s.RequiredPlatforms[0] != "linux/amd64" {
+		s.Tags.Include[0] != `^3\.` || s.MaxTags != 100 || s.MaxArtifactSize != 1<<20 || s.RequiredPlatforms[0] != "linux/amd64" {
 		t.Fatalf("decoded %+v", s)
 	}
 	if s.SourceRepo.String() != "registry.k8s.io/pause" || s.TargetRepo.RegistryStr() != "registry.example.internal" {
@@ -64,6 +65,7 @@ func TestDecodeRejects(t *testing.T) {
 		"no mutation policy": {`"onTagMutation": "Fail"`, `"onTagMutation": ""`},
 		"bad mutation":       {`"Fail"`, `"Replace"`},
 		"negative max":       {`"maxTags": 100,`, `"maxTags": -1,`},
+		"negative size":      {`"maxArtifactSize": 1048576`, `"maxArtifactSize": -1`},
 		"trailing data":      {"\n}", "\n}{}"},
 		"no allowed sources": {`["registry.k8s.io"]`, `[]`},
 		"empty allowed host": {`["registry.k8s.io"]`, `[""]`},

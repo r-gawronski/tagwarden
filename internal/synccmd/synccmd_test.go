@@ -308,6 +308,23 @@ func TestRunWrongPassword(t *testing.T) {
 	assertNoSecrets(t, out, msg) // password is a substring of the wrong one
 }
 
+func TestRunAuditsArtifactTooLarge(t *testing.T) {
+	src, dst := newRegistry(t, false), newRegistry(t, true)
+	pushImages(t, src, "v1.0.0", v110)
+	e := newEnv(t, src, dst, password)
+	e.writeSpec(t, src.String(), `"allowedSources":[`+strconv.Quote(src.RegistryStr())+`],"maxArtifactSize":10`)
+
+	code, out, msg := e.run(t)
+	if code != syncspec.ExitSyncFailed || !strings.Contains(msg, `"failed":2`) {
+		t.Fatalf("exit %d: %s\n%s", code, msg, out)
+	}
+	for _, l := range auditLines(t, out) {
+		if l.Action != "failed" || !strings.HasPrefix(l.Error, "artifact too large: ") || !strings.HasSuffix(l.Error, " > 10") {
+			t.Fatalf("audit line %+v", l)
+		}
+	}
+}
+
 // Behind a proxy any lookup failure passes: the proxy resolves names and
 // its ACL is the control. A temporary error is retried on every check
 // while the startup window is open.
