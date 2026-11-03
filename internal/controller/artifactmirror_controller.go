@@ -236,9 +236,9 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 			}
 			// The server defaults fields the rendered spec leaves empty, so
 			// compare checksums instead of specs to avoid no-op updates, and
-			// restore hand edits of the security-relevant pod fields.
+			// restore hand edits of the pod labels and security-relevant fields.
 			if cj.Annotations[annotationCronJobChecksum] != desired.Annotations[annotationCronJobChecksum] ||
-				securityDrift(&cj.Spec.JobTemplate.Spec.Template.Spec, &desired.Spec.JobTemplate.Spec.Template.Spec) {
+				securityDrift(&cj.Spec.JobTemplate.Spec.Template, &desired.Spec.JobTemplate.Spec.Template) {
 				cj.Labels, cj.Annotations, cj.Spec = desired.Labels, desired.Annotations, desired.Spec
 			}
 			return nil

@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
@@ -45,6 +46,16 @@ const (
 	annotationSpecChecksum    = "tagwarden.dev/spec-checksum"
 	annotationCronJobChecksum = "tagwarden.dev/cronjob-checksum"
 
+	// LabelTarget names the ClusterMirrorTarget of a sync CronJob, Job and
+	// pod: the name, or "h-" and the first 20 hex characters of its sha256
+	// when the name is not a valid label value.
+	LabelTarget = "tagwarden.dev/target"
+	// LabelEgress is EgressProxy when the target sets a proxy, else
+	// EgressDirect. NetworkPolicies select sync pods by it.
+	LabelEgress  = "tagwarden.dev/egress"
+	EgressProxy  = "proxy"
+	EgressDirect = "direct"
+
 	// SyncServiceAccount runs the sync pods. It has no RBAC bindings.
 	SyncServiceAccount = "tagwarden-sync"
 	syncContainer      = "sync"
@@ -59,6 +70,15 @@ const (
 func mirrorHash(namespace, name string) string {
 	sum := sha256.Sum256([]byte(namespace + "/" + name))
 	return hex.EncodeToString(sum[:])[:20]
+}
+
+// targetLabel is the LabelTarget value of a target name.
+func targetLabel(name string) string {
+	if len(validation.IsValidLabelValue(name)) == 0 {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return "h-" + hex.EncodeToString(sum[:])[:20]
 }
 
 // objectName names the CronJob and ConfigMap of a mirror.
@@ -154,6 +174,11 @@ func renderConfigMap(cm *corev1.ConfigMap, m *mirrorv1alpha1.ArtifactMirror, spe
 // through the spec file.
 func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, image string, spec []byte) {
 	labels, annotations := mirrorMeta(m)
+	labels[LabelTarget] = targetLabel(t.Name)
+	labels[LabelEgress] = EgressDirect
+	if t.Spec.Proxy != nil && t.Spec.Proxy.HTTPSProxy != "" {
+		labels[LabelEgress] = EgressProxy
+	}
 	cj.Labels, cj.Annotations = labels, annotations
 	sum := sha256.Sum256(spec)
 	podAnnotations := map[string]string{
@@ -290,16 +315,18 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	cj.Annotations[annotationCronJobChecksum] = hex.EncodeToString(sum[:])
 }
 
-// securityDrift reports whether the security-relevant fields of a live sync
-// pod template differ from the desired ones. A hand edit keeps the checksum
-// annotation, so the checksum alone would let it persist. Every compared
+// securityDrift reports whether the labels or security-relevant fields of a
+// live sync pod template differ from the desired ones. A hand edit keeps the
+// checksum annotation, so the checksum alone would let it persist. Labels
+// count because NetworkPolicies select sync pods by them. Every compared
 // field is either set by renderCronJob or left empty and not defaulted by the
 // server, so server defaulting causes no drift. DNSPolicy is defaulted and
 // left out.
-func securityDrift(live, want *corev1.PodSpec) bool {
-	fields := func(p *corev1.PodSpec) []any {
-		f := make([]any, 0, 18+8*len(p.Containers))
-		f = append(f, p.ServiceAccountName, p.AutomountServiceAccountToken, p.SecurityContext,
+func securityDrift(live, want *corev1.PodTemplateSpec) bool {
+	fields := func(t *corev1.PodTemplateSpec) []any {
+		p := &t.Spec
+		f := make([]any, 0, 19+8*len(p.Containers))
+		f = append(f, t.Labels, p.ServiceAccountName, p.AutomountServiceAccountToken, p.SecurityContext,
 			p.HostNetwork, p.HostPID, p.HostIPC, p.HostUsers, p.ShareProcessNamespace,
 			p.EnableServiceLinks, p.HostAliases, p.DNSConfig, p.NodeName, p.RuntimeClassName,
 			p.ImagePullSecrets, p.Volumes, len(p.InitContainers), len(p.Containers))
