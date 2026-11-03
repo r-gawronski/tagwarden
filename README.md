@@ -151,7 +151,9 @@ Go over a limit and your mirror gets `Ready=False` with reason
 `ScheduleTooFrequent` or `LimitExceeded`, and Tagwarden removes its
 CronJob. With too many mirrors in a namespace, the oldest keep running.
 An artifact over `maxArtifactSize` fails in the sync run: Tagwarden
-copies none of it and moves on to the other tags.
+copies none of it and moves on to the other tags. Signatures, SBOMs and
+other referrers get their own budget of the same size; if they go over
+it, the tag fails and stays where it was.
 
 ```yaml
 spec:

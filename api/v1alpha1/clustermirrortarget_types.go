@@ -162,9 +162,11 @@ type TargetLimits struct {
 	MaxExplicitTags *int32 `json:"maxExplicitTags,omitempty"`
 
 	// maxArtifactSize caps the size of one artifact: config and layers of
-	// the manifest, or of every manifest in an index. Referrers do not
-	// count. The sync Job reports a larger artifact as failed and copies
-	// nothing of it. No limit when absent.
+	// the manifest, or of every manifest in an index. The referrers copied
+	// for an artifact in one run, such as signatures and SBOMs, share a
+	// separate budget of the same size. The sync Job reports a larger
+	// artifact as failed and copies nothing of it; for oversized referrers
+	// the tag fails and does not move. No limit when absent.
 	// +kubebuilder:validation:XValidation:rule="quantity(string(self)).isGreaterThan(quantity('0'))",message="must be positive"
 	// +optional
 	MaxArtifactSize *resource.Quantity `json:"maxArtifactSize,omitempty"`

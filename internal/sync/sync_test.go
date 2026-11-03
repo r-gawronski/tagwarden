@@ -573,7 +573,7 @@ func TestRunRefusesArtifactsOverMaxSize(t *testing.T) {
 	push(t, src.repo, "small", small)
 	bigDigest := push(t, src.repo, "big", big)
 	idxDigest := push(t, src.repo, "idx", idx)
-	// A referrer does not count toward the size of its subject.
+	// A referrer counts separately from its subject.
 	pushReferrer(t, src.repo, *must(partial.Descriptor(small)))
 
 	limit := artifactSize(t, small)
@@ -619,5 +619,44 @@ func TestRunRefusesArtifactsOverMaxSize(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("layer of the refused image: HEAD %d", resp.StatusCode)
 		}
+	}
+}
+
+// Referrers of one artifact share a budget of MaxArtifactSize, separate
+// from the artifact. Over it, the tag fails and does not move.
+func TestRunRefusesReferrersOverMaxSize(t *testing.T) {
+	for kind, attach := range map[string]func(t *testing.T, repo name.Repository, img, big v1.Image){
+		"OCI referrer": func(t *testing.T, repo name.Repository, img, big v1.Image) {
+			ref := mutate.Subject(big, *must(partial.Descriptor(img))).(v1.Image)
+			if err := remote.Write(repo.Digest(digestOf(t, ref).String()), ref); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"cosign signature tag": func(t *testing.T, repo name.Repository, img, big v1.Image) {
+			push(t, repo, fallbackTag(digestOf(t, img))+".sig", big)
+		},
+	} {
+		t.Run(kind, func(t *testing.T) {
+			src := newRegistry(t, regOpts{referrers: true})
+			dst := newRegistry(t, regOpts{referrers: true})
+			img, big := image(t), must(random.Image(4096, 2))
+			push(t, src.repo, v100, img)
+			attach(t, src.repo, img, big)
+			limit := artifactSize(t, img)
+
+			res, err := Run(context.Background(), Request{
+				Source: src.repo, Target: dst.repo,
+				Policy: tags.Policy{Tags: []string{v100}}, MaxArtifactSize: limit,
+			})
+			if err == nil || len(res.Failed) != 1 || len(res.Copied) != 0 {
+				t.Fatalf("Run: %v %+v", err, res)
+			}
+			if len(res.Errors) != 1 || !strings.HasPrefix(res.Errors[0], v100+": artifact too large: referrers ") {
+				t.Fatalf("errors %q", res.Errors)
+			}
+			if _, ok := headDigest(t, dst.repo.Tag(v100)); ok {
+				t.Fatal("tag moved")
+			}
+		})
 	}
 }

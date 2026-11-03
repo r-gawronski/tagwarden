@@ -66,8 +66,8 @@ type Request struct {
 	// MaxTags caps the upstream listing. Zero means tags.MaxTags.
 	MaxTags int
 	// MaxArtifactSize caps the config and layer bytes of one artifact,
-	// summed over every manifest of an index. Referrers do not count.
-	// Zero means no limit.
+	// summed over every manifest of an index, and separately the bytes of
+	// the referrers copied for it. Zero means no limit.
 	MaxArtifactSize int64
 }
 
@@ -334,6 +334,25 @@ func (s *syncer) checkSize(ctx context.Context, desc *remote.Descriptor) error {
 	return nil
 }
 
+// checkReferrerSize adds the size of a referrer about to be copied to
+// used and refuses it when the referrers copied for one artifact in this
+// run would exceed MaxArtifactSize. Referrers have their own budget, so a
+// large signature or SBOM does not count against the image.
+func (s *syncer) checkReferrerSize(ctx context.Context, desc *remote.Descriptor, used *int64) error {
+	if s.req.MaxArtifactSize <= 0 {
+		return nil
+	}
+	n, err := s.size(ctx, desc)
+	if err != nil {
+		return err
+	}
+	*used = min(*used, math.MaxInt64-n) + n
+	if *used > s.req.MaxArtifactSize {
+		return fmt.Errorf("%w: referrers %d > %d", ErrArtifactTooLarge, *used, s.req.MaxArtifactSize)
+	}
+	return nil
+}
+
 // size sums the config and layer sizes of a manifest, or of every manifest
 // of an index, as the manifests declare them. ggcr checks each blob
 // against its declared size when it copies it. The sum saturates instead
@@ -419,6 +438,7 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		return 0, fmt.Errorf("list referrers: %w", err)
 	}
 	n := 0
+	var budget int64
 	for _, m := range im.Manifests {
 		// Check the target first: some registries count manifest GETs as pulls.
 		_, err := resolve(ctx, s.dst, s.req.Target.Digest(m.Digest.String()))
@@ -441,6 +461,9 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		var mf struct{ Subject *v1.Descriptor }
 		if err := json.Unmarshal(desc.Manifest, &mf); err != nil || mf.Subject == nil || mf.Subject.Digest != d {
 			continue
+		}
+		if err := s.checkReferrerSize(ctx, desc, &budget); err != nil {
+			return n, err
 		}
 		if err := s.copy(ctx, desc); err != nil {
 			return n, err
@@ -467,6 +490,9 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		desc, err := s.src.Get(ctx, s.req.Source.Digest(src.Digest.String()))
 		if err != nil {
 			return n, fmt.Errorf("fetch %s: %w", tag, err)
+		}
+		if err := s.checkReferrerSize(ctx, desc, &budget); err != nil {
+			return n, err
 		}
 		if err := s.ensure(ctx, desc); err != nil {
 			return n, err
