@@ -57,8 +57,11 @@ spec:
 ```
 
 Targets with Azure workload identity also reach the Microsoft Entra
-authority host (`login.microsoftonline.com` by default) through the same
-path as the registry. Allow it at the proxy, or in the `direct` policy.
+authority host (`login.microsoftonline.com` by default), and targets
+with AWS IRSA reach `sts.<region>.amazonaws.com`,
+`api.ecr.<region>.amazonaws.com` and the region's S3 endpoints for ECR
+layers, through the same path as the registry. Allow them at the proxy,
+or in the `direct` policy.
 
 Add your pod and service CIDRs to `except` when they are outside these
 ranges. NetworkPolicies are a second layer: the sync Job checks every

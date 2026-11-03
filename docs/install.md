@@ -236,6 +236,151 @@ not needed: the controller renders the token volume itself.
   (for example `invalid_client AADSTS700016`), never a token.
 - Real-cloud tests are manual; CI uses fakes for Entra and the registry.
 
+## Amazon ECR with IRSA
+
+The sync Job can push to and pull from Amazon ECR private registries with
+IAM roles for service accounts (IRSA) instead of a Secret. It sends a
+projected ServiceAccount token to AWS STS (`AssumeRoleWithWebIdentity`),
+signs an ECR `GetAuthorizationToken` call with the temporary credentials
+(SigV4), and uses the returned password for user `AWS`. All calls are
+plain HTTPS through the target's proxy; there is no AWS SDK. The cluster
+needs an OIDC issuer that IAM trusts (on EKS, the cluster's OIDC
+provider). The EKS Pod Identity webhook is not needed: the controller
+renders the token volume itself.
+
+EKS Pod Identity is not supported. Its agent listens on a link-local
+address, and the sync Job refuses link-local addresses by design (T16).
+
+1. Create an IAM OIDC provider for the cluster's issuer, with client ID
+   `sts.amazonaws.com`. On EKS:
+
+   ```sh
+   eksctl utils associate-iam-oidc-provider --cluster <cluster> --approve
+   ```
+
+2. Create a role that trusts the provider for the sync ServiceAccount.
+   The subject is `system:serviceaccount:<operator namespace>:<ServiceAccount>`
+   and the audience `sts.amazonaws.com`:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Principal": {"Federated": "arn:aws:iam::123456789012:oidc-provider/<issuer without https://>"},
+       "Action": "sts:AssumeRoleWithWebIdentity",
+       "Condition": {"StringEquals": {
+         "<issuer without https://>:sub": "system:serviceaccount:tagwarden-system:tagwarden-sync-aws",
+         "<issuer without https://>:aud": "sts.amazonaws.com"
+       }}
+     }]
+   }
+   ```
+
+   ```sh
+   aws iam create-role --role-name tagwarden-sync --assume-role-policy-document file://trust.json
+   ```
+
+3. Allow the role to get a registry token, push to the target
+   repositories and pull from the source repositories:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {"Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*"},
+       {"Effect": "Allow", "Resource": "arn:aws:ecr:eu-west-1:123456789012:repository/mirror/*",
+        "Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+                   "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage",
+                   "ecr:ListImages", "ecr:DescribeImages"]},
+       {"Effect": "Allow", "Resource": "arn:aws:ecr:eu-west-1:210987654321:repository/upstream/*",
+        "Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+                   "ecr:ListImages", "ecr:DescribeImages"]}
+     ]
+   }
+   ```
+
+   A source in another account also needs a repository policy there that
+   allows the role. ECR refuses pushes to repositories that do not exist;
+   create the target repositories (`<project>/<path>`) first unless the
+   registry creates them on push.
+
+4. Create the ServiceAccount in the operator namespace. Tagwarden does not
+   create it and needs no RBAC for it. The `eks.amazonaws.com/role-arn`
+   annotation is not needed: the role comes from the target.
+
+   ```yaml
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata:
+     name: tagwarden-sync-aws
+     namespace: tagwarden-system
+   automountServiceAccountToken: false
+   ```
+
+5. Point the target at the role:
+
+   ```yaml
+   apiVersion: mirror.tagwarden.dev/v1alpha1
+   kind: ClusterMirrorTarget
+   metadata:
+     name: ecr
+   spec:
+     registry: 123456789012.dkr.ecr.eu-west-1.amazonaws.com
+     auth:
+       awsWorkloadIdentity: {}         # instead of credentialsSecretRef
+     workloadIdentity:
+       serviceAccountName: tagwarden-sync-aws
+       aws:
+         roleARN: arn:aws:iam::123456789012:role/tagwarden-sync
+         region: eu-west-1
+     sourceCredentials:
+       - registry: 210987654321.dkr.ecr.eu-west-1.amazonaws.com
+         awsWorkloadIdentity: {}       # pull with the same role
+     allowedSources: [210987654321.dkr.ecr.eu-west-1.amazonaws.com, registry.k8s.io]
+     projects:
+       - name: mirror
+         namespaceSelector: {}
+     proxy:
+       httpsProxy: http://proxy.example.internal:3128
+   ```
+
+- Allow `sts.<region>.amazonaws.com`, `api.ecr.<region>.amazonaws.com`
+  and every ECR registry host in the proxy allowlist and in
+  NetworkPolicies. ECR serves layers from the S3 bucket
+  `prod-<region>-starport-layer-bucket`, so also allow the region's S3
+  endpoints (for example `*.s3.<region>.amazonaws.com`). China regions use
+  `amazonaws.com.cn` instead of `amazonaws.com`.
+- The STS and ECR API endpoints come from `region`; there is no endpoint
+  field. A FIPS registry host (`<account>.dkr.ecr-fips.<region>.amazonaws.com`)
+  gets its token from `ecr-fips.<region>.amazonaws.com`; STS stays the
+  regional endpoint (in GovCloud that endpoint is FIPS). Dual-stack hosts
+  (`*.on.aws`), ECR Public and VPC endpoint DNS names are not accepted.
+- Only pods that use AWS auth run as `serviceAccountName` and mount the
+  projected token (audience `sts.amazonaws.com`, one hour). The other
+  pods keep `tagwarden-sync`. No pod gets a Kubernetes API token. A pod
+  that pushes with AWS and pulls with Azure gets both tokens, each with
+  its own audience and file.
+- AWS auth works only with ECR private registry hosts
+  (`<account>.dkr.ecr[-fips].<region>.amazonaws.com[.cn]`, port 443 at
+  most). The CRD refuses other hosts. The sync Job checks again before it
+  sends a token, and also refuses a registry whose region differs from
+  `workloadIdentity.aws.region`, so a token for one region never goes to
+  another.
+- The STS session is `tagwarden-<hash of the mirror>` and lasts 15
+  minutes. CloudTrail shows it in `AssumeRoleWithWebIdentity` and in the
+  ECR calls.
+- Every mirror of the target shares the role, and the role trusts the
+  ServiceAccount. Give each target whose role differs its own
+  ServiceAccount and its own trust policy subject, and always set
+  `serviceAccountName`, for the same reason as with Azure above.
+- A missing ServiceAccount leaves the target `Ready`; the Job's pod is not
+  created and only a `FailedCreate` Event shows it.
+- STS and ECR errors show the HTTP status and the AWS error code (for
+  example `HTTP 400 InvalidIdentityToken`), never a token or a key.
+- China and GovCloud are untested. Real-cloud tests are manual; CI uses
+  fakes for STS, ECR and the registry.
+
 ## Tenant limits
 
 `ClusterMirrorTarget.spec.limits` caps schedules, mirrors per namespace,
