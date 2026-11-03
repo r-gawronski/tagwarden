@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"maps"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -82,9 +83,37 @@ func targetLabel(name string) string {
 	return "h-" + hex.EncodeToString(sum[:])[:20]
 }
 
-// objectName names the CronJob and ConfigMap of a mirror.
+// maxObjectName is the CronJob name limit (52) that leaves room for the
+// Job suffix the CronJob controller appends.
+const maxObjectName = 52
+
+var (
+	unsafeName = regexp.MustCompile(`[^a-z0-9-]+`)
+	dashRun    = regexp.MustCompile(`-{2,}`)
+)
+
+// objectName names the CronJob and ConfigMap of a mirror:
+// <namespace>-<mirror>-<hash8>, with the readable part sanitised to
+// DNS-1123 and cut so the whole name fits maxObjectName. The hash of
+// "namespace/name" keeps names unique when the readable parts collide.
 func objectName(m *mirrorv1alpha1.ArtifactMirror) string {
-	return "tagwarden-" + mirrorHash(m.Namespace, m.Name)
+	return boundedName(m, maxObjectName)
+}
+
+// boundedName is objectName cut to at most limit characters.
+func boundedName(m *mirrorv1alpha1.ArtifactMirror, limit int) string {
+	sum := sha256.Sum256([]byte(m.Namespace + "/" + m.Name))
+	hash := hex.EncodeToString(sum[:])[:8]
+	readable := strings.ToLower(m.Namespace + "-" + m.Name)
+	readable = dashRun.ReplaceAllString(unsafeName.ReplaceAllString(readable, "-"), "-")
+	readable = strings.Trim(readable, "-")
+	if n := limit - len(hash) - 1; len(readable) > n {
+		readable = strings.TrimRight(readable[:n], "-")
+	}
+	if readable == "" {
+		return hash
+	}
+	return readable + "-" + hash
 }
 
 // canonicalSource is the source as registry/repository with the Docker Hub
