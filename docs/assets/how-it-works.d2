@@ -1,23 +1,30 @@
-# Source of how-it-works-light.svg and how-it-works-dark.svg.
+# Source of the how-it-works-*.svg diagrams.
 # Render:
-#   d2 --theme 0 --pad 20 how-it-works.d2 how-it-works-light.svg
-#   d2 --theme 200 --pad 20 how-it-works.d2 how-it-works-dark.svg
+#   d2 --theme 0 --pad 40 how-it-works.d2 how-it-works-light.svg
+#   d2 --theme 200 --pad 40 how-it-works.d2 how-it-works-dark.svg
+#   add --sketch for the how-it-works-sketch-*.svg variants
 direction: right
 
+classes: {
+  node: {style: {border-radius: 14; shadow: true; font-size: 18}}
+  store: {shape: cylinder; style: {shadow: true; font-size: 18}}
+}
+
 cluster: Kubernetes cluster {
-  mirror: ArtifactMirror {shape: page}
-  target: ClusterMirrorTarget {shape: page}
-  controller: Controller {shape: hexagon}
-  job: Sync Job {style.multiple: true}
+  style.border-radius: 20
+  mirror: ArtifactMirror {class: node}
+  target: ClusterMirrorTarget {class: node}
+  controller: Controller {class: node}
+  job: Sync Job {class: node}
 
   mirror -> controller: team
   target -> controller: platform
   controller -> job: CronJob
 }
 
-proxy: HTTPS proxy
-upstream: Upstream {shape: cylinder}
-registry: Your registry {shape: cylinder}
+proxy: HTTPS proxy {class: node}
+upstream: Upstream {class: store}
+registry: Your registry {class: store}
 
 cluster.job -> proxy: list, fetch
 proxy -> upstream
