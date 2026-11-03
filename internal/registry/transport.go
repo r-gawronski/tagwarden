@@ -86,9 +86,89 @@ func NewTransport(o Options) (http.RoundTripper, error) {
 		t.DialContext = checkedDial(t.DialContext, o)
 	}
 	if o.CheckHost != nil {
-		return &checkedTransport{t, o.CheckHost}, nil
+		return retryTransport{&checkedTransport{t, o.CheckHost}}, nil
 	}
-	return t, nil
+	return retryTransport{t}, nil
+}
+
+// PolicyError wraps an error from CheckHost or CheckDial. It is never retried.
+type PolicyError struct{ Err error }
+
+func (e *PolicyError) Error() string { return e.Err.Error() }
+func (e *PolicyError) Unwrap() error { return e.Err }
+
+// backoff is the wait before each retry of a failed dial, about 30 s in
+// total: long enough for a NetworkPolicy to be programmed for a new pod.
+var backoff = []time.Duration{
+	500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second,
+}
+
+// wait sleeps for d or until ctx is done. Tests replace it.
+var wait = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// retryTransport retries requests whose connection could not be set up,
+// for example while a NetworkPolicy for a new pod is not yet programmed
+// and the CNI rejects its packets. Status codes are left to the caller.
+type retryTransport struct{ next http.RoundTripper }
+
+func (rt retryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	for i := 0; ; i++ {
+		resp, err := rt.next.RoundTrip(r)
+		if err == nil || i == len(backoff) || !dialFailed(err) || (r.Body != nil && r.GetBody == nil) {
+			return resp, err
+		}
+		if err := wait(r.Context(), backoff[i]); err != nil {
+			return nil, err
+		}
+		if r.GetBody != nil {
+			body, err := r.GetBody()
+			if err != nil {
+				return nil, err
+			}
+			c := *r
+			c.Body = body
+			r = &c
+		}
+	}
+}
+
+// dialFailed reports whether err comes from dialing the registry or the
+// proxy. http.Transport reports those as a *net.OpError with Op "dial",
+// wrapped in one with Op "proxyconnect" for the proxy. A dial error means
+// nothing was written on the connection, so a retry cannot repeat a request.
+// Errors after the TCP connect (TLS, a CONNECT refused with 407, a reset
+// while reading the response) have other Ops or none and are not retried.
+// Neither are policy refusals from CheckDial, which also surface as dial
+// errors, nor a name that does not exist.
+func dialFailed(err error) bool {
+	if errors.As(err, new(*PolicyError)) {
+		return false
+	}
+	if dns := new(net.DNSError); errors.As(err, &dns) && dns.IsNotFound {
+		return false
+	}
+	for {
+		var op *net.OpError
+		if !errors.As(err, &op) {
+			return false
+		}
+		if op.Op == "dial" {
+			return true
+		}
+		if op.Op != "proxyconnect" {
+			return false
+		}
+		err = op.Err
+	}
 }
 
 type checkedTransport struct {
@@ -103,7 +183,9 @@ func (c *checkedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		p, err = c.Proxy(r)
 	}
 	if err == nil {
-		err = c.check(r.Context(), r.URL.Hostname(), p != nil)
+		if err = c.check(r.Context(), r.URL.Hostname(), p != nil); err != nil {
+			err = &PolicyError{err}
+		}
 	}
 	if err != nil {
 		if r.Body != nil {
@@ -126,7 +208,10 @@ func checkedDial(plain func(context.Context, string, string) (net.Conn, error), 
 			if err != nil {
 				return err
 			}
-			return o.CheckDial(ap.Addr())
+			if err := o.CheckDial(ap.Addr()); err != nil {
+				return &PolicyError{err}
+			}
+			return nil
 		},
 	}
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
