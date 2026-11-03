@@ -162,6 +162,7 @@ func TestAzureHosts(t *testing.T) {
 		"myregistry.azurecr.io": true, "MyRegistry.azurecr.us": true, "reg-abc123.azurecr.cn:443": true,
 		"myregistry.azurecr.io:5000": false, "azurecr.io": false, "myregistry.azurecr.io.example.internal": false,
 		"evil.example.internal": false, "myregistry.azurecr.com": false,
+		"myregistry\u212A.azurecr.io": false, "myregistry.azurecr.\u0130o": false,
 	} {
 		if ACRHost(host) != want {
 			t.Errorf("ACRHost(%q) = %v", host, !want)
