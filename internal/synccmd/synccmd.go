@@ -69,6 +69,12 @@ type options struct {
 	// awsSTS and awsECR replace the STS and ECR API endpoints that the
 	// region gives. Only tests set them.
 	awsSTS, awsECR string
+	// gcpToken is the projected ServiceAccount token for Google Cloud
+	// Workload Identity Federation.
+	gcpToken string
+	// gcpSTS and gcpIAM replace https://sts.googleapis.com and
+	// https://iamcredentials.googleapis.com. Only tests set them.
+	gcpSTS, gcpIAM string
 	// allowLoopback lets loopback addresses pass the source checks. Only
 	// tests set it, for in-process registries on 127.0.0.1; every other
 	// internal address is still refused.
@@ -90,7 +96,7 @@ func Run(ctx context.Context, args []string, stdout io.Writer, termPath string) 
 		targetAuth: syncspec.TargetAuthFile, targetCA: syncspec.TargetCAFile,
 		proxyCA: syncspec.ProxyCAFile, clientCertDir: syncspec.ClientCertDir,
 		sourceAuth: syncspec.SourceAuthFile, sourceCA: syncspec.SourceCAFile,
-		azureToken: syncspec.AzureTokenFile, awsToken: syncspec.AWSTokenFile,
+		azureToken: syncspec.AzureTokenFile, awsToken: syncspec.AWSTokenFile, gcpToken: syncspec.GCPTokenFile,
 		lookup: net.DefaultResolver.LookupIPAddr,
 	}
 	return run(ctx, args, stdout, termPath, o, os.Getenv)

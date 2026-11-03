@@ -238,9 +238,9 @@ func TestRunAzureErrors(t *testing.T) {
 			func(f *azureFakes, _ *env) { f.acrStatus.Store(http.StatusUnauthorized) },
 			syncspec.ExitConfig, "target credentials: registry token exchange: HTTP 401",
 		},
-		"no token file": {
+		tcNoTokenFile: {
 			func(_ *azureFakes, e *env) { e.opts.azureToken = filepath.Join(e.dir, "missing", "token") },
-			syncspec.ExitConfig, "projected ServiceAccount token",
+			syncspec.ExitConfig, msgProjectedToken,
 		},
 	}
 	for tcName, tc := range cases {
@@ -267,7 +267,7 @@ func TestRunAzureErrors(t *testing.T) {
 func TestRunAzureRefusesHosts(t *testing.T) {
 	cases := map[string]func(f *azureFakes, e *env, src name.Repository){
 		"non-ACR target": func(f *azureFakes, e *env, src name.Repository) {
-			e.target = "registry.example.internal/team/app"
+			e.target = exampleTargetRepo
 			f.azureEnv(t, e, src, "targetAuth")
 		},
 		"unknown authority": func(f *azureFakes, e *env, src name.Repository) {

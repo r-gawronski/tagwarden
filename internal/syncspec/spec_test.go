@@ -88,6 +88,27 @@ func TestDecodeAWS(t *testing.T) {
 	}
 }
 
+const exampleAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster"
+
+func gcp(audience, email string) string {
+	return `"targetAuth": "gcpWorkloadIdentity", "gcp": {"audience": "` + audience + `", "serviceAccountEmail": "` + email + `"},`
+}
+
+func TestDecodeGCP(t *testing.T) {
+	const email = "tagwarden-sync@example-project.iam.gserviceaccount.com"
+	in := strings.Replace(valid, maxTags, `"maxTags": 100, `+gcp(exampleAudience, email), 1)
+	s, err := Decode(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.TargetAuth != AuthGCPWorkloadIdentity || *s.GCP != (GCP{Audience: exampleAudience, ServiceAccountEmail: email}) {
+		t.Fatalf("decoded %+v", s)
+	}
+	if s.GCP.TokenAudience() != "https://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster" {
+		t.Fatalf("token audience %s", s.GCP.TokenAudience())
+	}
+}
+
 func TestDecodeRejects(t *testing.T) {
 	cases := map[string]struct{ old, new string }{
 		"unknown field":      {maxTags, `"maxTags": 100, "extra": 1,`},
@@ -119,6 +140,11 @@ func TestDecodeRejects(t *testing.T) {
 		"aws partition":      {maxTags, `"maxTags": 100, ` + aws(exampleRole, "cn-north-1")},
 		"aws gov partition":  {maxTags, `"maxTags": 100, ` + aws("arn:aws-us-gov:iam::123456789012:role/sync", "us-east-1")},
 		"aws endpoint":       {maxTags, `"maxTags": 100, ` + strings.Replace(aws(exampleRole, "eu-west-1"), "},", `, "stsEndpoint": "https://sts.example.internal/"},`, 1)},
+		"gcp missing":        {maxTags, `"maxTags": 100, "sourceAuth": "gcpWorkloadIdentity",`},
+		"gcp https audience": {maxTags, `"maxTags": 100, ` + gcp("https:"+exampleAudience, "")},
+		"gcp other host":     {maxTags, `"maxTags": 100, ` + gcp(strings.Replace(exampleAudience, "googleapis.com", "example.internal", 1), "")},
+		"gcp bad email":      {maxTags, `"maxTags": 100, ` + gcp(exampleAudience, "sync@example.internal")},
+		"gcp endpoint":       {maxTags, `"maxTags": 100, ` + strings.Replace(gcp(exampleAudience, ""), "},", `, "stsEndpoint": "https://sts.example.internal/"},`, 1)},
 		"azure scope":        {maxTags, `"maxTags": 100, ` + strings.Replace(azure(zeroGUID, `"https://login.microsoftonline.com/"`), "},", `, "scope": "https://management.azure.com/.default"},`, 1)},
 	}
 	for name, tc := range cases {
@@ -228,6 +254,28 @@ func TestECRHosts(t *testing.T) {
 		region, fips, ok := ECRHost(host)
 		if ok != (want != nil) || want != nil && (region != want.region || fips != want.fips) {
 			t.Errorf("ECRHost(%q) = %q %v %v", host, region, fips, ok)
+		}
+	}
+}
+
+func TestGARHosts(t *testing.T) {
+	for host, want := range map[string]bool{
+		"europe-west1-docker.pkg.dev":      true,
+		"US-Docker.pkg.dev:443":            true,
+		"gcr.io":                           true,
+		"us.gcr.io":                        true,
+		"eu.gcr.io":                        true,
+		"asia.gcr.io":                      true,
+		"europe-west1-docker.pkg.dev:5000": false,
+		"europe-west1-docker.pkg.dev.example.internal": false,
+		"docker.pkg.dev":           false,
+		"europe-west1-npm.pkg.dev": false,
+		"mirror.gcr.io":            false,
+		"k8s.gcr.io":               false,
+		"us-doc\u212Aer.pkg.dev":   false,
+	} {
+		if GARHost(host) != want {
+			t.Errorf("GARHost(%q) = %v", host, !want)
 		}
 	}
 }

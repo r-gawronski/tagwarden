@@ -352,7 +352,7 @@ func TestRunAWSErrors(t *testing.T) {
 			func(f *awsFakes, _ *env) { f.stsStatus.Store(http.StatusServiceUnavailable) },
 			syncspec.ExitSyncFailed, "AWS STS AssumeRoleWithWebIdentity: HTTP 503",
 		},
-		"STS redirect": {
+		tcSTSRedirect: {
 			func(f *awsFakes, _ *env) { f.stsStatus.Store(http.StatusTemporaryRedirect) },
 			syncspec.ExitConfig, "AWS STS AssumeRoleWithWebIdentity: HTTP 307",
 		},
@@ -368,9 +368,9 @@ func TestRunAWSErrors(t *testing.T) {
 			func(f *awsFakes, _ *env) { f.ecrToken.Store(base64.StdEncoding.EncodeToString([]byte(ecrPassword))) },
 			syncspec.ExitConfig, "Amazon ECR GetAuthorizationToken: invalid authorization token",
 		},
-		"no token file": {
+		tcNoTokenFile: {
 			func(_ *awsFakes, e *env) { e.opts.awsToken = filepath.Join(e.dir, "missing", "token") },
-			syncspec.ExitConfig, "projected ServiceAccount token",
+			syncspec.ExitConfig, msgProjectedToken,
 		},
 	}
 	for tcName, tc := range cases {
@@ -384,7 +384,7 @@ func TestRunAWSErrors(t *testing.T) {
 			if code != tc.code || !strings.Contains(msg, tc.want) {
 				t.Fatalf("exit %d: %s\n%s", code, msg, out)
 			}
-			if tcName == "STS redirect" && f.ecrHits.Load() != 0 {
+			if tcName == tcSTSRedirect && f.ecrHits.Load() != 0 {
 				t.Fatal("the token request followed the redirect")
 			}
 			assertNoAWSSecrets(t, out, msg)
