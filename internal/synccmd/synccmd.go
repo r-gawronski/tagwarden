@@ -39,6 +39,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -431,8 +432,15 @@ func summarize(res sync.Result) report {
 	return r
 }
 
-// encode marshals r within maxTermination bytes. It drops errors from the
-// end first, then synced tags from the end, and flags what it dropped.
+// Errors kept first when the report must be truncated, and their cap.
+const (
+	keptErrors   = 3
+	keptErrorLen = 200
+)
+
+// encode marshals r within maxTermination bytes. When r does not fit, it
+// keeps the first errors cut to keptErrorLen bytes, then as many synced
+// tags as fit, then as many further errors as fit, and flags what it cut.
 func encode(r report) []byte {
 	r.V = 1
 	if r.Synced == nil {
@@ -447,13 +455,35 @@ func encode(r report) []byte {
 		return marshal(r)
 	}
 	errs, synced := r.Errors, r.Synced
-	r.ErrorsTruncated = len(errs) > 0
-	r.Errors = errs[:largest(len(errs), func(k int) bool { r.Errors = errs[:k]; return fits(r) })]
+	head := make([]string, 0, keptErrors)
+	for _, e := range errs[:min(keptErrors, len(errs))] {
+		c := cut(e, keptErrorLen)
+		r.ErrorsTruncated = r.ErrorsTruncated || c != e
+		head = append(head, c)
+	}
+	rest := errs[len(head):]
+	withRest := func(k int) []string { return append(slices.Clip(head), rest[:k]...) }
+
+	r.Errors = head
 	if !fits(r) {
 		r.Truncated = true
 		r.Synced = synced[:largest(len(synced), func(k int) bool { r.Synced = synced[:k]; return fits(r) })]
 	}
+	n := largest(len(rest), func(k int) bool { r.Errors = withRest(k); return fits(r) })
+	r.Errors = withRest(n)
+	r.ErrorsTruncated = r.ErrorsTruncated || n < len(rest)
 	return marshal(r)
+}
+
+// cut shortens s to at most n bytes without splitting a rune.
+func cut(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // largest returns the largest k in [0, n] for which ok(k) holds, assuming
