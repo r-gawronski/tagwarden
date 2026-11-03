@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,8 +40,8 @@ import (
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
-// credentialProvider gets registry credentials from a cloud identity.
-// Azure is the first; ECR and GAR are planned.
+// credentialProvider gets registry credentials from a cloud identity:
+// Azure and AWS; GAR is planned.
 type credentialProvider interface {
 	Authenticator(ctx context.Context, reg name.Registry) (authn.Authenticator, error)
 }
@@ -59,6 +60,11 @@ func cloudAuth(ctx context.Context, provider string, spec syncspec.Spec, o optio
 	switch provider {
 	case syncspec.AuthAzureWorkloadIdentity:
 		p = azureProvider{id: *spec.Azure, tokenFile: o.azureToken, client: client, allowLoopback: o.allowLoopback}
+	case syncspec.AuthAWSWorkloadIdentity:
+		p = awsProvider{
+			id: *spec.AWS, tokenFile: o.awsToken, client: client, allowLoopback: o.allowLoopback,
+			session: roleSessionName(spec.Mirror), stsURL: o.awsSTS, ecrURL: o.awsECR,
+		}
 	default:
 		return nil, fmt.Errorf("%s credentials: unknown provider %q", what, provider)
 	}
@@ -84,8 +90,8 @@ type azureProvider struct {
 }
 
 // loopback reports whether rawHost (host[:port] or a URL) is a loopback
-// address that tests may use.
-func (a azureProvider) loopback(rawHost string) bool {
+// address and allow is set: tests use fakes on 127.0.0.1.
+func loopback(allow bool, rawHost string) bool {
 	if u, err := url.Parse(rawHost); err == nil && u.Host != "" {
 		rawHost = u.Host
 	}
@@ -94,26 +100,22 @@ func (a azureProvider) loopback(rawHost string) bool {
 		h = rawHost
 	}
 	ip, err := netip.ParseAddr(strings.Trim(h, "[]"))
-	return a.allowLoopback && err == nil && ip.IsLoopback()
+	return allow && err == nil && ip.IsLoopback()
 }
 
 func (a azureProvider) Authenticator(ctx context.Context, reg name.Registry) (authn.Authenticator, error) {
 	host := reg.RegistryStr()
 	// The Entra token is sent only to Azure Container Registry, and the
 	// projected token only to a known authority (threat model T27).
-	if !syncspec.ACRHost(host) && !a.loopback(host) {
+	if !syncspec.ACRHost(host) && !loopback(a.allowLoopback, host) {
 		return nil, fmt.Errorf("%s is not an Azure Container Registry host", host)
 	}
-	if !syncspec.AzureAuthority(a.id.AuthorityHost) && !a.loopback(a.id.AuthorityHost) {
+	if !syncspec.AzureAuthority(a.id.AuthorityHost) && !loopback(a.allowLoopback, a.id.AuthorityHost) {
 		return nil, errors.New("authorityHost is not a known Microsoft Entra authority host")
 	}
-	assertion, err := os.ReadFile(a.tokenFile)
+	assertion, err := readToken(a.tokenFile)
 	if err != nil {
-		return nil, fmt.Errorf("projected ServiceAccount token: %w", err)
-	}
-	assertion = bytes.TrimSpace(assertion)
-	if len(assertion) == 0 {
-		return nil, errors.New("projected ServiceAccount token is empty")
+		return nil, err
 	}
 	entra := strings.TrimSuffix(a.id.AuthorityHost, "/") + "/" + a.id.TenantID + "/oauth2/v2.0/token"
 	r, err := postForm(ctx, a.client, "token request to Microsoft Entra ID", entra, url.Values{
@@ -146,6 +148,18 @@ func (a azureProvider) Authenticator(ctx context.Context, reg name.Registry) (au
 	return authn.FromConfig(authn.AuthConfig{Username: acrUser, Password: r.RefreshToken}), nil
 }
 
+// readToken reads the projected ServiceAccount token.
+func readToken(file string) ([]byte, error) {
+	b, err := os.ReadFile(file) //nolint:gosec // fixed mount path or a test file
+	if err != nil {
+		return nil, fmt.Errorf("projected ServiceAccount token: %w", err)
+	}
+	if b = bytes.TrimSpace(b); len(b) == 0 {
+		return nil, errors.New("projected ServiceAccount token is empty")
+	}
+	return b, nil
+}
+
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -156,41 +170,63 @@ type tokenResponse struct {
 // oauthError matches an OAuth error code such as invalid_client.
 var oauthError = regexp.MustCompile(`^[a-z_]{1,64}$`)
 
-// postForm posts form to endpoint. Errors carry the status code and the
-// OAuth and Entra error codes only, never the body or the form. A 4xx
-// answer is a config error; 429, 5xx and network errors are transient.
+// postForm posts an OAuth form to endpoint and decodes the JSON answer.
+// Errors carry the status code and the OAuth and Entra error codes only.
 func postForm(ctx context.Context, c *http.Client, what, endpoint string, form url.Values) (tokenResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return tokenResponse{}, fmt.Errorf("%s: invalid endpoint", what)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	body, err := send(c, what, req, func(b []byte) []string {
+		var r tokenResponse
+		_ = json.Unmarshal(b, &r)
+		var codes []string
+		if oauthError.MatchString(r.Error) {
+			codes = append(codes, r.Error)
+		}
+		for _, code := range r.ErrorCodes[:min(3, len(r.ErrorCodes))] {
+			codes = append(codes, fmt.Sprintf("AADSTS%d", code))
+		}
+		return codes
+	}, nil)
+	if err != nil {
+		return tokenResponse{}, err
+	}
+	var r tokenResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return tokenResponse{}, fmt.Errorf("%s: invalid response", what)
+	}
+	return r, nil
+}
+
+// send sends a token request and returns the body of a 200 answer.
+// Errors carry the status code and the codes that codesOf finds in the
+// body, never the body or the request. A 4xx answer is a config error;
+// 429, 5xx, network errors and a 4xx with a code for which retry holds
+// are transient.
+func send(c *http.Client, what string, req *http.Request, codesOf func([]byte) []string, retry func(code string) bool) ([]byte, error) {
 	resp, err := c.Do(req)
 	if err != nil {
 		err = fmt.Errorf("%s: %w", what, err)
 		if errors.As(err, new(*registry.PolicyError)) {
-			return tokenResponse{}, err
+			return nil, err
 		}
-		return tokenResponse{}, transientError{err}
+		return nil, transientError{err}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var r tokenResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil && resp.StatusCode == http.StatusOK {
-		return tokenResponse{}, fmt.Errorf("%s: invalid response", what)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, transientError{fmt.Errorf("%s: reading the response: %w", what, err)}
 	}
 	if resp.StatusCode == http.StatusOK {
-		return r, nil
+		return body, nil
 	}
-	parts := []string{fmt.Sprintf("%s: HTTP %d", what, resp.StatusCode)}
-	if oauthError.MatchString(r.Error) {
-		parts = append(parts, r.Error)
+	codes := codesOf(body)
+	err = errors.New(strings.Join(append([]string{fmt.Sprintf("%s: HTTP %d", what, resp.StatusCode)}, codes...), " "))
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 ||
+		retry != nil && slices.ContainsFunc(codes, retry) {
+		return nil, transientError{err}
 	}
-	for _, code := range r.ErrorCodes[:min(3, len(r.ErrorCodes))] {
-		parts = append(parts, fmt.Sprintf("AADSTS%d", code))
-	}
-	err = errors.New(strings.Join(parts, " "))
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return tokenResponse{}, transientError{err}
-	}
-	return tokenResponse{}, err
+	return nil, err
 }
