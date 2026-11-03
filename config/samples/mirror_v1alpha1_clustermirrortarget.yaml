@@ -24,9 +24,14 @@ spec:
   allowedSources:
     - registry.k8s.io
     - ghcr.io
-  # Required. Use {} to allow all namespaces.
-  allowedNamespaces:
-    matchLabels:
-      mirror.tagwarden.dev/allowed: "true"
+  # A mirror pushes only to a listed project whose namespaceSelector
+  # matches its namespace. {} allows every namespace.
+  projects:
+    - name: mirror
+      namespaceSelector: {}
+    - name: team-a
+      namespaceSelector:
+        matchLabels:
+          example.com/team: a
   policy:
     onTagMutation: Fail

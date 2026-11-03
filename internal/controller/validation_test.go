@@ -19,6 +19,7 @@ package controller
 import (
 	"io/fs"
 	"os"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -46,8 +47,11 @@ func validTarget(name string) *mirrorv1alpha1.ClusterMirrorTarget {
 				CredentialsSecretRef: &mirrorv1alpha1.SecretRef{Name: "proxy-auth"},
 			},
 			AllowedSources: []mirrorv1alpha1.RegistryHost{"registry.k8s.io", "ghcr.io"},
-			AllowedNamespaces: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"mirror.tagwarden.dev/allowed": "true"},
+			Projects: []mirrorv1alpha1.TargetProject{
+				{Name: "mirror", NamespaceSelector: &metav1.LabelSelector{}},
+				{Name: "team-a", NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"example.com/team": "a"},
+				}},
 			},
 			Policy: mirrorv1alpha1.TargetPolicy{OnTagMutation: mirrorv1alpha1.OnTagMutationFail},
 		},
@@ -65,13 +69,14 @@ func validMirror(name string) *mirrorv1alpha1.ArtifactMirror {
 				Registry:   "registry.k8s.io",
 				Repository: "pause",
 			},
-			Target: mirrorv1alpha1.Target{Project: "mirror"},
+			Target: mirrorv1alpha1.Target{Project: "mirror", Repository: "k8s/pause"},
 			Tags: mirrorv1alpha1.TagSelector{
-				Include:     []string{`^\d+\.\d+$`},
-				Exclude:     []string{"-rc"},
-				SemverRange: ">=3.9",
-				KeepLatest:  ptr.To[int32](3),
-				Tags:        []string{"3.10"},
+				Include:         []string{`^\d+\.\d+$`},
+				Exclude:         []string{"-rc"},
+				SemverRange:     ">=3.9",
+				KeepLatest:      ptr.To[int32](3),
+				AllowPrerelease: true,
+				Tags:            []string{"3.10"},
 			},
 			Platforms: []string{"linux/amd64", "linux/arm64/v8"},
 		},
@@ -97,18 +102,24 @@ var _ = Describe("API validation", func() {
 		}
 	})
 
-	It("accepts a full ClusterMirrorTarget", func() {
-		obj := validTarget("valid-target")
-		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
-		Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
-	})
-
-	It("accepts an empty namespace selector that allows all namespaces", func() {
-		obj := validTarget("all-namespaces-target")
-		obj.Spec.AllowedNamespaces = &metav1.LabelSelector{}
-		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
-		Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
-	})
+	DescribeTable("accepts a valid ClusterMirrorTarget",
+		func(mutate func(*mirrorv1alpha1.ClusterMirrorTarget)) {
+			obj := validTarget("valid-target")
+			mutate(obj)
+			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
+		},
+		Entry("full example", func(*mirrorv1alpha1.ClusterMirrorTarget) {}),
+		Entry("registry with port 443", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Registry = "registry-1.docker.io:443"
+		}),
+		Entry("localhost registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Registry = "localhost:5000"
+		}),
+		Entry("IPv6 registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Registry = "[::1]:5000"
+		}),
+	)
 
 	It("defaults the CA bundle key and tag mutation policy", func() {
 		obj := validTarget("defaults-target")
@@ -120,18 +131,27 @@ var _ = Describe("API validation", func() {
 		Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
 	})
 
-	It("accepts a full ArtifactMirror", func() {
-		obj := validMirror("valid-mirror")
-		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
-		Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
-	})
-
-	It("accepts a schedule macro", func() {
-		obj := validMirror("macro-mirror")
-		obj.Spec.Schedule = "@daily"
-		Expect(k8sClient.Create(ctx, obj)).To(Succeed())
-		Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
-	})
+	DescribeTable("accepts a valid ArtifactMirror",
+		func(mutate func(*mirrorv1alpha1.ArtifactMirror)) {
+			obj := validMirror("valid-mirror")
+			mutate(obj)
+			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
+		},
+		Entry("full example", func(*mirrorv1alpha1.ArtifactMirror) {}),
+		Entry("@daily", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Schedule = "@daily" }),
+		Entry("@midnight", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Schedule = "@midnight" }),
+		Entry("@annually", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Schedule = "@annually" }),
+		Entry("cron with steps and names", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Schedule = "*/15 1-5 ? * MON-FRI"
+		}),
+		Entry("explicit tags only", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Tags = mirrorv1alpha1.TagSelector{Tags: []string{"3.10"}}
+		}),
+		Entry("nested source repository", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Source.Repository = "library/nginx"
+		}),
+	)
 
 	DescribeTable("rejects an invalid ClusterMirrorTarget",
 		func(mutate func(*mirrorv1alpha1.ClusterMirrorTarget)) {
@@ -143,8 +163,20 @@ var _ = Describe("API validation", func() {
 		Entry("registry with scheme", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.Registry = "https://registry.example.internal"
 		}),
+		Entry("registry with userinfo", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Registry = "u:p@registry.example.internal"
+		}),
+		Entry("registry with a space", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Registry = "a b"
+		}),
+		Entry("registry with an empty port", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Registry = "host:"
+		}),
 		Entry("proxy URL with userinfo", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.Proxy.HTTPSProxy = "http://user:pass@proxy.example.internal:3128"
+		}),
+		Entry("SOCKS proxy", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Proxy.HTTPSProxy = "socks5://x:1080"
 		}),
 		Entry("no allowed sources", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.AllowedSources = nil
@@ -152,8 +184,20 @@ var _ = Describe("API validation", func() {
 		Entry("allowed source with scheme", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.AllowedSources = []mirrorv1alpha1.RegistryHost{"https://ghcr.io"}
 		}),
-		Entry("no allowed namespaces", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
-			o.Spec.AllowedNamespaces = nil
+		Entry("no projects", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Projects = nil
+		}),
+		Entry("project with an invalid name", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Projects[0].Name = "Upper"
+		}),
+		Entry("project with a path", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Projects[0].Name = "a/b"
+		}),
+		Entry("project without a namespace selector", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Projects[0].NamespaceSelector = nil
+		}),
+		Entry("duplicate project", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Projects[1].Name = o.Spec.Projects[0].Name
 		}),
 		Entry("unknown tag mutation policy", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.Policy.OnTagMutation = "Replace"
@@ -173,18 +217,33 @@ var _ = Describe("API validation", func() {
 		Entry("keepLatest 101", func(o *mirrorv1alpha1.ArtifactMirror) {
 			o.Spec.Tags.KeepLatest = ptr.To[int32](101)
 		}),
-		Entry("invalid schedule", func(o *mirrorv1alpha1.ArtifactMirror) {
-			o.Spec.Schedule = "every day"
+		Entry("invalid schedule", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Schedule = "every day" }),
+		Entry("@every schedule", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Schedule = "@every 1h" }),
+		Entry("schedule with a time zone", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Schedule = "CRON_TZ=UTC 0 3 * * *"
 		}),
-		Entry("unknown type", func(o *mirrorv1alpha1.ArtifactMirror) {
-			o.Spec.Type = "Foo"
+		Entry("schedule with a short time zone", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Schedule = "TZ=UTC 3 * * *"
 		}),
-		Entry("empty source repository", func(o *mirrorv1alpha1.ArtifactMirror) {
-			o.Spec.Source.Repository = ""
+		Entry("unknown type", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Type = "Foo" }),
+		Entry("empty source repository", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Source.Repository = "" }),
+		Entry("upper case source repository", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Source.Repository = "Upper"
+		}),
+		Entry("source repository with ..", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Source.Repository = "../x"
+		}),
+		Entry("source repository with //", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Source.Repository = "a//b"
+		}),
+		Entry("target repository with ..", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Target.Repository = "../x"
 		}),
 		Entry("source registry with scheme", func(o *mirrorv1alpha1.ArtifactMirror) {
 			o.Spec.Source.Registry = "https://x"
 		}),
+		Entry("empty target project", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Target.Project = "" }),
+		Entry("target project with a path", func(o *mirrorv1alpha1.ArtifactMirror) { o.Spec.Target.Project = "a/b" }),
 		Entry("no tag selector", func(o *mirrorv1alpha1.ArtifactMirror) {
 			o.Spec.Tags = mirrorv1alpha1.TagSelector{}
 		}),
@@ -196,6 +255,15 @@ var _ = Describe("API validation", func() {
 			for i := range o.Spec.Tags.Include {
 				o.Spec.Tags.Include[i] = string(rune('a' + i))
 			}
+		}),
+		Entry("exclude pattern too long", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Tags.Exclude = []string{strings.Repeat("a", 257)}
+		}),
+		Entry("semverRange too long", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Tags.SemverRange = ">=" + strings.Repeat("1", 255)
+		}),
+		Entry("invalid explicit tag", func(o *mirrorv1alpha1.ArtifactMirror) {
+			o.Spec.Tags.Tags = []string{"-bad"}
 		}),
 		Entry("invalid platform", func(o *mirrorv1alpha1.ArtifactMirror) {
 			o.Spec.Platforms = []string{"linux"}
