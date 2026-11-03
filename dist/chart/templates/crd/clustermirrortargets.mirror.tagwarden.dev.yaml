@@ -335,6 +335,102 @@ spec:
                 x-kubernetes-validations:
                 - message: must be host[:port] without a scheme, credentials or path
                   rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
+              sourceCABundles:
+                description: |-
+                  sourceCABundles lists extra root CAs per source registry, for
+                  upstreams signed by a private CA. They are trusted only for that
+                  source registry, on top of the system roots. Tenants never see or
+                  reference these Secrets: the platform team decides which sources
+                  have private CAs. At most one entry per registry.
+                items:
+                  description: SourceCABundle holds extra root CAs for one source
+                    registry.
+                  properties:
+                    registry:
+                      description: |-
+                        registry is the source registry that trusts the CA. The Docker Hub
+                        names count as one registry.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be host[:port] without a scheme, credentials
+                          or path
+                        rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
+                    secretRef:
+                      description: |-
+                        secretRef is a Secret in the operator namespace with PEM
+                        certificates under the key.
+                      properties:
+                        key:
+                          default: ca.crt
+                          description: key in the Secret that holds the PEM data.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        name:
+                          description: name of the Secret.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - registry
+                  - secretRef
+                  type: object
+                maxItems: 50
+                type: array
+                x-kubernetes-list-map-keys:
+                - registry
+                x-kubernetes-list-type: map
+              sourceCredentials:
+                description: |-
+                  sourceCredentials lists pull credentials per source registry. A sync
+                  Job gets only the entry for its own source; a source without an entry
+                  is pulled anonymously. Tenants never see or reference these Secrets:
+                  the platform team decides which sources have accounts. At most one
+                  entry per registry; the controller rejects duplicates, Docker Hub
+                  names included.
+                items:
+                  description: SourceCredential holds the pull credentials for one
+                    source registry.
+                  properties:
+                    registry:
+                      description: |-
+                        registry is the source registry these credentials are for. The Docker
+                        Hub names docker.io, index.docker.io and registry-1.docker.io count as
+                        one registry.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                      x-kubernetes-validations:
+                      - message: must be host[:port] without a scheme, credentials
+                          or path
+                        rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
+                    secretRef:
+                      description: |-
+                        secretRef is a kubernetes.io/dockerconfigjson Secret in the operator
+                        namespace with an auths entry for the registry.
+                      properties:
+                        name:
+                          description: name of the Secret.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - registry
+                  - secretRef
+                  type: object
+                maxItems: 50
+                type: array
+                x-kubernetes-list-map-keys:
+                - registry
+                x-kubernetes-list-type: map
             required:
             - allowedSources
             - credentialsSecretRef

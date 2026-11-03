@@ -44,6 +44,11 @@ const (
 	TargetAuthFile = "/var/run/tagwarden/target/.dockerconfigjson"
 	// TargetCAFile is an optional CA bundle for the target registry.
 	TargetCAFile = "/var/run/tagwarden/target-ca/ca.crt"
+	// SourceAuthFile is the optional pull credentials for the source
+	// registry as a dockerconfigjson.
+	SourceAuthFile = "/var/run/tagwarden/source/.dockerconfigjson"
+	// SourceCAFile is an optional CA bundle trusted for the source registry.
+	SourceCAFile = "/var/run/tagwarden/source-ca/ca.crt"
 	// ProxyCAFile is an optional CA bundle for a TLS-inspecting proxy.
 	ProxyCAFile = "/var/run/tagwarden/proxy-ca/ca.crt"
 	// ClientCertDir optionally holds tls.crt and tls.key for target mTLS.
