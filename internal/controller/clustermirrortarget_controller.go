@@ -150,6 +150,9 @@ func missingIdentity(t *mirrorv1alpha1.ClusterMirrorTarget) (string, string) {
 	if usesAuth(t, syncspec.AuthAWSWorkloadIdentity) && (wi == nil || wi.AWS == nil) {
 		return ReasonInvalidSpec, "awsWorkloadIdentity requires spec.workloadIdentity.aws"
 	}
+	if usesAuth(t, syncspec.AuthGCPWorkloadIdentity) && (wi == nil || wi.GCP == nil) {
+		return ReasonInvalidSpec, "gcpWorkloadIdentity requires spec.workloadIdentity.gcp"
+	}
 	return "", ""
 }
 
