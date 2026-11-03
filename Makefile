@@ -333,6 +333,21 @@ chart-check: ## Lint the chart and validate its rendered output.
 	done
 	go test -tags=chart ./test/chart/
 
+## Release chart version (also the appVersion) and default manager image.
+CHART_VERSION ?= 0.0.0-dev
+CHART_IMAGE ?= registry.example.internal/tagwarden/tagwarden
+CHART_PACKAGE_DIR ?= $(LOCALBIN)/chart
+
+.PHONY: chart-package
+chart-package: ## Package the chart into bin/chart with CHART_VERSION and CHART_IMAGE.
+	rm -rf "$(CHART_PACKAGE_DIR)" && mkdir -p "$(CHART_PACKAGE_DIR)"
+	cp -R $(HELM_CHART_DIR) "$(CHART_PACKAGE_DIR)/tagwarden"
+	sed -i.bak 's#^    repository: registry\.example\.internal/tagwarden/tagwarden$$#    repository: $(CHART_IMAGE)#' "$(CHART_PACKAGE_DIR)/tagwarden/values.yaml"
+	rm "$(CHART_PACKAGE_DIR)/tagwarden/values.yaml.bak"
+	grep -qx '    repository: $(CHART_IMAGE)' "$(CHART_PACKAGE_DIR)/tagwarden/values.yaml"
+	$(HELM) package "$(CHART_PACKAGE_DIR)/tagwarden" --version "$(CHART_VERSION)" --app-version "$(CHART_VERSION)" -d "$(CHART_PACKAGE_DIR)"
+	$(HELM) lint --strict "$(CHART_PACKAGE_DIR)/tagwarden-$(CHART_VERSION).tgz"
+
 .PHONY: install-helm
 install-helm: ## Check that Helm is installed.
 	@command -v $(HELM) >/dev/null 2>&1 || { echo "Helm not found. Install a released, checksummed Helm binary." >&2; exit 1; }
