@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -53,6 +54,9 @@ const (
 	ProxyCAFile = "/var/run/tagwarden/proxy-ca/ca.crt"
 	// ClientCertDir optionally holds tls.crt and tls.key for target mTLS.
 	ClientCertDir = "/var/run/tagwarden/client-cert"
+	// AzureTokenFile is the projected ServiceAccount token with audience
+	// AzureTokenAudience, mounted when a registry uses Azure workload identity.
+	AzureTokenFile = "/var/run/tagwarden/azure-token/token" //nolint:gosec // path, not a credential
 
 	// ProxyUserEnv and ProxyPasswordEnv hold the proxy credentials. The
 	// proxy itself comes from HTTPS_PROXY and NO_PROXY. Only these
@@ -61,6 +65,46 @@ const (
 	ProxyUserEnv     = "TAGWARDEN_PROXY_USER"
 	ProxyPasswordEnv = "TAGWARDEN_PROXY_PASSWORD" //nolint:gosec // env var name, not a credential
 )
+
+// Cloud registry auth.
+const (
+	// AuthAzureWorkloadIdentity names Azure workload identity in
+	// Spec.TargetAuth and Spec.SourceAuth.
+	AuthAzureWorkloadIdentity = "azureWorkloadIdentity"
+	// AzureTokenAudience is the audience Microsoft Entra ID expects in a
+	// federated ServiceAccount token.
+	AzureTokenAudience = "api://AzureADTokenExchange" //nolint:gosec // audience, not a credential
+	// DefaultAzureAuthorityHost is the Microsoft Entra endpoint of the
+	// global Azure cloud.
+	DefaultAzureAuthorityHost = "https://login.microsoftonline.com/"
+	// DefaultAzureScope is the Microsoft Entra scope of Azure Container
+	// Registry tokens.
+	DefaultAzureScope = "https://containerregistry.azure.net/.default"
+)
+
+// Azure is the Microsoft Entra workload identity of a sync run. It holds
+// identifiers only, no secrets.
+type Azure struct {
+	ClientID      string `json:"clientID"`
+	TenantID      string `json:"tenantID"`
+	AuthorityHost string `json:"authorityHost"`
+	Scope         string `json:"scope"`
+}
+
+var guid = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func (a *Azure) validate() error {
+	if !guid.MatchString(a.ClientID) || !guid.MatchString(a.TenantID) {
+		return errors.New("clientID and tenantID must be GUIDs")
+	}
+	for _, s := range []string{a.AuthorityHost, a.Scope} {
+		u, err := url.Parse(s)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("authorityHost and scope must be https URLs")
+		}
+	}
+	return nil
+}
 
 // Exit codes of the sync Job. The Job never returns 2 itself: the Go runtime
 // exits 2 on an unrecovered crash, such as a panic outside the recovered
@@ -106,6 +150,14 @@ type Spec struct {
 	// link-local and metadata addresses, for example the cluster pod and
 	// service CIDRs.
 	DeniedCIDRs []string `json:"deniedCIDRs,omitempty"`
+
+	// TargetAuth and SourceAuth name the cloud provider that authenticates
+	// to the registry, such as AuthAzureWorkloadIdentity. Empty means the
+	// mounted dockerconfigjson, or anonymous for a source without one.
+	TargetAuth string `json:"targetAuth,omitempty"`
+	SourceAuth string `json:"sourceAuth,omitempty"`
+	// Azure is required when a registry uses AuthAzureWorkloadIdentity.
+	Azure *Azure `json:"azure,omitempty"`
 
 	// SourceRepo, TargetRepo and DeniedPrefixes are set by Decode.
 	SourceRepo     name.Repository `json:"-"`
@@ -164,6 +216,22 @@ func (s *Spec) validate() error {
 	}
 	if len(s.AllowedSources) == 0 || slices.Contains(s.AllowedSources, "") {
 		return errors.New("allowedSources: at least one non-empty host is required")
+	}
+	for _, a := range []string{s.TargetAuth, s.SourceAuth} {
+		switch a {
+		case "":
+		case AuthAzureWorkloadIdentity:
+			if s.Azure == nil {
+				return errors.New("azure: required by " + AuthAzureWorkloadIdentity)
+			}
+		default:
+			return fmt.Errorf("unknown registry auth %q", a)
+		}
+	}
+	if s.Azure != nil {
+		if err := s.Azure.validate(); err != nil {
+			return fmt.Errorf("azure: %w", err)
+		}
 	}
 	for _, c := range s.DeniedCIDRs {
 		p, err := netip.ParsePrefix(c)

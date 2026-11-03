@@ -51,9 +51,29 @@ func TestDecode(t *testing.T) {
 	}
 }
 
+const maxTags = `"maxTags": 100,`
+
+const zeroGUID = `"00000000-0000-0000-0000-000000000000"`
+
+func azure(clientID, host string) string {
+	return `"targetAuth": "azureWorkloadIdentity", "azure": {"clientID": ` + clientID + `, "tenantID": ` + zeroGUID +
+		`, "authorityHost": ` + host + `, "scope": "https://containerregistry.azure.net/.default"},`
+}
+
+func TestDecodeAzure(t *testing.T) {
+	in := strings.Replace(valid, maxTags, `"maxTags": 100, `+azure(zeroGUID, `"https://login.microsoftonline.com/"`)+` "sourceAuth": "azureWorkloadIdentity",`, 1)
+	s, err := Decode(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.TargetAuth != AuthAzureWorkloadIdentity || s.SourceAuth != AuthAzureWorkloadIdentity || s.Azure.Scope != DefaultAzureScope {
+		t.Fatalf("decoded %+v", s)
+	}
+}
+
 func TestDecodeRejects(t *testing.T) {
 	cases := map[string]struct{ old, new string }{
-		"unknown field":      {`"maxTags": 100,`, `"maxTags": 100, "extra": 1,`},
+		"unknown field":      {maxTags, `"maxTags": 100, "extra": 1,`},
 		"unknown tag field":  {`"keepLatest": 2`, `"keepLatest": 2, "latest": true`},
 		"no namespace":       {`"namespace": "team-a"`, `"namespace": ""`},
 		"no name":            {`"name": "pause"`, `"name": ""`},
@@ -64,12 +84,17 @@ func TestDecodeRejects(t *testing.T) {
 		"bad platform":       {`"linux/amd64"`, `"linux/amd64/v1/x/y"`},
 		"no mutation policy": {`"onTagMutation": "Fail"`, `"onTagMutation": ""`},
 		"bad mutation":       {`"Fail"`, `"Replace"`},
-		"negative max":       {`"maxTags": 100,`, `"maxTags": -1,`},
+		"negative max":       {maxTags, `"maxTags": -1,`},
 		"negative size":      {`"maxArtifactSize": 1048576`, `"maxArtifactSize": -1`},
 		"trailing data":      {"\n}", "\n}{}"},
 		"no allowed sources": {`["registry.k8s.io"]`, `[]`},
 		"empty allowed host": {`["registry.k8s.io"]`, `[""]`},
 		"bad CIDR":           {`"10.96.0.0/12"`, `"10.96.0.0/33"`},
+		"unknown auth":       {maxTags, `"maxTags": 100, "targetAuth": "awsWebIdentity",`},
+		"azure missing":      {maxTags, `"maxTags": 100, "sourceAuth": "azureWorkloadIdentity",`},
+		"azure bad client":   {maxTags, `"maxTags": 100, ` + azure(`"x"`, `"https://login.example.internal/"`)},
+		"azure http host":    {maxTags, `"maxTags": 100, ` + azure(zeroGUID, `"http://login.example.internal/"`)},
+		"azure no host":      {maxTags, `"maxTags": 100, ` + azure(zeroGUID, `""`)},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
