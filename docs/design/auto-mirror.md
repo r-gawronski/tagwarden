@@ -9,7 +9,9 @@ rewrites to the target project, so teams keep upstream image names.
 - **Opt-in per target.** `ClusterMirrorTarget.spec.autoMirror` has
   `enabled`, `project`, `schedule` (default `0 */6 * * *`) and
   `maxMirrorsPerNamespace` (default 20, max 200). CEL requires `project` to be
-  listed in `projects`. Without `enabled` the pod only gets an
+  listed in `projects` and must not set `allowRepositoryOverride`: the node
+  rewrite maps a path to one source, and an override project would let a
+  tenant bind that path to another. Without `enabled` the pod only gets an
   `AutoMirrorDisabled` Warning Event.
 - **Generated mirrors are ordinary `ArtifactMirror` objects.** The
   ArtifactMirror controller authorizes, renders and syncs them like any
@@ -38,7 +40,19 @@ rewrites to the target project, so teams keep upstream image names.
 - **Image refs.** `repo:tag` and `repo:tag@digest` (the tag is mirrored).
   A ref that points at the target registry and `autoMirror.project` is mapped
   back to the upstream source through `allowedSources`. Digest-only refs get
-  `DigestOnlyNotSupported`.
+  `DigestOnlyNotSupported`. Untagged refs would mean `latest`, a moving tag
+  nobody chose, so they get `ImplicitLatestNotSupported`.
+- **Namespace check first.** The controller checks the project's
+  `namespaceSelector` before creating anything and refuses with
+  `MirrorRefused` (`ProjectNotAllowed`), so a namespace that may not use the
+  project cannot fill the quota with failing objects.
+- **Existing generated mirrors are verified.** A mirror with the generated
+  label but another source or target is left alone (`NameConflict`). One
+  that only drifted in project, schedule or `target.repository` (the platform
+  changed `autoMirror`) is patched back.
+- **One bad image does not stop the rest.** Sources are handled
+  independently; an object the API rejects gives an `InvalidImage` Event and
+  the others proceed.
 - **Quota.** The count of generated mirrors per namespace and target is
   read from the API server just before a create, so a stale cache cannot
   overshoot. Over quota gives `MirrorRefused` (`QuotaExceeded`).
@@ -50,9 +64,10 @@ rewrites to the target project, so teams keep upstream image names.
   the state changes. The state map is dropped when a pod disappears and
   cleared when it grows past 10000 pods.
 - **Memory.** Pods come from a dedicated informer cache with a transform
-  that keeps name, namespace, UID, resource version, deletion timestamp,
-  annotations, labels, owner references, phase and the name and image of
-  each container and init container. The main manager cache keeps its
+  that keeps name, namespace, UID, resource version, deletion timestamp and,
+  for annotated pods only, the auto-mirror annotation and the name and
+  image of each container and init container. The informer still lists and
+  watches all pods, so API server and CPU cost grow with the pod count. The main manager cache keeps its
   operator-namespace restriction on pods.
 - **RBAC.** Pods get/list/watch cluster-wide, `artifactmirrors`
   create/patch, Events as before. See T28 in the threat model.
