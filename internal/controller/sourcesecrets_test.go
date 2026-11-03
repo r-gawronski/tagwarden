@@ -58,8 +58,8 @@ func sourceSecrets(prefix string) []*corev1.Secret {
 // withSourceSecrets points the target at the secrets of sourceSecrets(t.Name).
 func withSourceSecrets(t *mirrorv1alpha1.ClusterMirrorTarget) {
 	t.Spec.SourceCredentials = []mirrorv1alpha1.SourceCredential{
-		{Registry: ghcrRegistry, SecretRef: mirrorv1alpha1.SecretRef{Name: t.Name + "-src-auth"}},
-		{Registry: "registry-1.docker.io", SecretRef: mirrorv1alpha1.SecretRef{Name: t.Name + "-src-hub"}},
+		{Registry: ghcrRegistry, SecretRef: &mirrorv1alpha1.SecretRef{Name: t.Name + "-src-auth"}},
+		{Registry: "registry-1.docker.io", SecretRef: &mirrorv1alpha1.SecretRef{Name: t.Name + "-src-hub"}},
 	}
 	t.Spec.SourceCABundles = []mirrorv1alpha1.SourceCABundle{
 		{Registry: ghcrRegistry, SecretRef: mirrorv1alpha1.SecretKeyRef{Name: t.Name + "-src-ca", Key: caKey}},
@@ -160,7 +160,7 @@ var _ = Describe("source Secrets of a ClusterMirrorTarget", func() {
 		},
 		Entry("credentials by Docker Hub alias", "tgt-src-dup", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			t.Spec.SourceCredentials = append(t.Spec.SourceCredentials,
-				mirrorv1alpha1.SourceCredential{Registry: dockerHubHost, SecretRef: mirrorv1alpha1.SecretRef{Name: t.Name + "-src-hub"}})
+				mirrorv1alpha1.SourceCredential{Registry: dockerHubHost, SecretRef: &mirrorv1alpha1.SecretRef{Name: t.Name + "-src-hub"}})
 		}, "sourceCredentials"),
 		Entry("CA bundles by case", "tgt-src-dupca", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			t.Spec.SourceCABundles = append(t.Spec.SourceCABundles,
