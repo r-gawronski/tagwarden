@@ -213,3 +213,11 @@ func CheckAddr(a netip.Addr, denied []netip.Prefix) error {
 	}
 	return nil
 }
+
+// AuthKeyHost turns a dockerconfigjson auths key such as https://host/v1/
+// into host.
+func AuthKeyHost(key string) string {
+	key = strings.TrimPrefix(strings.TrimPrefix(key, "https://"), "http://")
+	host, _, _ := strings.Cut(key, "/")
+	return host
+}
