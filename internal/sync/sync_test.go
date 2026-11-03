@@ -30,6 +30,7 @@ import (
 	stdsync "sync"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -493,5 +494,12 @@ func TestRunContextCancelled(t *testing.T) {
 	}
 	if n := dst.writes.Load(); n != 0 {
 		t.Fatalf("target written %d times", n)
+	}
+}
+
+func TestShortKeepsRunes(t *testing.T) {
+	msg := short(errors.New("a" + strings.Repeat("\u017c", maxMessage)))
+	if !utf8.ValidString(msg) || !strings.HasSuffix(msg, "...") || len(msg) > maxMessage+3 {
+		t.Fatalf("bad truncation: %q", msg)
 	}
 }
