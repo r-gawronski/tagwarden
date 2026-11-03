@@ -177,13 +177,15 @@ var _ = BeforeSuite(func() {
 		Namespace: operatorNamespace,
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&ArtifactMirrorReconciler{
-		Client:      mgr.GetClient(),
-		APIReader:   mgr.GetAPIReader(),
-		Scheme:      mgr.GetScheme(),
-		Recorder:    recorder,
-		Namespace:   operatorNamespace,
-		SyncImage:   syncImage,
-		DeniedCIDRs: []string{deniedCIDR},
+		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            recorder,
+		Namespace:           operatorNamespace,
+		SyncImage:           syncImage,
+		DeniedCIDRs:         []string{deniedCIDR},
+		ArgoCDTracking:      ArgoCDTrackingInherit,
+		ArgoCDInstanceLabel: "app.kubernetes.io/instance",
 	}).SetupWithManager(mgr)).To(Succeed())
 	go func() {
 		defer GinkgoRecover()
