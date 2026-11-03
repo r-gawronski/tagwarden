@@ -59,7 +59,8 @@ type Request struct {
 // Artifact is one tag and the digest it resolved to.
 type Artifact struct {
 	Tag, Digest string
-	// Referrers counts copied referrers and cosign tag-scheme artifacts.
+	// Referrers counts the referrers and cosign tag-scheme artifacts of the
+	// digest that the target holds after the run.
 	Referrers int
 }
 
@@ -197,6 +198,9 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 	case err != nil:
 		return fmt.Errorf("check target tag: %w", err)
 	case dst.Digest == src.Digest:
+		if a.Referrers, err = s.referrers(ctx, src.Digest); err != nil {
+			return err
+		}
 		res.Skipped = append(res.Skipped, a)
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationIgnore:
@@ -286,7 +290,8 @@ func (s *syncer) copy(ctx context.Context, desc *remote.Descriptor) error {
 }
 
 // referrers copies the OCI referrers of d and the cosign tag-scheme
-// artifacts sha256-<hex>.sig, .att and .sbom.
+// artifacts sha256-<hex>.sig, .att and .sbom that the target lacks. It
+// returns how many the target holds afterwards.
 func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 	opts := append(slices.Clone(s.req.SourceOpts), remote.Reuse(s.src), remote.WithContext(ctx))
 	idx, err := remote.Referrers(s.req.Source.Digest(d.String()), opts...)
@@ -309,21 +314,33 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		if err := json.Unmarshal(desc.Manifest, &mf); err != nil || mf.Subject == nil || mf.Subject.Digest != d {
 			continue
 		}
-		if err := s.copy(ctx, desc); err != nil {
+		if err := s.ensure(ctx, desc); err != nil {
 			return n, err
 		}
 		n++
 	}
 	for _, suffix := range []string{".sig", ".att", ".sbom"} {
 		tag := d.Algorithm + "-" + d.Hex + suffix
-		desc, err := s.src.Get(ctx, s.req.Source.Tag(tag))
+		src, err := resolve(ctx, s.src, s.req.Source.Tag(tag))
 		if notFound(err) {
 			continue
 		}
 		if err != nil {
+			return n, fmt.Errorf("resolve %s: %w", tag, err)
+		}
+		dst, err := resolve(ctx, s.dst, s.req.Target.Tag(tag))
+		if err == nil && dst.Digest == src.Digest {
+			n++
+			continue
+		}
+		if err != nil && !notFound(err) {
+			return n, fmt.Errorf("check target %s: %w", tag, err)
+		}
+		desc, err := s.src.Get(ctx, s.req.Source.Digest(src.Digest.String()))
+		if err != nil {
 			return n, fmt.Errorf("fetch %s: %w", tag, err)
 		}
-		if err := s.copy(ctx, desc); err != nil {
+		if err := s.ensure(ctx, desc); err != nil {
 			return n, err
 		}
 		if err := s.push.Put(ctx, s.req.Target.Tag(tag), desc); err != nil {
@@ -332,6 +349,18 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// ensure copies desc to the target unless its digest is already there.
+func (s *syncer) ensure(ctx context.Context, desc *remote.Descriptor) error {
+	_, err := resolve(ctx, s.dst, s.req.Target.Digest(desc.Digest.String()))
+	if err == nil {
+		return nil
+	}
+	if !notFound(err) {
+		return fmt.Errorf("check target %s: %w", desc.Digest, err)
+	}
+	return s.copy(ctx, desc)
 }
 
 // resolve returns the descriptor of ref. Like crane digest, it falls back to
