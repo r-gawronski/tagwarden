@@ -26,6 +26,7 @@ import (
 	"io"
 	"net/netip"
 	"slices"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -133,7 +134,7 @@ func (s *Spec) validate() error {
 	if s.TargetRepo, err = name.NewRepository(s.Target, name.StrictValidation); err != nil {
 		return fmt.Errorf("target: %w", err)
 	}
-	if _, err := tags.Select(nil, s.Tags); err != nil {
+	if err := tags.Validate(s.Tags); err != nil {
 		return fmt.Errorf("tags: %w", err)
 	}
 	for _, p := range s.RequiredPlatforms {
@@ -158,6 +159,57 @@ func (s *Spec) validate() error {
 			return fmt.Errorf("deniedCIDRs: %w", err)
 		}
 		s.DeniedPrefixes = append(s.DeniedPrefixes, p)
+	}
+	return nil
+}
+
+// dockerHub lists the names of the same registry, canonical name first.
+var dockerHub = []string{"docker.io", "index.docker.io", "registry-1.docker.io"}
+
+// CanonicalRegistry lowercases host and maps the Docker Hub names to
+// docker.io.
+func CanonicalRegistry(host string) string {
+	host = strings.ToLower(host)
+	if slices.Contains(dockerHub, host) {
+		return dockerHub[0]
+	}
+	return host
+}
+
+// AllowedSource reports whether host matches an allowed host[:port] exactly,
+// ignoring case and treating the Docker Hub names as one registry.
+func AllowedSource(host string, allowed []string) bool {
+	return slices.ContainsFunc(allowed, func(a string) bool { return CanonicalRegistry(a) == CanonicalRegistry(host) })
+}
+
+var (
+	// metadataAddrs are cloud metadata endpoints outside the link-local range.
+	metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254"), netip.MustParseAddr("100.100.100.200")}
+	// thisNetwork is 0.0.0.0/8, which some stacks route to the local host.
+	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
+	// nat64 embeds an IPv4 address in its last four bytes.
+	nat64 = netip.MustParsePrefix("64:ff9b::/96")
+)
+
+// CheckAddr refuses loopback, link-local, unspecified and metadata
+// addresses, 0.0.0.0/8, NAT64 addresses that embed any of these, and any
+// address in denied.
+func CheckAddr(a netip.Addr, denied []netip.Prefix) error {
+	a = a.Unmap()
+	if nat64.Contains(a) {
+		b := a.As16()
+		if err := CheckAddr(netip.AddrFrom4([4]byte(b[12:])), denied); err != nil {
+			return err
+		}
+	}
+	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
+		a.IsUnspecified() || thisNetwork.Contains(a) || slices.Contains(metadataAddrs, a) {
+		return fmt.Errorf("resolves to internal address %s", a)
+	}
+	for _, p := range denied {
+		if p.Contains(a) {
+			return fmt.Errorf("resolves to %s in denied CIDR %s", a, p)
+		}
 	}
 	return nil
 }

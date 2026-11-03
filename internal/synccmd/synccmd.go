@@ -274,7 +274,7 @@ func transports(p options, denied []netip.Prefix, getenv func(string) string) (s
 // request and connection.
 func checkSource(ctx context.Context, spec syncspec.Spec, o options, proxied bool) error {
 	host := spec.SourceRepo.RegistryStr()
-	if !allowedSource(host, spec.AllowedSources) {
+	if !syncspec.AllowedSource(host, spec.AllowedSources) {
 		return fmt.Errorf("source: registry %s is not in allowedSources", host)
 	}
 	name := host
@@ -335,51 +335,15 @@ func cachedLookup(lookup func(context.Context, string) ([]net.IPAddr, error)) fu
 	}
 }
 
-// dockerHub lists the names of the same registry.
-var dockerHub = []string{"docker.io", "index.docker.io", "registry-1.docker.io"}
-
-// allowedSource reports whether host matches an allowed host[:port] exactly,
-// ignoring case and treating the Docker Hub names as one registry.
-func allowedSource(host string, allowed []string) bool {
-	canon := func(h string) string {
-		h = strings.ToLower(h)
-		if slices.Contains(dockerHub, h) {
-			return dockerHub[0]
-		}
-		return h
-	}
-	return slices.ContainsFunc(allowed, func(a string) bool { return canon(a) == canon(host) })
-}
-
-var (
-	// metadataAddrs are cloud metadata endpoints outside the link-local range.
-	metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254"), netip.MustParseAddr("100.100.100.200")}
-	// thisNetwork is 0.0.0.0/8, which some stacks route to the local host.
-	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
-	// nat64 embeds an IPv4 address in its last four bytes.
-	nat64 = netip.MustParsePrefix("64:ff9b::/96")
-)
-
-// checkAddrs refuses loopback, link-local, unspecified and metadata
-// addresses, 0.0.0.0/8, NAT64 addresses that embed any of these, and any
-// address in denied.
+// checkAddrs refuses an address that syncspec.CheckAddr refuses. Only
+// tests set allowLoopback.
 func (o options) checkAddrs(addrs []netip.Addr, denied []netip.Prefix) error {
 	for _, a := range addrs {
-		a = a.Unmap()
-		if nat64.Contains(a) {
-			b := a.As16()
-			if err := o.checkAddrs([]netip.Addr{netip.AddrFrom4([4]byte(b[12:]))}, denied); err != nil {
-				return err
-			}
+		if o.allowLoopback && a.Unmap().IsLoopback() {
+			continue
 		}
-		if a.IsLoopback() && !o.allowLoopback || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
-			a.IsUnspecified() || thisNetwork.Contains(a) || slices.Contains(metadataAddrs, a) {
-			return fmt.Errorf("resolves to internal address %s", a)
-		}
-		for _, p := range denied {
-			if p.Contains(a) {
-				return fmt.Errorf("resolves to %s in denied CIDR %s", a, p)
-			}
+		if err := syncspec.CheckAddr(a, denied); err != nil {
+			return err
 		}
 	}
 	return nil
