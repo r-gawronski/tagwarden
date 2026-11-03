@@ -228,11 +228,11 @@ func randomLayer() v1.Layer {
 	return static.NewLayer(b, types.OCILayer)
 }
 
-// cronJobName matches the controller: tagwarden- and the first 20 hex
-// characters of sha256(namespace/name).
+// cronJobName matches the controller for short names: namespace, mirror and
+// the first 8 hex characters of sha256(namespace/name).
 func cronJobName(namespace, mirror string) string {
 	sum := sha256.Sum256([]byte(namespace + "/" + mirror))
-	return "tagwarden-" + hex.EncodeToString(sum[:])[:20]
+	return namespace + "-" + mirror + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
 func getMirror(g Gomega, namespace, mirror string) *mirrorv1alpha1.ArtifactMirror {
