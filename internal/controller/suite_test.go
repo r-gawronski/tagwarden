@@ -23,12 +23,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,6 +38,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -54,6 +57,33 @@ const (
 	syncImage         = "registry.example.internal/tagwarden:test"
 	deniedCIDR        = "10.96.0.0/12"
 )
+
+// writes counts the manager's update and patch calls on CronJobs and
+// ConfigMaps.
+var writes atomic.Int64
+
+func countingClient(cfg *rest.Config, opts client.Options) (client.Client, error) {
+	c, err := client.NewWithWatch(cfg, opts)
+	if err != nil {
+		return nil, err
+	}
+	count := func(obj client.Object) {
+		switch obj.(type) {
+		case *batchv1.CronJob, *corev1.ConfigMap:
+			writes.Add(1)
+		}
+	}
+	return interceptor.NewClient(c, interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			count(obj)
+			return c.Update(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+			count(obj)
+			return c.Patch(ctx, obj, p, opts...)
+		},
+	}), nil
+}
 
 // recorder keeps the Events of the mirror controller.
 var recorder = &testRecorder{}
@@ -134,9 +164,10 @@ var _ = BeforeSuite(func() {
 
 	By("starting the manager")
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:  scheme.Scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
-		Cache:   CacheOptions(operatorNamespace),
+		NewClient: countingClient,
+		Scheme:    scheme.Scheme,
+		Metrics:   metricsserver.Options{BindAddress: "0"},
+		Cache:     CacheOptions(operatorNamespace),
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect((&ClusterMirrorTargetReconciler{
