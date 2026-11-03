@@ -21,12 +21,19 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// RegistryHost is a registry host with an optional port, without a scheme or path.
+// RegistryHost is a registry host name or bracketed IP address with an
+// optional port, for example registry.example.internal:8443 or [::1]:5000.
+// It has no scheme, credentials or path.
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=253
-// +kubebuilder:validation:XValidation:rule="!self.contains('://')",message="must be host[:port] without a scheme"
-// +kubebuilder:validation:XValidation:rule="!self.contains('/')",message="must be host[:port] without a path"
+// +kubebuilder:validation:XValidation:rule=`self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')`,message="must be host[:port] without a scheme, credentials or path"
 type RegistryHost string
+
+// ProjectName is a single path segment in the target registry.
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=255
+// +kubebuilder:validation:Pattern=`^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*$`
+type ProjectName string
 
 // SecretRef names a Secret in the operator namespace.
 type SecretRef struct {
@@ -102,6 +109,20 @@ type TargetPolicy struct {
 	OnTagMutation OnTagMutation `json:"onTagMutation,omitempty"`
 }
 
+// TargetProject is a project in the target registry and the namespaces allowed to use it.
+type TargetProject struct {
+	// name of the project, a single path segment.
+	// +required
+	Name ProjectName `json:"name"`
+
+	// namespaceSelector selects the namespaces whose ArtifactMirrors may push
+	// to this project. It is required so that access is always an explicit
+	// decision. An empty selector ({}) allows every namespace, which suits a
+	// shared project. Team projects use a label selector.
+	// +required
+	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector"`
+}
+
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
 type ClusterMirrorTargetSpec struct {
 	// registry is the target registry as host[:port], without a scheme.
@@ -133,11 +154,16 @@ type ClusterMirrorTargetSpec struct {
 	// +required
 	AllowedSources []RegistryHost `json:"allowedSources"`
 
-	// allowedNamespaces selects the namespaces whose ArtifactMirrors may use this target.
-	// It is required so that access is always an explicit decision.
-	// An empty selector ({}) allows all namespaces.
+	// projects lists the target registry projects that mirrors may push to,
+	// and which namespaces may use each one. A mirror may push only to a
+	// listed project whose namespaceSelector matches the mirror's namespace.
+	// The controller enforces this at reconcile.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=map
+	// +listMapKey=name
 	// +required
-	AllowedNamespaces *metav1.LabelSelector `json:"allowedNamespaces"`
+	Projects []TargetProject `json:"projects"`
 
 	// policy holds the default policy for mirrors that use this target.
 	// +kubebuilder:default={}

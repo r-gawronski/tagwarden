@@ -50,69 +50,21 @@ spec:
           spec:
             description: spec defines the desired state of ClusterMirrorTarget
             properties:
-              allowedNamespaces:
-                description: |-
-                  allowedNamespaces selects the namespaces whose ArtifactMirrors may use this target.
-                  It is required so that access is always an explicit decision.
-                  An empty selector ({}) allows all namespaces.
-                properties:
-                  matchExpressions:
-                    description: matchExpressions is a list of label selector requirements.
-                      The requirements are ANDed.
-                    items:
-                      description: |-
-                        A label selector requirement is a selector that contains values, a key, and an operator that
-                        relates the key and values.
-                      properties:
-                        key:
-                          description: key is the label key that the selector applies
-                            to.
-                          type: string
-                        operator:
-                          description: |-
-                            operator represents a key's relationship to a set of values.
-                            Valid operators are In, NotIn, Exists and DoesNotExist.
-                          type: string
-                        values:
-                          description: |-
-                            values is an array of string values. If the operator is In or NotIn,
-                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty. This array is replaced during a strategic
-                            merge patch.
-                          items:
-                            type: string
-                          type: array
-                          x-kubernetes-list-type: atomic
-                      required:
-                      - key
-                      - operator
-                      type: object
-                    type: array
-                    x-kubernetes-list-type: atomic
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                      map is equivalent to an element of matchExpressions, whose key field is "key", the
-                      operator is "In", and the values array contains only "value". The requirements are ANDed.
-                    type: object
-                type: object
-                x-kubernetes-map-type: atomic
               allowedSources:
                 description: allowedSources lists the upstream registry hosts that
                   mirrors may pull from.
                 items:
-                  description: RegistryHost is a registry host with an optional port,
-                    without a scheme or path.
+                  description: |-
+                    RegistryHost is a registry host name or bracketed IP address with an
+                    optional port, for example registry.example.internal:8443 or [::1]:5000.
+                    It has no scheme, credentials or path.
                   maxLength: 253
                   minLength: 1
                   type: string
                   x-kubernetes-validations:
-                  - message: must be host[:port] without a scheme
-                    rule: '!self.contains(''://'')'
-                  - message: must be host[:port] without a path
-                    rule: '!self.contains(''/'')'
+                  - message: must be host[:port] without a scheme, credentials or
+                      path
+                    rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
                 maxItems: 100
                 minItems: 1
                 type: array
@@ -176,6 +128,82 @@ spec:
                     - Ignore
                     type: string
                 type: object
+              projects:
+                description: |-
+                  projects lists the target registry projects that mirrors may push to,
+                  and which namespaces may use each one. A mirror may push only to a
+                  listed project whose namespaceSelector matches the mirror's namespace.
+                  The controller enforces this at reconcile.
+                items:
+                  description: TargetProject is a project in the target registry and
+                    the namespaces allowed to use it.
+                  properties:
+                    name:
+                      description: name of the project, a single path segment.
+                      maxLength: 255
+                      minLength: 1
+                      pattern: ^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*$
+                      type: string
+                    namespaceSelector:
+                      description: |-
+                        namespaceSelector selects the namespaces whose ArtifactMirrors may push
+                        to this project. It is required so that access is always an explicit
+                        decision. An empty selector ({}) allows every namespace, which suits a
+                        shared project. Team projects use a label selector.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                  required:
+                  - name
+                  - namespaceSelector
+                  type: object
+                maxItems: 100
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               proxy:
                 description: proxy configures the proxy for upstream traffic.
                 properties:
@@ -241,14 +269,12 @@ spec:
                 minLength: 1
                 type: string
                 x-kubernetes-validations:
-                - message: must be host[:port] without a scheme
-                  rule: '!self.contains(''://'')'
-                - message: must be host[:port] without a path
-                  rule: '!self.contains(''/'')'
+                - message: must be host[:port] without a scheme, credentials or path
+                  rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
             required:
-            - allowedNamespaces
             - allowedSources
             - credentialsSecretRef
+            - projects
             - registry
             type: object
           status:
