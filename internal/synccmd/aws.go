@@ -119,8 +119,9 @@ func (a awsProvider) assumeRole(ctx context.Context, endpoint string, token []by
 		"RoleArn":          {a.id.RoleARN},
 		"RoleSessionName":  {a.session},
 		"WebIdentityToken": {string(token)},
-		// The minimum: the credentials sign one request.
-		"DurationSeconds": {"900"},
+		// The ECR token may expire with the session, and a sync Job runs
+		// up to one hour (activeDeadlineSeconds).
+		"DurationSeconds": {"3600"},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
