@@ -46,9 +46,9 @@ const maxMessage = 300
 type Request struct {
 	Source, Target name.Repository
 	Policy         tags.Policy
-	// Platforms must all exist in a source index, as os/arch[/variant].
+	// RequiredPlatforms must all exist in the source, as os/arch[/variant].
 	// Empty skips the check.
-	Platforms []string
+	RequiredPlatforms []string
 	// OnTagMutation defaults to Fail.
 	OnTagMutation          v1alpha1.OnTagMutation
 	SourceOpts, TargetOpts []remote.Option
@@ -136,7 +136,7 @@ func newSyncer(r Request) (*syncer, error) {
 		return nil, fmt.Errorf("sync: unknown onTagMutation %q", r.OnTagMutation)
 	}
 	s := &syncer{req: r}
-	for _, p := range r.Platforms {
+	for _, p := range r.RequiredPlatforms {
 		pl, err := v1.ParsePlatform(p)
 		if err != nil {
 			return nil, fmt.Errorf("sync: platform %q: %w", p, err)

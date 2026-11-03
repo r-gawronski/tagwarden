@@ -90,8 +90,8 @@ func (in *ArtifactMirrorSpec) DeepCopyInto(out *ArtifactMirrorSpec) {
 	out.Source = in.Source
 	out.Target = in.Target
 	in.Tags.DeepCopyInto(&out.Tags)
-	if in.Platforms != nil {
-		in, out := &in.Platforms, &out.Platforms
+	if in.RequiredPlatforms != nil {
+		in, out := &in.RequiredPlatforms, &out.RequiredPlatforms
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
