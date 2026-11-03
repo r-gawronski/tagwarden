@@ -28,5 +28,6 @@ Kubebuilder layout, generated files and scaffold rules: @AGENTS.md
 internal/tags/      Tag selection (regex include/exclude, semver range, keep latest N)
 internal/registry/  HTTP transport: proxy, custom CA, mTLS
 internal/sync/      Copy engine used by the `sync` subcommand
+internal/vuln/      Trivy report parsing, exceptions and verdicts for the vulnerability gate
 cmd/main.go         Subcommands: manager (default), sync
 ```
