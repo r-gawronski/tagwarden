@@ -27,6 +27,12 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
+    - jsonPath: .spec.suspend
+      name: Suspend
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -64,13 +70,16 @@ spec:
                 type: array
                 x-kubernetes-list-type: set
               schedule:
-                description: schedule is a cron expression with 5 fields, or one of
-                  @hourly, @daily, @weekly.
+                description: |-
+                  schedule is a cron expression with 5 fields, or one of @yearly,
+                  @annually, @monthly, @weekly, @daily, @midnight, @hourly.
+                  Time zone prefixes and @every are not supported.
                 maxLength: 100
                 type: string
                 x-kubernetes-validations:
-                - message: must be a 5-field cron expression or @hourly, @daily, @weekly
-                  rule: self.matches('^(@(hourly|daily|weekly)|[^ ]+( +[^ ]+){4})$')
+                - message: must be a 5-field cron expression or a macro such as @daily
+                  rule: self.matches('^(@(yearly|annually|monthly|weekly|daily|midnight|hourly)|[0-9A-Za-z*/,?-]+(
+                    +[0-9A-Za-z*/,?-]+){4})$')
               source:
                 description: source is the upstream artifact.
                 properties:
@@ -82,15 +91,15 @@ spec:
                     minLength: 1
                     type: string
                     x-kubernetes-validations:
-                    - message: must be host[:port] without a scheme
-                      rule: '!self.contains(''://'')'
-                    - message: must be host[:port] without a path
-                      rule: '!self.contains(''/'')'
+                    - message: must be host[:port] without a scheme, credentials or
+                        path
+                      rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
                   repository:
                     description: repository is the path in the upstream registry,
                       for example library/nginx.
                     maxLength: 255
                     minLength: 1
+                    pattern: ^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*$
                     type: string
                 required:
                 - registry
@@ -102,6 +111,12 @@ spec:
               tags:
                 description: tags selects the upstream tags to mirror.
                 properties:
+                  allowPrerelease:
+                    default: false
+                    description: |-
+                      allowPrerelease keeps prerelease versions when semverRange or
+                      keepLatest is set. They are dropped by default.
+                    type: boolean
                   exclude:
                     description: exclude drops a tag if any pattern matches.
                     items:
@@ -137,8 +152,10 @@ spec:
                     minLength: 1
                     type: string
                   tags:
-                    description: tags lists exact tags to mirror in addition to the
-                      selected ones.
+                    description: |-
+                      tags lists exact tags to mirror in addition to the selected ones.
+                      They bypass all filters. When include, semverRange and keepLatest are
+                      unset, only these tags are mirrored.
                     items:
                       pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                       type: string
@@ -156,10 +173,13 @@ spec:
                 description: target is where the artifact lands in the target registry.
                 properties:
                   project:
-                    description: project is the top-level project or namespace in
-                      the target registry.
+                    description: |-
+                      project is the top-level project in the target registry. It must be
+                      listed in the target's projects with a namespaceSelector that matches
+                      this mirror's namespace.
                     maxLength: 255
                     minLength: 1
+                    pattern: ^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*$
                     type: string
                   repository:
                     description: |-
@@ -167,6 +187,7 @@ spec:
                       Defaults to <source registry>/<source repository>.
                     maxLength: 255
                     minLength: 1
+                    pattern: ^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*$
                     type: string
                 required:
                 - project
@@ -272,7 +293,10 @@ spec:
                 format: int64
                 type: integer
               synced:
-                description: synced lists the mirrored tags and their digests.
+                description: |-
+                  synced lists the mirrored tags and their digests. The controller keeps
+                  at most the 200 newest entries and sets the Ready condition reason
+                  Truncated when it drops some.
                 items:
                   description: SyncedTag records a mirrored tag and its digest.
                   properties:
@@ -287,7 +311,7 @@ spec:
                   - digest
                   - tag
                   type: object
-                maxItems: 100
+                maxItems: 200
                 type: array
                 x-kubernetes-list-type: atomic
             type: object

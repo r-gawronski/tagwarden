@@ -45,22 +45,24 @@ type Source struct {
 	// repository is the path in the upstream registry, for example library/nginx.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*$`
 	// +required
 	Repository string `json:"repository"`
 }
 
 // Target is where the artifact lands in the target registry.
 type Target struct {
-	// project is the top-level project or namespace in the target registry.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=255
+	// project is the top-level project in the target registry. It must be
+	// listed in the target's projects with a namespaceSelector that matches
+	// this mirror's namespace.
 	// +required
-	Project string `json:"project"`
+	Project ProjectName `json:"project"`
 
 	// repository overrides the path inside the project.
 	// Defaults to <source registry>/<source repository>.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*$`
 	// +optional
 	Repository string `json:"repository,omitempty"`
 }
@@ -100,7 +102,15 @@ type TagSelector struct {
 	// +optional
 	KeepLatest *int32 `json:"keepLatest,omitempty"`
 
+	// allowPrerelease keeps prerelease versions when semverRange or
+	// keepLatest is set. They are dropped by default.
+	// +kubebuilder:default=false
+	// +optional
+	AllowPrerelease bool `json:"allowPrerelease,omitempty"`
+
 	// tags lists exact tags to mirror in addition to the selected ones.
+	// They bypass all filters. When include, semverRange and keepLatest are
+	// unset, only these tags are mirrored.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=100
 	// +kubebuilder:validation:items:Pattern=`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`
@@ -117,9 +127,11 @@ type ArtifactMirrorSpec struct {
 	// +required
 	TargetRef string `json:"targetRef"`
 
-	// schedule is a cron expression with 5 fields, or one of @hourly, @daily, @weekly.
+	// schedule is a cron expression with 5 fields, or one of @yearly,
+	// @annually, @monthly, @weekly, @daily, @midnight, @hourly.
+	// Time zone prefixes and @every are not supported.
 	// +kubebuilder:validation:MaxLength=100
-	// +kubebuilder:validation:XValidation:rule="self.matches('^(@(hourly|daily|weekly)|[^ ]+( +[^ ]+){4})$')",message="must be a 5-field cron expression or @hourly, @daily, @weekly"
+	// +kubebuilder:validation:XValidation:rule="self.matches('^(@(yearly|annually|monthly|weekly|daily|midnight|hourly)|[0-9A-Za-z*/,?-]+( +[0-9A-Za-z*/,?-]+){4})$')",message="must be a 5-field cron expression or a macro such as @daily"
 	// +required
 	Schedule string `json:"schedule"`
 
@@ -171,8 +183,10 @@ type ArtifactMirrorStatus struct {
 	// +optional
 	LastSuccessfulSyncTime *metav1.Time `json:"lastSuccessfulSyncTime,omitempty"`
 
-	// synced lists the mirrored tags and their digests.
-	// +kubebuilder:validation:MaxItems=100
+	// synced lists the mirrored tags and their digests. The controller keeps
+	// at most the 200 newest entries and sets the Ready condition reason
+	// Truncated when it drops some.
+	// +kubebuilder:validation:MaxItems=200
 	// +listType=atomic
 	// +optional
 	Synced []SyncedTag `json:"synced,omitempty"`
@@ -195,6 +209,8 @@ type ArtifactMirrorStatus struct {
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.source.repository`
 // +kubebuilder:printcolumn:name="Last Sync",type=date,JSONPath=`.status.lastSyncTime`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Suspend",type=boolean,JSONPath=`.spec.suspend`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // ArtifactMirror is a tenant request to mirror an artifact into a ClusterMirrorTarget.
 type ArtifactMirror struct {
