@@ -17,9 +17,12 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
+	"os/signal"
+	"syscall"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -37,6 +40,7 @@ import (
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/controller"
+	"github.com/r-gawronski/tagwarden/internal/synccmd"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -52,8 +56,19 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+// runSync runs the sync subcommand that sync Jobs start.
+func runSync(args []string) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return synccmd.Run(ctx, args, os.Stdout, synccmd.TerminationLogPath)
+}
+
 // nolint:gocyclo
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "sync" {
+		os.Exit(runSync(os.Args[2:]))
+	}
+
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
