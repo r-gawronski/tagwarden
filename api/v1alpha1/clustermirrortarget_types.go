@@ -91,9 +91,10 @@ type ProxySpec struct {
 
 // SourceCredential holds the pull credentials for one source registry:
 // a Secret or a cloud workload identity.
-// +kubebuilder:validation:XValidation:rule="[has(self.secretRef), has(self.azureWorkloadIdentity), has(self.awsWorkloadIdentity)].filter(x, x).size() == 1",message="set exactly one of secretRef, azureWorkloadIdentity or awsWorkloadIdentity"
+// +kubebuilder:validation:XValidation:rule="[has(self.secretRef), has(self.azureWorkloadIdentity), has(self.awsWorkloadIdentity), has(self.gcpWorkloadIdentity)].filter(x, x).size() == 1",message="set exactly one of secretRef, azureWorkloadIdentity, awsWorkloadIdentity or gcpWorkloadIdentity"
 // +kubebuilder:validation:XValidation:rule=`!has(self.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
 // +kubebuilder:validation:XValidation:rule=`!has(self.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$')`,message="awsWorkloadIdentity needs an Amazon ECR private registry host (<account>.dkr.ecr.<region>.amazonaws.com)"
+// +kubebuilder:validation:XValidation:rule=`!has(self.gcpWorkloadIdentity) || self.registry.lowerAscii().matches(r'^([a-z0-9]+(-[a-z0-9]+)*-docker\.pkg\.dev|((us|eu|asia)\.)?gcr\.io)(:443)?$')`,message="gcpWorkloadIdentity needs a Google Artifact Registry host (<location>-docker.pkg.dev, gcr.io, us.gcr.io, eu.gcr.io or asia.gcr.io)"
 type SourceCredential struct {
 	// registry is the source registry these credentials are for. The Docker
 	// Hub names docker.io, index.docker.io and registry-1.docker.io count as
@@ -115,7 +116,17 @@ type SourceCredential struct {
 	// the role in spec.workloadIdentity.aws.
 	// +optional
 	AWSWorkloadIdentity *AWSWorkloadIdentityAuth `json:"awsWorkloadIdentity,omitempty"`
+
+	// gcpWorkloadIdentity pulls from Google Artifact Registry with the
+	// identity in spec.workloadIdentity.gcp.
+	// +optional
+	GCPWorkloadIdentity *GCPWorkloadIdentityAuth `json:"gcpWorkloadIdentity,omitempty"`
 }
+
+// GCPWorkloadIdentityAuth selects Google Cloud Workload Identity
+// Federation for a registry. It has no fields: the identity is
+// spec.workloadIdentity.gcp.
+type GCPWorkloadIdentityAuth struct{}
 
 // AWSWorkloadIdentityAuth selects AWS IAM roles for service accounts
 // (IRSA) for a registry. It has no fields: the role is
@@ -128,7 +139,7 @@ type AzureWorkloadIdentityAuth struct{}
 
 // RegistryAuth selects how the sync Job authenticates to the target
 // registry when it has no credentialsSecretRef.
-// +kubebuilder:validation:XValidation:rule="has(self.azureWorkloadIdentity) != has(self.awsWorkloadIdentity)",message="set exactly one provider"
+// +kubebuilder:validation:XValidation:rule="[has(self.azureWorkloadIdentity), has(self.awsWorkloadIdentity), has(self.gcpWorkloadIdentity)].filter(x, x).size() == 1",message="set exactly one provider"
 type RegistryAuth struct {
 	// azureWorkloadIdentity pushes to an Azure Container Registry with
 	// the identity in spec.workloadIdentity.azure.
@@ -139,6 +150,11 @@ type RegistryAuth struct {
 	// the role in spec.workloadIdentity.aws.
 	// +optional
 	AWSWorkloadIdentity *AWSWorkloadIdentityAuth `json:"awsWorkloadIdentity,omitempty"`
+
+	// gcpWorkloadIdentity pushes to Google Artifact Registry with the
+	// identity in spec.workloadIdentity.gcp.
+	// +optional
+	GCPWorkloadIdentity *GCPWorkloadIdentityAuth `json:"gcpWorkloadIdentity,omitempty"`
 }
 
 // WorkloadIdentity is the cloud identity of the sync pods that use cloud
@@ -163,6 +179,37 @@ type WorkloadIdentity struct {
 	// ServiceAccount (IAM roles for service accounts).
 	// +optional
 	AWS *AWSIdentity `json:"aws,omitempty"`
+
+	// gcp is the Google Cloud Workload Identity Federation provider that
+	// trusts the cluster's OIDC issuer.
+	// +optional
+	GCP *GCPIdentity `json:"gcp,omitempty"`
+}
+
+// GCPIdentity is a Workload Identity Federation provider. The sync Job
+// exchanges the projected ServiceAccount token at
+// https://sts.googleapis.com/v1/token and, with serviceAccountEmail, gets
+// an access token for that service account from
+// https://iamcredentials.googleapis.com. The GKE metadata server is not
+// used: it is link-local, which the sync Job refuses.
+type GCPIdentity struct {
+	// audience is the full resource name of the workload identity pool
+	// provider, for example
+	// //iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster.
+	// The projected token gets the provider's default audience, this name
+	// with the https: prefix.
+	// +kubebuilder:validation:MaxLength=200
+	// +kubebuilder:validation:Pattern=`^//iam\.googleapis\.com/projects/[0-9]{1,20}/locations/global/workloadIdentityPools/[a-z0-9-]{4,32}/providers/[a-z0-9-]{4,32}$`
+	// +required
+	Audience string `json:"audience"`
+
+	// serviceAccountEmail is a Google service account the federated
+	// principal impersonates. Leave it empty to grant the Artifact
+	// Registry roles to the principal directly.
+	// +kubebuilder:validation:MaxLength=100
+	// +kubebuilder:validation:Pattern=`^[a-z0-9-]{6,30}@[a-z0-9-]{6,30}\.iam\.gserviceaccount\.com$`
+	// +optional
+	ServiceAccountEmail string `json:"serviceAccountEmail,omitempty"`
 }
 
 // AWSIdentity is an IAM role assumed with the projected ServiceAccount
@@ -353,6 +400,7 @@ type AutoMirror struct {
 // +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$')`,message="auth.awsWorkloadIdentity needs an Amazon ECR private registry host (<account>.dkr.ecr.<region>.amazonaws.com)"
+// +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.gcpWorkloadIdentity) || self.registry.lowerAscii().matches(r'^([a-z0-9]+(-[a-z0-9]+)*-docker\.pkg\.dev|((us|eu|asia)\.)?gcr\.io)(:443)?$')`,message="auth.gcpWorkloadIdentity needs a Google Artifact Registry host (<location>-docker.pkg.dev, gcr.io, us.gcr.io, eu.gcr.io or asia.gcr.io)"
 type ClusterMirrorTargetSpec struct {
 	// registry is the target registry as host[:port], without a scheme.
 	// +required

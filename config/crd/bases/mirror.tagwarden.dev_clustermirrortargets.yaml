@@ -84,10 +84,16 @@ spec:
                       azureWorkloadIdentity pushes to an Azure Container Registry with
                       the identity in spec.workloadIdentity.azure.
                     type: object
+                  gcpWorkloadIdentity:
+                    description: |-
+                      gcpWorkloadIdentity pushes to Google Artifact Registry with the
+                      identity in spec.workloadIdentity.gcp.
+                    type: object
                 type: object
                 x-kubernetes-validations:
                 - message: set exactly one provider
-                  rule: has(self.azureWorkloadIdentity) != has(self.awsWorkloadIdentity)
+                  rule: '[has(self.azureWorkloadIdentity), has(self.awsWorkloadIdentity),
+                    has(self.gcpWorkloadIdentity)].filter(x, x).size() == 1'
               autoMirror:
                 description: autoMirror lets annotated pods request mirrors of their
                   images.
@@ -468,6 +474,11 @@ spec:
                         azureWorkloadIdentity pulls from an Azure Container Registry with
                         the identity in spec.workloadIdentity.azure.
                       type: object
+                    gcpWorkloadIdentity:
+                      description: |-
+                        gcpWorkloadIdentity pulls from Google Artifact Registry with the
+                        identity in spec.workloadIdentity.gcp.
+                      type: object
                     registry:
                       description: |-
                         registry is the source registry these credentials are for. The Docker
@@ -497,16 +508,21 @@ spec:
                   - registry
                   type: object
                   x-kubernetes-validations:
-                  - message: set exactly one of secretRef, azureWorkloadIdentity or
-                      awsWorkloadIdentity
+                  - message: set exactly one of secretRef, azureWorkloadIdentity,
+                      awsWorkloadIdentity or gcpWorkloadIdentity
                     rule: '[has(self.secretRef), has(self.azureWorkloadIdentity),
-                      has(self.awsWorkloadIdentity)].filter(x, x).size() == 1'
+                      has(self.awsWorkloadIdentity), has(self.gcpWorkloadIdentity)].filter(x,
+                      x).size() == 1'
                   - message: azureWorkloadIdentity needs an Azure Container Registry
                       host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)
                     rule: '!has(self.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$'')'
                   - message: awsWorkloadIdentity needs an Amazon ECR private registry
                       host (<account>.dkr.ecr.<region>.amazonaws.com)
                     rule: '!has(self.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$'')'
+                  - message: gcpWorkloadIdentity needs a Google Artifact Registry
+                      host (<location>-docker.pkg.dev, gcr.io, us.gcr.io, eu.gcr.io
+                      or asia.gcr.io)
+                    rule: '!has(self.gcpWorkloadIdentity) || self.registry.lowerAscii().matches(r''^([a-z0-9]+(-[a-z0-9]+)*-docker\.pkg\.dev|((us|eu|asia)\.)?gcr\.io)(:443)?$'')'
                 maxItems: 50
                 type: array
                 x-kubernetes-list-map-keys:
@@ -577,6 +593,32 @@ spec:
                     - clientID
                     - tenantID
                     type: object
+                  gcp:
+                    description: |-
+                      gcp is the Google Cloud Workload Identity Federation provider that
+                      trusts the cluster's OIDC issuer.
+                    properties:
+                      audience:
+                        description: |-
+                          audience is the full resource name of the workload identity pool
+                          provider, for example
+                          //iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/tagwarden/providers/cluster.
+                          The projected token gets the provider's default audience, this name
+                          with the https: prefix.
+                        maxLength: 200
+                        pattern: ^//iam\.googleapis\.com/projects/[0-9]{1,20}/locations/global/workloadIdentityPools/[a-z0-9-]{4,32}/providers/[a-z0-9-]{4,32}$
+                        type: string
+                      serviceAccountEmail:
+                        description: |-
+                          serviceAccountEmail is a Google service account the federated
+                          principal impersonates. Leave it empty to grant the Artifact
+                          Registry roles to the principal directly.
+                        maxLength: 100
+                        pattern: ^[a-z0-9-]{6,30}@[a-z0-9-]{6,30}\.iam\.gserviceaccount\.com$
+                        type: string
+                    required:
+                    - audience
+                    type: object
                   serviceAccountName:
                     description: |-
                       serviceAccountName is the ServiceAccount in the operator namespace
@@ -607,6 +649,9 @@ spec:
             - message: auth.awsWorkloadIdentity needs an Amazon ECR private registry
                 host (<account>.dkr.ecr.<region>.amazonaws.com)
               rule: '!has(self.auth) || !has(self.auth.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$'')'
+            - message: auth.gcpWorkloadIdentity needs a Google Artifact Registry host
+                (<location>-docker.pkg.dev, gcr.io, us.gcr.io, eu.gcr.io or asia.gcr.io)
+              rule: '!has(self.auth) || !has(self.auth.gcpWorkloadIdentity) || self.registry.lowerAscii().matches(r''^([a-z0-9]+(-[a-z0-9]+)*-docker\.pkg\.dev|((us|eu|asia)\.)?gcr\.io)(:443)?$'')'
           status:
             description: status defines the observed state of ClusterMirrorTarget
             properties:
