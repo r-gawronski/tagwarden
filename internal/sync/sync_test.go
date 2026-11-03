@@ -553,3 +553,71 @@ func TestShortKeepsRunes(t *testing.T) {
 		t.Fatalf("bad truncation: %q", msg)
 	}
 }
+
+// artifactSize is the config and layer bytes of an image.
+func artifactSize(t *testing.T, img v1.Image) int64 {
+	t.Helper()
+	m := must(img.Manifest())
+	n := m.Config.Size
+	for _, l := range m.Layers {
+		n += l.Size
+	}
+	return n
+}
+
+func TestRunRefusesArtifactsOverMaxSize(t *testing.T) {
+	src := newRegistry(t, regOpts{referrers: true})
+	dst := newRegistry(t, regOpts{referrers: true})
+	small, big := image(t), must(random.Image(4096, 2))
+	idx := index(t, "linux/amd64", "linux/arm64")
+	push(t, src.repo, "small", small)
+	bigDigest := push(t, src.repo, "big", big)
+	idxDigest := push(t, src.repo, "idx", idx)
+	// A referrer does not count toward the size of its subject.
+	pushReferrer(t, src.repo, *must(partial.Descriptor(small)))
+
+	limit := artifactSize(t, small)
+	children := must(idx.IndexManifest()).Manifests
+	var idxSize int64
+	for _, c := range children {
+		n := artifactSize(t, must(idx.Image(c.Digest)))
+		limit = max(limit, n)
+		idxSize += n
+	}
+
+	res, err := Run(context.Background(), Request{
+		Source: src.repo, Target: dst.repo,
+		Policy:          tags.Policy{Tags: []string{"small", "big", "idx"}},
+		MaxArtifactSize: limit,
+	})
+	if err == nil {
+		t.Fatal("want an error for the refused tags")
+	}
+	if got := tagsOf(res.Copied); !slices.Equal(got, []string{"small"}) || res.Copied[0].Referrers != 1 {
+		t.Fatalf("copied %+v", res.Copied)
+	}
+	if got := tagsOf(res.Failed); !slices.Equal(got, []string{"big", "idx"}) {
+		t.Fatalf("failed %v", got)
+	}
+	for _, e := range []string{
+		fmt.Sprintf("big: artifact too large: %d > %d", artifactSize(t, big), limit),
+		fmt.Sprintf("idx: artifact too large: %d > %d", idxSize, limit),
+	} {
+		if !slices.Contains(res.Errors, e) {
+			t.Fatalf("errors %q, want %q", res.Errors, e)
+		}
+	}
+	for _, d := range []v1.Hash{bigDigest, idxDigest, children[0].Digest} {
+		if _, ok := headDigest(t, dst.repo.Digest(d.String())); ok {
+			t.Fatalf("%s copied", d)
+		}
+	}
+	for _, l := range must(big.Layers()) {
+		u := fmt.Sprintf("http://%s/v2/%s/blobs/%s", dst.repo.RegistryStr(), dst.repo.RepositoryStr(), must(l.Digest()))
+		resp := must(http.Head(u)) //nolint:gosec,noctx // in-process registry
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("layer of the refused image: HEAD %d", resp.StatusCode)
+		}
+	}
+}

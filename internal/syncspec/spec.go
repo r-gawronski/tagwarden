@@ -90,6 +90,9 @@ type Spec struct {
 	OnTagMutation     v1alpha1.OnTagMutation `json:"onTagMutation"`
 	// MaxTags caps the upstream listing. Zero means tags.MaxTags.
 	MaxTags int `json:"maxTags,omitempty"`
+	// MaxArtifactSize caps the config and layer bytes of one artifact.
+	// Zero means no limit.
+	MaxArtifactSize int64 `json:"maxArtifactSize,omitempty"`
 
 	// AllowedSources are the registry hosts, as host[:port], that the
 	// ClusterMirrorTarget allows. The Job re-checks Source against them.
@@ -150,6 +153,9 @@ func (s *Spec) validate() error {
 	}
 	if s.MaxTags < 0 {
 		return errors.New("maxTags: must not be negative")
+	}
+	if s.MaxArtifactSize < 0 {
+		return errors.New("maxArtifactSize: must not be negative")
 	}
 	if len(s.AllowedSources) == 0 || slices.Contains(s.AllowedSources, "") {
 		return errors.New("allowedSources: at least one non-empty host is required")
