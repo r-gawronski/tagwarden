@@ -350,7 +350,7 @@ func TestRunProxiedLookupFailure(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	t.Cleanup(proxy.Close)
-	src, err := name.NewRepository("registry.example.internal/team/app")
+	src, err := name.NewRepository(exampleTargetRepo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestRunProxyCredentials(t *testing.T) {
 	}))
 	t.Cleanup(proxy.Close)
 	// Go never proxies loopback, so the source must have a real host name.
-	src, err := name.NewRepository("registry.example.internal/team/app")
+	src, err := name.NewRepository(exampleTargetRepo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestRunRefusesSources(t *testing.T) {
 		{"[::1]:5000/team/app", `"[::1]:5000"`, "", "internal"},
 		{"localhost:5000/team/app", `"localhost:5000"`, "", "internal"},
 		{"10.96.0.10/team/app", `"10.96.0.10"`, `"10.96.0.0/12"`, "denied"},
-		{"registry.example.internal/team/app", `"other.example.internal"`, "", "not in allowedSources"},
+		{exampleTargetRepo, `"other.example.internal"`, "", "not in allowedSources"},
 		{"registry.example.internal:5000/team/app", `"registry.example.internal"`, "", "not in allowedSources"},
 	}
 	for _, tc := range cases {
@@ -573,7 +573,7 @@ func TestRunDNSErrors(t *testing.T) {
 			e := newEnv(t, src, newRegistry(t, true), password)
 			e.opts.allowLoopback = false
 			e.opts.lookup = func(context.Context, string) ([]net.IPAddr, error) { return nil, tc.err }
-			e.writeSpec(t, "registry.example.internal/team/app", `"allowedSources":["registry.example.internal"]`)
+			e.writeSpec(t, exampleTargetRepo, `"allowedSources":["registry.example.internal"]`)
 			code, out, msg := e.run(t)
 			if code != tc.code || !strings.Contains(msg, "resolve") || out != "" {
 				t.Fatalf("exit %d: %s\n%s", code, msg, out)
