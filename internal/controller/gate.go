@@ -69,7 +69,7 @@ func (r *ArtifactMirrorReconciler) gate(ctx context.Context, t *mirrorv1alpha1.C
 	}
 	if problem != "" {
 		if g.OnScanError == mirrorv1alpha1.GateActionBlock {
-			return nil, fmt.Sprintf("the vulnerability gate of ClusterMirrorTarget %s cannot scan (%s) and onScanError is Block", t.Name, problem), nil
+			return nil, fmt.Sprintf("gate enabled but scanner not configured on ClusterMirrorTarget %s (%s); onScanError is Block, images are not copied", t.Name, problem), nil
 		}
 		return nil, "", nil
 	}
@@ -120,7 +120,7 @@ const (
 	javaNotScanned = "JAR files not scanned"
 	// notConfigured is the VulnerabilityGate message of a gated mirror
 	// rendered without a scanner.
-	notConfigured = "not configured: the scanner has no URL, image or version; tags are copied without a scan"
+	notConfigured = "gate enabled but scanner not configured; images are copied unscanned"
 )
 
 // Event reasons of the gate, on mirrors and pods.
@@ -131,10 +131,10 @@ const (
 )
 
 // gateConditions keeps the gate status of m in line with its rendering:
-// none on mirrors that are not gated, VulnerabilityGate False while a
-// gated mirror has no usable scanner (sc nil), and no stale not-configured
-// condition once it has one.
-func gateConditions(m *mirrorv1alpha1.ArtifactMirror, gated bool, sc *sidecar) {
+// none on mirrors that are not gated, VulnerabilityGate False with a
+// Warning Event when a gated mirror gets no usable scanner (sc nil), and
+// no stale not-configured condition once it has one.
+func gateConditions(m *mirrorv1alpha1.ArtifactMirror, gated bool, sc *sidecar, ev *pending) {
 	st := &m.Status
 	switch {
 	case !gated:
@@ -142,10 +142,13 @@ func gateConditions(m *mirrorv1alpha1.ArtifactMirror, gated bool, sc *sidecar) {
 		meta.RemoveStatusCondition(&st.Conditions, ConditionVulnerabilitiesFound)
 		meta.RemoveStatusCondition(&st.Conditions, ConditionVulnerabilityGate)
 	case sc == nil:
+		if c := meta.FindStatusCondition(st.Conditions, ConditionVulnerabilityGate); c == nil || c.Reason != ReasonNotConfigured {
+			ev.add(corev1.EventTypeWarning, ReasonNotConfigured, "Reconcile", notConfigured)
+		}
 		meta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: ConditionVulnerabilityGate, Status: metav1.ConditionFalse,
-			Reason: ReasonScannerUnavailable, Message: notConfigured, ObservedGeneration: m.Generation})
+			Reason: ReasonNotConfigured, Message: notConfigured, ObservedGeneration: m.Generation})
 	default:
-		if c := meta.FindStatusCondition(st.Conditions, ConditionVulnerabilityGate); c != nil && c.Message == notConfigured {
+		if c := meta.FindStatusCondition(st.Conditions, ConditionVulnerabilityGate); c != nil && c.Reason == ReasonNotConfigured {
 			meta.RemoveStatusCondition(&st.Conditions, ConditionVulnerabilityGate)
 		}
 	}
@@ -171,17 +174,25 @@ func applyGate(m *mirrorv1alpha1.ArtifactMirror, rep *syncspec.Report, ok bool, 
 	for _, f := range rep.TagFindings {
 		run[f.Tag] = true
 	}
-	present := map[string]bool{}
+	present := map[string]string{}
 	for _, s := range rep.Synced {
-		present[s.Tag] = true
+		present[s.Tag] = s.Digest
 	}
-	keep := func(tag string) bool { return !run[tag] && (!ok || rep.Truncated || present[tag]) }
+	scanErr := map[string]bool{}
+	for _, f := range rep.TagFindings {
+		scanErr[f.Tag] = f.Verdict == mirrorv1alpha1.VerdictScanError
+	}
+	keep := func(tag string) bool { _, on := present[tag]; return !run[tag] && (!ok || rep.Truncated || on) }
 
 	// Judged pairs: this run first, then the stored ones under the same
-	// fingerprint.
+	// fingerprint. judged is the one report field fed back into later
+	// Jobs, so only pairs the run also reports on the target with the same
+	// digest, and not as a scan error, are kept (threat model T12, T34).
 	var judged []mirrorv1alpha1.SyncedTag
 	for _, j := range rep.Judged {
-		judged = append(judged, mirrorv1alpha1.SyncedTag{Tag: j.Tag, Digest: j.Digest})
+		if d, on := present[j.Tag]; on && d == j.Digest && !scanErr[j.Tag] {
+			judged = append(judged, mirrorv1alpha1.SyncedTag{Tag: j.Tag, Digest: j.Digest})
+		}
 	}
 	if old := st.Gate; old != nil && old.JudgedFingerprint == rep.JudgedFingerprint {
 		for _, j := range old.Judged {

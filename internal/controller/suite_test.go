@@ -176,6 +176,7 @@ var _ = BeforeSuite(func() {
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		Namespace:     operatorNamespace,
+		Scanner:       suiteScanner,
 		DeniedCIDRs:   []netip.Prefix{netip.MustParsePrefix(deniedCIDR)},
 		allowLoopback: true,
 	}).SetupWithManager(mgr)).To(Succeed())
@@ -189,7 +190,7 @@ var _ = BeforeSuite(func() {
 		DeniedCIDRs:         []string{deniedCIDR},
 		ArgoCDTracking:      ArgoCDTrackingInherit,
 		ArgoCDInstanceLabel: "app.kubernetes.io/instance",
-		Scanner:             testScanner,
+		Scanner:             suiteScanner,
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&AutoMirrorReconciler{
 		Client:    mgr.GetClient(),

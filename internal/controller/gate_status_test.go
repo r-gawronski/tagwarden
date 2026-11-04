@@ -33,7 +33,10 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
+
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
@@ -104,7 +107,8 @@ func TestApplyGate(t *testing.T) {
 	const (
 		tag11, tag12 = "1.1", "1.2"
 		both         = tag11 + " " + tag10
-		all          = tag12 + " " + tag10 + " " + tag11
+		// 1.2 is blocked, not on the target, so it is never judged.
+		all = tag10 + " " + tag11
 	)
 	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	t1 := t0.Add(time.Hour)
@@ -176,6 +180,27 @@ func TestApplyGate(t *testing.T) {
 	}
 }
 
+// TestApplyGateJudgedFeedback checks that only judged pairs the run also
+// reports on the target, with the same digest and no scan error, are kept:
+// judged is the one report field fed back into later Jobs.
+func TestApplyGateJudgedFeedback(t *testing.T) {
+	m := &mirrorv1alpha1.ArtifactMirror{}
+	rep := v2(fpA, syncspec.GateOK, []string{tag10, "1.1"}, nil,
+		scanError("1.1", time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), syncspec.GateScanFailed))
+	rep.Judged = []syncspec.SyncedTag{
+		{Tag: tag10, Digest: hexDigest("1")}, // on the target
+		{Tag: "1.1", Digest: hexDigest("1")}, // also a scan error
+		{Tag: "1.2", Digest: hexDigest("1")}, // not on the target
+		{Tag: "1.3", Digest: hexDigest("9")}, // not synced
+	}
+	rep.Synced = append(rep.Synced, syncspec.SyncedTag{Tag: "1.4", Digest: hexDigest("1")})
+	rep.Judged = append(rep.Judged, syncspec.SyncedTag{Tag: "1.4", Digest: hexDigest("2")}) // other digest
+	applyGate(m, rep, true, false, &pending{})
+	if got := strings.Join(judgedTags(m), " "); got != tag10 {
+		t.Errorf("judged %q, want only 1.0", got)
+	}
+}
+
 func TestApplyGateOrderAndCap(t *testing.T) {
 	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	m := &mirrorv1alpha1.ArtifactMirror{}
@@ -222,15 +247,20 @@ func TestGateConditions(t *testing.T) {
 			{Type: ConditionVulnerabilityGate, Status: metav1.ConditionTrue, Reason: ReasonReady},
 		},
 	}}
-	gateConditions(m, true, nil)
-	if vg := meta.FindStatusCondition(m.Status.Conditions, ConditionVulnerabilityGate); vg.Reason != ReasonScannerUnavailable || vg.Message != notConfigured {
+	var ev pending
+	gateConditions(m, true, nil, &ev)
+	gateConditions(m, true, nil, &ev)
+	if vg := meta.FindStatusCondition(m.Status.Conditions, ConditionVulnerabilityGate); vg.Reason != ReasonNotConfigured || vg.Message != notConfigured {
 		t.Errorf("VulnerabilityGate = %+v", vg)
 	}
-	gateConditions(m, true, &sidecar{})
+	if len(ev) != 1 || ev[0].typ != corev1.EventTypeWarning || ev[0].reason != ReasonNotConfigured {
+		t.Errorf("events = %+v, want one Warning", ev)
+	}
+	gateConditions(m, true, &sidecar{}, &ev)
 	if meta.FindStatusCondition(m.Status.Conditions, ConditionVulnerabilityGate) != nil {
 		t.Error("the not-configured condition stays once the scanner is configured")
 	}
-	gateConditions(m, false, nil)
+	gateConditions(m, false, nil, &ev)
 	if m.Status.Findings != nil || m.Status.JavaScanned != nil || m.Status.Gate != nil || len(m.Status.Conditions) != 0 {
 		t.Errorf("ungated mirror keeps gate status: %+v", m.Status)
 	}
@@ -305,7 +335,7 @@ var _ = Describe("vulnerability gate status and pod Events", Ordered, func() {
 			`"findings":1,"gate":"ok","javaScanned":false,"judgedFingerprint":"` + fpA + `",` +
 			`"judged":[{"tag":"2.0","digest":"` + hexDigest("2") + `"},{"tag":"1.0","digest":"` + hexDigest("1") + `"}],` +
 			`"tagFindings":[{"tag":"` + tag + `","digest":"` + hexDigest("1") + `","verdict":"Findings","outcome":"` + outcome + `",` +
-			`"severity":"Critical","counts":{"critical":1,"high":2},"topIDs":["` + testCVE + `","CVE-2026-2"],"scannedAt":"2026-11-04T10:00:00Z"}]}`
+			`"severity":"Critical","counts":{"critical":1,"high":2},"topIDs":["` + testCVE + `","CVE-2026-2"],"scannedAt":"2026-11-01T10:00:00Z"}]}`
 	}
 
 	BeforeAll(func() {
@@ -314,7 +344,7 @@ var _ = Describe("vulnerability gate status and pod Events", Ordered, func() {
 			t.Spec.AllowedSources = []mirrorv1alpha1.RegistryHost{ghcrRegistry}
 			t.Spec.Projects = []mirrorv1alpha1.TargetProject{{Name: otherProject, NamespaceSelector: &metav1.LabelSelector{}}}
 			t.Spec.AutoMirror = &mirrorv1alpha1.AutoMirror{Enabled: true, Project: otherProject,
-				VulnerabilityGate: &mirrorv1alpha1.VulnerabilityGate{Enabled: true}}
+				VulnerabilityGate: &mirrorv1alpha1.VulnerabilityGate{Enabled: true, Scanner: &mirrorv1alpha1.ScannerSpec{URL: inChartURL}}}
 		})
 		DeferCleanup(func() {
 			Expect(k8sClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(ns), client.GracePeriodSeconds(0))).To(Succeed())
@@ -329,9 +359,9 @@ var _ = Describe("vulnerability gate status and pod Events", Ordered, func() {
 	})
 
 	It("relays a scanner that is not ready on the target", func() {
-		// The target controller of the suite has no scanner configured.
-		Eventually(podEvents(vulnPod)).Should(And(ContainSubstring("Warning "+reasonVulnerabilityScanFail),
-			ContainSubstring("not configured"), ContainSubstring("mirrored without scan")))
+		// The in-chart Service does not resolve in the test environment.
+		Eventually(podEvents(vulnPod), 20*time.Second).Should(And(ContainSubstring("Warning "+reasonVulnerabilityScanFail),
+			ContainSubstring(ReasonScannerUnavailable+": scanner of ClusterMirrorTarget "+target), ContainSubstring("mirrored without scan")))
 	})
 
 	It("records findings and tells only the pods using the tag", func() {
@@ -387,7 +417,7 @@ var _ = Describe("vulnerability gate status and pod Events", Ordered, func() {
 	It("reports a stale DB under Block as DBStale, not a config refusal", func() {
 		finish(syncspec.ExitConfig, `{"v":2,"blocked":1,"scanErrors":1,"synced":[],"gate":"DBStale","javaScanned":false,`+
 			`"judgedFingerprint":"`+fpA+`","tagFindings":[{"tag":"2.0","digest":"`+hexDigest("2")+`","verdict":"ScanError",`+
-			`"outcome":"Blocked","scanError":"DBStale","scannedAt":"2026-11-04T11:00:00Z"}]}`)
+			`"outcome":"Blocked","scanError":"DBStale","scannedAt":"2026-11-01T11:00:00Z"}]}`)
 		Eventually(condition(ConditionSynced)).Should(And(HaveField("Status", metav1.ConditionFalse), HaveField("Reason", ReasonDBStale)))
 		Eventually(condition(ConditionVulnerabilityGate)).Should(And(HaveField("Status", metav1.ConditionFalse),
 			HaveField("Reason", ReasonDBStale), HaveField("Message", ContainSubstring("2.0 (DBStale)"))))
@@ -420,11 +450,15 @@ func TestApplyResultUntrustedGateReport(t *testing.T) {
 	job.Name = "j"
 	done := &batchv1.JobCondition{Type: batchv1.JobComplete, LastTransitionTime: metav1.Now()}
 	for _, msg := range []string{
-		`{"v":2,"synced":[],"tagFindings":[{"tag":"1.0","digest":"sha256:x","verdict":"Findings","outcome":"Copied","scannedAt":"2026-11-04T10:00:00Z"}]}`,
+		`{"v":2,"synced":[],"tagFindings":[{"tag":"1.0","digest":"sha256:x","verdict":"Findings","outcome":"Copied","scannedAt":"2026-11-01T10:00:00Z"}]}`,
 		`{"v":2,"synced":[],"gate":"Clean"}`,
 		`{"v":2,"synced":[],"judgedFingerprint":"zz"}`,
 		`{"v":2,"synced":[],"judged":[{"tag":"-x","digest":"` + hexDigest("1") + `"}]}`,
-		`{"v":2,"synced":[],"tagFindings":[{"tag":"1.0","digest":"` + hexDigest("1") + `","verdict":"Findings","outcome":"Copied","topIDs":["rm -rf"],"scannedAt":"2026-11-04T10:00:00Z"}]}`,
+		`{"v":2,"synced":[],"tagFindings":[{"tag":"1.0","digest":"` + hexDigest("1") + `","verdict":"Findings","outcome":"Copied","topIDs":["rm -rf"],"scannedAt":"2026-11-01T10:00:00Z"}]}`,
+		// Status requires scannedAt: a zero time would fail every status update.
+		`{"v":2,"synced":[],"tagFindings":[{"tag":"1.0","digest":"` + hexDigest("1") + `","verdict":"Findings","outcome":"Copied"}]}`,
+		`{"v":2,"synced":[],"tagFindings":[{"tag":"1.0","digest":"` + hexDigest("1") + `","verdict":"Findings","outcome":"Copied","scannedAt":"0001-01-01T00:00:00Z"}]}`,
+		`{"v":2,"synced":[],"tagFindings":[{"tag":"1.0","digest":"` + hexDigest("1") + `","verdict":"Findings","outcome":"Copied","scannedAt":"2099-01-01T00:00:00Z"}]}`,
 		`{"v":1,"synced":[],"gate":"ok"}`,
 		`{"v":3,"synced":[]}`,
 	} {
@@ -434,4 +468,109 @@ func TestApplyResultUntrustedGateReport(t *testing.T) {
 			t.Errorf("%s: reason %s, report %v", msg, cond.Reason, rep)
 		}
 	}
+}
+
+var _ = Describe("vulnerability gate without a scanner", func() {
+	podEvents := func(p *corev1.Pod) func() string {
+		return func() string { return strings.Join(recorder.Events(p.Namespace, p.Name), "\n") }
+	}
+	// setup creates a target with the gate on and no scanner.url (the
+	// suite has no in-chart server), a namespace and a pod using an image.
+	setup := func(name string, onScanError mirrorv1alpha1.GateAction) (*corev1.Pod, *mirrorv1alpha1.ArtifactMirror) {
+		ns := name + "-ns"
+		image := ghcrRegistry + "/org/" + name
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})).To(Succeed())
+		createReadyTarget(name, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.AllowedSources = []mirrorv1alpha1.RegistryHost{ghcrRegistry}
+			t.Spec.Projects = []mirrorv1alpha1.TargetProject{{Name: otherProject, NamespaceSelector: &metav1.LabelSelector{}}}
+			t.Spec.AutoMirror = &mirrorv1alpha1.AutoMirror{Enabled: true, Project: otherProject,
+				VulnerabilityGate: &mirrorv1alpha1.VulnerabilityGate{Enabled: true, OnScanError: onScanError}}
+		})
+		p := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: ns, Annotations: map[string]string{mirrorv1alpha1.AutoMirrorAnnotation: name}},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: image + ":1.0"}}},
+		}
+		Expect(k8sClient.Create(ctx, p)).To(Succeed())
+		gen := &mirrorv1alpha1.ArtifactMirror{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: generatedNameOf(image)}}
+		DeferCleanup(func() {
+			Expect(k8sClient.Delete(ctx, p, client.GracePeriodSeconds(0))).To(Succeed())
+			time.Sleep(500 * time.Millisecond)
+			deleteAndWait(gen)
+			deleteAndWait(&mirrorv1alpha1.ClusterMirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: name}})
+		})
+		return p, gen
+	}
+	gauge := func(target string) func() float64 {
+		return func() float64 { return gateValues()[target] }
+	}
+	targetEvents := func(name string) func() string {
+		return func() string { return strings.Join(recorder.Events("", name), "\n") }
+	}
+
+	It("is loud under onScanError Report: target, mirror, pod and metric", func() {
+		const target = "gate-unconfigured-report"
+		p, gen := setup(target, mirrorv1alpha1.GateActionReport)
+		Eventually(targetCondition(target, ConditionScannerReady)).Should(And(
+			HaveField("Status", metav1.ConditionFalse), HaveField("Reason", ReasonNotConfigured)))
+		Eventually(targetEvents(target)).Should(ContainSubstring("Warning " + ReasonNotConfigured))
+		Eventually(gauge(target)).Should(Equal(1.0))
+
+		Eventually(func() *metav1.Condition {
+			var m mirrorv1alpha1.ArtifactMirror
+			if k8sClient.Get(ctx, client.ObjectKeyFromObject(gen), &m) != nil {
+				return nil
+			}
+			return meta.FindStatusCondition(m.Status.Conditions, ConditionVulnerabilityGate)
+		}).Should(And(HaveField("Status", metav1.ConditionFalse), HaveField("Reason", ReasonNotConfigured),
+			HaveField("Message", notConfigured)))
+		Expect(mirrorReady(gen)()).To(HaveField("Status", metav1.ConditionTrue))
+		Eventually(podEvents(p)).Should(And(ContainSubstring("Warning "+reasonVulnerabilityScanFail+" "+ReasonNotConfigured),
+			ContainSubstring("mirrored without scan")))
+
+		By("recording the mirror Event once")
+		mirrorWarnings := func() int {
+			return strings.Count(strings.Join(recorder.Events(gen.Namespace, gen.Name), "\n"), "Warning "+ReasonNotConfigured)
+		}
+		Eventually(mirrorWarnings).Should(Equal(1))
+		updateMirror(gen, func(m *mirrorv1alpha1.ArtifactMirror) { m.Annotations = map[string]string{"example.com/poke": "1"} })
+		Consistently(mirrorWarnings, 2*time.Second).Should(Equal(1))
+
+		By("clearing the metric when the gate is turned off")
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var t mirrorv1alpha1.ClusterMirrorTarget
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: target}, &t); err != nil {
+				return err
+			}
+			t.Spec.AutoMirror.VulnerabilityGate.Enabled = false
+			return k8sClient.Update(ctx, &t)
+		})).To(Succeed())
+		Eventually(gateValues).ShouldNot(HaveKey(target))
+	})
+
+	It("refuses the mirror under onScanError Block", func() {
+		const target = "gate-unconfigured-block"
+		p, gen := setup(target, mirrorv1alpha1.GateActionBlock)
+		Eventually(gauge(target)).Should(Equal(1.0))
+		Eventually(mirrorReady(gen)).Should(And(HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", ReasonScannerUnavailable), HaveField("Message", ContainSubstring("gate enabled but scanner not configured"))))
+		_, err := cronJob(gen)()
+		Expect(notFound(err)).To(BeTrue())
+		Eventually(podEvents(p)).Should(And(ContainSubstring("Warning "+reasonMirrorRefused+" "+ReasonScannerUnavailable),
+			ContainSubstring("gate enabled but scanner not configured")))
+	})
+})
+
+// gateValues returns the unscanned gauge per target label.
+func gateValues() map[string]float64 {
+	ch := make(chan prometheus.Metric, 100)
+	gateUnscanned.Collect(ch)
+	close(ch)
+	out := map[string]float64{}
+	for m := range ch {
+		var pb dto.Metric
+		if m.Write(&pb) == nil && len(pb.GetLabel()) == 1 {
+			out[pb.GetLabel()[0].GetValue()] = pb.GetGauge().GetValue()
+		}
+	}
+	return out
 }
