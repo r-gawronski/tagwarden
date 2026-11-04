@@ -490,7 +490,49 @@ configs:
 ```
 
 The first pull of a new tag waits for the first sync, so the pod may sit
-in `ImagePullBackOff` for a minute. Design notes: [docs/design/auto-mirror.md](docs/design/auto-mirror.md).
+in `ImagePullBackOff` for a minute. With the [vulnerability gate](#vulnerability-gate)
+on, the sync also scans the image first. Design notes: [docs/design/auto-mirror.md](docs/design/auto-mirror.md).
+
+## Vulnerability gate
+
+Optional and off by default. A target can scan the images that
+auto-mirror copies and act on known vulnerabilities. It never touches
+`ArtifactMirror` objects you wrote yourself.
+
+```yaml
+spec:
+  autoMirror:
+    enabled: true
+    project: shared
+    vulnerabilityGate:
+      enabled: true
+      action: Report          # Report (default) copies and records, Block does not copy
+      severity: Critical      # lowest severity that counts
+      onScanError: Report     # what happens to a tag the scanner could not judge
+      rescanInterval: 24h     # optional: scan mirrored tags again
+```
+
+- Scanning needs a Trivy server whose version matches the client. The
+  chart can deploy one (`trivy.enabled`), and it takes its vulnerability
+  database from your registry, never the internet.
+- `Report` mirrors the image anyway. The generated mirror gets the
+  condition `VulnerabilitiesFound`, `status.findings` lists the top CVEs,
+  and the pod gets a `VulnerabilitiesFound` Event. With `Block` the pod
+  gets `MirrorRefused` and the tag is not copied.
+- A gate that is enabled without a usable scanner is loud: the target
+  reports `ScannerReady=False` with reason `NotConfigured`, and the gauge
+  `tagwarden_vulnerability_gate_unscanned` is 1. Under
+  `onScanError: Report` images are copied unscanned. Under `Block` nothing
+  is copied.
+- A security-team-owned `VulnerabilityException` lets chosen CVEs or
+  digests through until it expires (90 days at most).
+- With `action` or `onScanError` set to `Block`, `autoMirror.project` is
+  reserved for generated mirrors, so a hand-written mirror cannot bypass
+  the gate there.
+
+Setup, the database mirror, NetworkPolicy and Harbor notes are in
+[Enable the vulnerability gate](docs/install.md#enable-the-vulnerability-gate).
+Design: [docs/design/vulnerability-gate.md](docs/design/vulnerability-gate.md).
 
 ## Features
 
@@ -525,6 +567,8 @@ in `ImagePullBackOff` for a minute. Design notes: [docs/design/auto-mirror.md](d
   redirects that point at internal, metadata or cluster addresses.
 - **Auto-mirror:** annotate a pod and its images get mirrored (see
   [Auto-mirror](#auto-mirror-from-pod-annotations)).
+- **Vulnerability gate:** scan auto-mirrored images with Trivy, report or
+  block (see [Vulnerability gate](#vulnerability-gate)).
 - **Least privilege:** the controller reads Secrets only in its own
   namespace.
 - **Audit trail:** one JSON line per artifact (source digest, target,
@@ -569,7 +613,7 @@ You need Kubernetes 1.30 or newer and a registry you can push to.
 
 ## Documentation
 
-- [Install](docs/install.md): Helm, Kustomize, uninstall.
+- [Install](docs/install.md): Helm, Kustomize, uninstall, vulnerability gate.
 - [Network policies](docs/network-policies.md): sync pod labels and
   example egress policies.
 - [Argo CD](docs/argocd.md): a Sync now button, health checks and sync Jobs in the app tree.
