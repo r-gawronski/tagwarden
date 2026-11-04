@@ -45,11 +45,16 @@ const (
 	externalToken   = "external-token" //nolint:gosec // Secret name, not a credential
 )
 
-// testScanner is the manager scanner configuration of the controller tests.
-var testScanner = ScannerConfig{
-	URL: "http://tagwarden-trivy.tagwarden-system.svc:4954", Image: trivyImage, Version: trivyVersion,
-	TokenSecret: testTokenSecret,
-}
+// inChartURL is the in-chart Trivy server of the controller tests.
+const inChartURL = "http://tagwarden-trivy.tagwarden-system.svc:4954"
+
+// testScanner is the manager scanner configuration of the unit tests.
+var testScanner = ScannerConfig{URL: inChartURL, Image: trivyImage, Version: trivyVersion, TokenSecret: testTokenSecret}
+
+// suiteScanner is the manager scanner configuration of the envtest
+// suite: no in-chart server, so a gated target needs scanner.url and one
+// without it is not configured.
+var suiteScanner = ScannerConfig{Image: trivyImage, Version: trivyVersion, TokenSecret: testTokenSecret}
 
 // gatedFixture is a generated mirror of a gated target with the given gate.
 func gatedFixture(g mirrorv1alpha1.VulnerabilityGate) (*mirrorv1alpha1.ClusterMirrorTarget, *mirrorv1alpha1.ArtifactMirror) {

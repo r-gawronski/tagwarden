@@ -419,7 +419,7 @@ var _ = Describe("gated sync CronJob", func() {
 		createReadyTarget(target, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			t.Spec.Projects = []mirrorv1alpha1.TargetProject{{Name: otherProject, NamespaceSelector: &metav1.LabelSelector{}}}
 			t.Spec.AutoMirror = &mirrorv1alpha1.AutoMirror{Enabled: true, Project: otherProject,
-				VulnerabilityGate: &mirrorv1alpha1.VulnerabilityGate{Enabled: true}}
+				VulnerabilityGate: &mirrorv1alpha1.VulnerabilityGate{Enabled: true, Scanner: &mirrorv1alpha1.ScannerSpec{URL: inChartURL}}}
 		})
 		gen := newMirror(teamB, generatedNameOf(k8sHost+"/pause"))
 		gen.Spec.TargetRef = target

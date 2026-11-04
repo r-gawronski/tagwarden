@@ -238,7 +238,7 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		return notReady(ReasonScannerUnavailable, msg)
 	}
 	gated := gateOf(&t) != nil && isGenerated(&t, m)
-	gateConditions(m, gated, sc)
+	gateConditions(m, gated, sc, ev)
 	spec, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return ctrl.Result{}, err

@@ -416,7 +416,7 @@ var _ = Describe("Scanner readiness", func() {
 				VulnerabilityGate: &mirrorv1alpha1.VulnerabilityGate{Enabled: true}}
 		})
 		DeferCleanup(k8sClient.Delete, ctx, t)
-		Eventually(targetCondition(t.Name, ConditionScannerReady)).Should(cond(metav1.ConditionFalse, ReasonScannerUnavailable, "not configured"))
+		Eventually(targetCondition(t.Name, ConditionScannerReady)).Should(cond(metav1.ConditionFalse, ReasonNotConfigured, "not configured"))
 	})
 
 	It("removes both conditions when the gate is turned off", func() {
