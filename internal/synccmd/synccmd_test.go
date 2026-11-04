@@ -288,7 +288,7 @@ func TestRunSyncs(t *testing.T) {
 	}
 	for i, l := range lines {
 		tag := r.Synced[i].Tag
-		if l.TS == "" || l.Mirror != "team-a/app" || l.Action != "copied" || l.Error != "" ||
+		if l.TS == "" || l.Mirror != "team-a/app" || l.Action != actionCopied || l.Error != "" ||
 			l.Source != src.String()+":"+tag+"@"+r.Synced[i].Digest || l.Target != dst.String()+":"+tag {
 			t.Fatalf("audit line %+v", l)
 		}
