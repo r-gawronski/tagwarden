@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
-	"net/url"
 	"slices"
 	"sync"
 	"time"
@@ -37,6 +36,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
@@ -58,6 +58,9 @@ type ClusterMirrorTargetReconciler struct {
 	// DeniedCIDRs are refused as scanner addresses unless the scanner host
 	// is a cluster Service name.
 	DeniedCIDRs []netip.Prefix
+	// ClusterDomain is the DNS domain of the cluster, used to qualify
+	// cluster Service names of scanners. Defaults to cluster.local.
+	ClusterDomain string
 
 	// allowLoopback lets tests probe local servers.
 	allowLoopback bool
@@ -175,17 +178,24 @@ func (r *ClusterMirrorTargetReconciler) scanner(ctx context.Context, g *mirrorv1
 		sc, db := scannerConditions(c, problem, nil, nil, maxAge, now)
 		return sc, db, nil
 	}
-	key := c.URL + "\x00" + string(ca)
+	domain := r.ClusterDomain
+	if domain == "" {
+		domain = DefaultClusterDomain
+	}
+	probeURL, inCluster, err := syncspec.ScannerURL(c.URL, domain)
+	if err != nil {
+		sc, db := scannerConditions(c, "invalid scanner URL", nil, nil, maxAge, now)
+		return sc, db, nil
+	}
+	key := probeURL + "\x00" + string(ca)
 	r.mu.Lock()
 	p, ok := r.probes[key]
 	r.mu.Unlock()
 	if !ok || now.Sub(p.at) >= scannerProbeInterval {
 		p = probeResult{at: now}
-		u, err := url.Parse(c.URL)
-		if err != nil {
-			p.err = err
-		} else {
-			p.info, p.err = probeScanner(ctx, c.URL, ca, scannerAddrCheck(u.Hostname(), r.DeniedCIDRs, r.allowLoopback))
+		p.info, p.err = probeScanner(ctx, probeURL, ca, scannerAddrCheck(inCluster, r.DeniedCIDRs, r.allowLoopback))
+		if p.err != nil {
+			logf.FromContext(ctx).V(1).Info("Scanner probe failed", "url", probeURL, "error", capMessage(p.err.Error()))
 		}
 		r.mu.Lock()
 		if r.probes == nil {

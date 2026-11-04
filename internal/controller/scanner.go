@@ -29,7 +29,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"regexp"
 	"syscall"
 	"time"
 
@@ -47,7 +46,73 @@ const (
 	scannerProbeTimeout  = 10 * time.Second
 	maxVersionBody       = 64 << 10
 	defaultMaxDBAge      = 72 * time.Hour
+	// maxClockSkew is how far in the future a DB UpdatedAt may be.
+	maxClockSkew = 5 * time.Minute
+	// maxMessage caps condition messages and Events.
+	maxMessage = 256
+	// DefaultClusterDomain is the default DNS domain of the cluster.
+	DefaultClusterDomain = "cluster.local"
 )
+
+var (
+	errInvalidVersion = errors.New("invalid /version response")
+	errBodyTooLarge   = errors.New("response larger than 64 KiB")
+)
+
+// statusError is an HTTP status other than 200.
+type statusError int
+
+func (e statusError) Error() string { return fmt.Sprintf("HTTP status %d", int(e)) }
+
+// addrError is a dial the address check refused.
+type addrError struct{ err error }
+
+func (e *addrError) Error() string { return e.err.Error() }
+
+// probeMessage maps a probe error to a fixed vocabulary. Server-controlled
+// text, decoder errors and ephemeral ports never reach status, so messages
+// stay short and stable.
+func probeMessage(err error) string {
+	var (
+		se  statusError
+		ae  *addrError
+		dns *net.DNSError
+		cv  *tls.CertificateVerificationError
+		rh  tls.RecordHeaderError
+		ne  net.Error
+	)
+	switch {
+	case errors.As(err, &ae):
+		return capMessage("address refused: " + ae.Error())
+	case errors.Is(err, errInvalidVersion):
+		return errInvalidVersion.Error()
+	case errors.Is(err, errBodyTooLarge):
+		return errBodyTooLarge.Error()
+	case errors.As(err, &se) && se >= 300 && se < 400:
+		return fmt.Sprintf("redirect refused (HTTP status %d)", int(se))
+	case errors.As(err, &se):
+		return se.Error()
+	case errors.As(err, &dns):
+		return "unreachable: DNS lookup failed"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "unreachable: connection refused"
+	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout():
+		return "unreachable: timeout"
+	case errors.As(err, &cv):
+		return "TLS: server certificate not trusted"
+	case errors.As(err, &rh):
+		return "TLS handshake failed"
+	}
+	return "unreachable: request failed"
+}
+
+// capMessage cuts s to maxMessage bytes.
+func capMessage(s string) string {
+	if len(s) <= maxMessage {
+		return s
+	}
+	return s[:maxMessage-3] + "..."
+}
 
 // ScannerConfig is the Trivy server and client of the vulnerability gate.
 // The manager's --trivy-url, --trivy-image and --trivy-version flags fill
@@ -129,25 +194,26 @@ func decodeVersion(b []byte) (*versionInfo, error) {
 	d.DisallowUnknownFields()
 	var v versionInfo
 	if err := d.Decode(&v); err != nil {
-		return nil, fmt.Errorf("invalid /version response: %w", err)
+		return nil, fmt.Errorf("%w: %w", errInvalidVersion, err)
 	}
 	if _, err := d.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("invalid /version response: data after the JSON object")
+		return nil, fmt.Errorf("%w: data after the JSON object", errInvalidVersion)
 	}
 	if v.Version == "" {
-		return nil, errors.New("invalid /version response: no Version")
+		return nil, fmt.Errorf("%w: no Version", errInvalidVersion)
+	}
+	if len(v.Version) > 64 {
+		return nil, fmt.Errorf("%w: Version too long", errInvalidVersion)
 	}
 	return &v, nil
 }
 
-var clusterServiceHost = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local)?$`)
-
-// scannerAddrCheck returns the dial check for a scanner host. Loopback,
+// scannerAddrCheck returns the dial check for a scanner. Loopback,
 // link-local and metadata addresses are always refused. The denied CIDRs
 // (the cluster pod and service CIDRs) are refused unless the host is a
 // cluster Service name, like the in-chart server, which lives there.
-func scannerAddrCheck(host string, denied []netip.Prefix, allowLoopback bool) func(netip.Addr) error {
-	if clusterServiceHost.MatchString(host) {
+func scannerAddrCheck(inCluster bool, denied []netip.Prefix, allowLoopback bool) func(netip.Addr) error {
+	if inCluster {
 		denied = nil
 	}
 	return func(a netip.Addr) error {
@@ -177,7 +243,10 @@ func probeScanner(ctx context.Context, base string, caPEM []byte, check func(net
 		if err != nil {
 			return err
 		}
-		return check(ap.Addr())
+		if err := check(ap.Addr()); err != nil {
+			return &addrError{err}
+		}
+		return nil
 	}}
 	c := &http.Client{
 		Transport: &http.Transport{
@@ -200,14 +269,14 @@ func probeScanner(ctx context.Context, base string, caPEM []byte, check func(net
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: status %d", u, resp.StatusCode)
+		return nil, statusError(resp.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxVersionBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", u, err)
+		return nil, err
 	}
 	if len(b) > maxVersionBody {
-		return nil, fmt.Errorf("GET %s: response larger than %d bytes", u, maxVersionBody)
+		return nil, errBodyTooLarge
 	}
 	return decodeVersion(b)
 }
@@ -221,21 +290,24 @@ func scannerConditions(c ScannerConfig, problem string, info *versionInfo, probe
 		Message: "the scanner did not answer"}
 	switch {
 	case problem != "":
-		sc.Message = problem
+		sc.Message = capMessage(problem)
 		return sc, db
 	case probeErr != nil:
-		sc.Message = "unreachable: " + probeErr.Error()
+		sc.Message = probeMessage(probeErr)
 		return sc, db
 	}
 	if msg := versionMismatch(c.Version, info.Version); msg != "" {
 		sc.Reason, sc.Message = ReasonVersionMismatch, msg
 	} else {
-		sc.Status, sc.Reason, sc.Message = metav1.ConditionTrue, ReasonReady, fmt.Sprintf("Trivy %s at %s", info.Version, c.URL)
+		sc.Status, sc.Reason, sc.Message = metav1.ConditionTrue, ReasonReady, capMessage(fmt.Sprintf("Trivy %s at %s", info.Version, c.URL))
 	}
 	db.Status, db.Reason = metav1.ConditionFalse, ReasonDBStale
 	switch {
 	case info.VulnerabilityDB == nil || info.VulnerabilityDB.UpdatedAt.IsZero():
 		db.Message = "the server reports no vulnerability DB"
+	case info.VulnerabilityDB.UpdatedAt.After(now.Add(maxClockSkew)):
+		db.Message = fmt.Sprintf("vulnerability DB updated %s, in the future",
+			info.VulnerabilityDB.UpdatedAt.UTC().Format(time.RFC3339))
 	case now.Sub(info.VulnerabilityDB.UpdatedAt) > maxAge:
 		db.Message = fmt.Sprintf("vulnerability DB updated %s, older than maxDBAge %s",
 			info.VulnerabilityDB.UpdatedAt.UTC().Format(time.RFC3339), maxAge)

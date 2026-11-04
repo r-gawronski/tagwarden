@@ -27,6 +27,7 @@ manager:
     - --leader-elect={{ .Values.leaderElection.enabled }}
     - --sync-image={{ include "tagwarden.syncImage" . }}
     - --denied-cidrs={{ join "," .Values.deniedCIDRs }}
+    - --cluster-domain={{ .Values.clusterDomain }}
     - --argocd-tracking={{ .Values.argocd.tracking }}
     - --argocd-instance-label={{ .Values.argocd.instanceLabel }}
 
@@ -96,6 +97,11 @@ syncImage:
 deniedCIDRs: []
 # - 10.244.0.0/16
 # - 10.96.0.0/12
+
+## DNS domain of the cluster, without a trailing dot. The manager dials
+## Trivy Service names as <service>.<namespace>.svc.<clusterDomain>. so
+## resolv.conf search domains never apply. Rendered as --cluster-domain.
+clusterDomain: cluster.local
 
 leaderElection:
   enabled: true

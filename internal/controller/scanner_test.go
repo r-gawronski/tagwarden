@@ -17,13 +17,19 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -117,6 +123,7 @@ func TestDecodeVersion(t *testing.T) {
 		{name: "wrong type", body: `{"Version":76}`, err: "invalid /version response"},
 		{name: "trailing data", body: `{"Version":"0.76.1"} {}`, err: "data after the JSON object"},
 		{name: "no version", body: `{}`, err: "no Version"},
+		{name: "long version", body: `{"Version":"0.76.1-` + strings.Repeat("a", 100) + `"}`, err: "Version too long"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,25 +138,57 @@ func TestDecodeVersion(t *testing.T) {
 func TestScannerAddrCheck(t *testing.T) {
 	denied := []netip.Prefix{netip.MustParsePrefix("10.96.0.0/12")}
 	tests := []struct {
-		host, addr string
-		ok         bool
+		inCluster bool
+		addr      string
+		ok        bool
 	}{
-		{extHost, "192.0.2.10", true},
-		{extHost, metadataIP, false},
-		{extHost, "100.100.100.200", false},
-		{extHost, "127.0.0.1", false},
-		{extHost, serviceIP, false},
-		{svcHost, serviceIP, true},
-		{svcHost + ".cluster.local", serviceIP, true},
-		{svcHost, metadataIP, false},
-		{svcHost, "127.0.0.1", false},
-		{"svc.example.internal", serviceIP, false},
+		{false, "192.0.2.10", true},
+		{false, metadataIP, false},
+		{false, "100.100.100.200", false},
+		{false, "127.0.0.1", false},
+		{false, serviceIP, false},
+		{true, serviceIP, true},
+		{true, metadataIP, false},
+		{true, "127.0.0.1", false},
 	}
 	for _, tt := range tests {
-		err := scannerAddrCheck(tt.host, denied, false)(netip.MustParseAddr(tt.addr))
+		err := scannerAddrCheck(tt.inCluster, denied, false)(netip.MustParseAddr(tt.addr))
 		if (err == nil) != tt.ok {
-			t.Errorf("%s -> %s: err = %v, want ok %v", tt.host, tt.addr, err, tt.ok)
+			t.Errorf("inCluster %v -> %s: err = %v, want ok %v", tt.inCluster, tt.addr, err, tt.ok)
 		}
+	}
+}
+
+func dial(err error) error { return &net.OpError{Op: "dial", Err: err} }
+
+func TestProbeMessage(t *testing.T) {
+	huge := strings.Repeat("a", 60000)
+	_, decodeErr := decodeVersion([]byte(`{"Version":"0.76.1","` + huge + `":1}`))
+	get := func(err error) error { return &url.Error{Op: http.MethodGet, URL: extURL, Err: err} }
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{decodeErr, errInvalidVersion.Error()},
+		{errBodyTooLarge, "response larger than 64 KiB"},
+		{statusError(http.StatusServiceUnavailable), "HTTP status 503"},
+		{statusError(http.StatusFound), "redirect refused (HTTP status 302)"},
+		{get(dial(&addrError{errors.New("resolves to internal address " + metadataIP)})),
+			"address refused: resolves to internal address " + metadataIP},
+		{get(dial(syscall.ECONNREFUSED)), "unreachable: connection refused"},
+		{get(&net.DNSError{Err: huge, Name: huge, IsNotFound: true}), "unreachable: DNS lookup failed"},
+		{get(context.DeadlineExceeded), "unreachable: timeout"},
+		{get(&tls.CertificateVerificationError{Err: errors.New(huge)}), "TLS: server certificate not trusted"},
+		{get(tls.RecordHeaderError{Msg: huge}), "TLS handshake failed"},
+		{errors.New(huge), "unreachable: request failed"},
+	}
+	for _, tt := range tests {
+		if got := probeMessage(tt.err); got != tt.want {
+			t.Errorf("probeMessage(%.80v) = %q, want %q", tt.err, got, tt.want)
+		}
+	}
+	if got := capMessage(huge); len(got) > maxMessage {
+		t.Errorf("capMessage kept %d bytes", len(got))
 	}
 }
 
@@ -174,7 +213,7 @@ func TestScannerConditions(t *testing.T) {
 		{name: "not configured", problem: "not configured: x",
 			scStatus: metav1.ConditionFalse, scReason: ReasonScannerUnavailable, scMessage: "not configured: x",
 			dbStatus: metav1.ConditionUnknown, dbReason: ReasonScannerUnavailable},
-		{name: "unreachable", err: fmt.Errorf("connection refused"),
+		{name: "unreachable", err: dial(syscall.ECONNREFUSED),
 			scStatus: metav1.ConditionFalse, scReason: ReasonScannerUnavailable, scMessage: "unreachable: connection refused",
 			dbStatus: metav1.ConditionUnknown, dbReason: ReasonScannerUnavailable},
 		{name: "version mismatch keeps the DB check", info: info("0.75.0", time.Hour),
@@ -183,6 +222,12 @@ func TestScannerConditions(t *testing.T) {
 		{name: "stale DB", info: info(trivyVersion, 73*time.Hour),
 			scStatus: metav1.ConditionTrue, scReason: ReasonReady,
 			dbStatus: metav1.ConditionFalse, dbReason: ReasonDBStale, dbMessage: "older than maxDBAge 72h0m0s"},
+		{name: "DB from the future", info: info(trivyVersion, -10*time.Minute),
+			scStatus: metav1.ConditionTrue, scReason: ReasonReady,
+			dbStatus: metav1.ConditionFalse, dbReason: ReasonDBStale, dbMessage: "in the future"},
+		{name: "small clock skew", info: info(trivyVersion, -4*time.Minute),
+			scStatus: metav1.ConditionTrue, scReason: ReasonReady,
+			dbStatus: metav1.ConditionTrue, dbReason: ReasonReady},
 		{name: "no DB", info: &versionInfo{Version: trivyVersion},
 			scStatus: metav1.ConditionTrue, scReason: ReasonReady,
 			dbStatus: metav1.ConditionFalse, dbReason: ReasonDBStale, dbMessage: "no vulnerability DB"},
@@ -243,9 +288,9 @@ func (f *fakeTrivy) caPEM() []byte {
 }
 
 // createGatedTarget creates a Ready target with the gate on and the scanner
-// at url, trusting ca when set.
-func createGatedTarget(name, url string, ca []byte, mutate ...func(*mirrorv1alpha1.ClusterMirrorTarget)) *mirrorv1alpha1.ClusterMirrorTarget {
-	scanner := &mirrorv1alpha1.ScannerSpec{URL: url, Image: trivyImage, Version: trivyVersion,
+// at scannerURL, trusting ca when set.
+func createGatedTarget(name, scannerURL string, ca []byte, mutate ...func(*mirrorv1alpha1.ClusterMirrorTarget)) *mirrorv1alpha1.ClusterMirrorTarget {
+	scanner := &mirrorv1alpha1.ScannerSpec{URL: scannerURL, Image: trivyImage, Version: trivyVersion,
 		TokenSecretRef: &mirrorv1alpha1.TokenSecretKeyRef{Name: name + "-token-never-read"}}
 	if ca != nil {
 		s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name + "-trivy-ca", Namespace: operatorNamespace},
@@ -305,8 +350,7 @@ var _ = Describe("Scanner readiness", func() {
 	DescribeTable("reports a broken scanner",
 		func(name string, setup func(*fakeTrivy) string, typ string, status metav1.ConditionStatus, reason, message string) {
 			f := newFakeTrivy()
-			url := setup(f)
-			t := createGatedTarget(name, url, f.caPEM())
+			t := createGatedTarget(name, setup(f), f.caPEM())
 			var c *metav1.Condition
 			Eventually(func() *metav1.Condition { c = targetCondition(t.Name, typ)(); return c }).Should(cond(status, reason, message))
 			Expect(targetReady(t.Name)).To(HaveField("Status", metav1.ConditionTrue))
@@ -318,33 +362,44 @@ var _ = Describe("Scanner readiness", func() {
 		Entry("stale DB", "scan-stale", func(f *fakeTrivy) string { f.setVersion(trivyVersion, 100*time.Hour); return f.URL },
 			ConditionVulnerabilityDBReady, metav1.ConditionFalse, ReasonDBStale, "older than maxDBAge 72h"),
 		Entry("garbage JSON", "scan-garbage", func(f *fakeTrivy) string { f.body.Store("<html>"); return f.URL },
-			ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, "invalid /version response"),
+			ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, errInvalidVersion.Error()),
 		Entry("oversized body", "scan-huge", func(f *fakeTrivy) string {
 			f.body.Store(`{"Version":"0.76.1","CheckBundle":"` + strings.Repeat("a", maxVersionBody) + `"}`)
 			return f.URL
-		}, ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, "response larger than"),
+		}, ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, "response larger than 64 KiB"),
 		Entry("redirect", "scan-redirect", func(f *fakeTrivy) string { f.status.Store(http.StatusFound); return f.URL },
-			ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, "status 302"),
+			ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, "redirect refused (HTTP status 302)"),
 		Entry("down", "scan-down", func(f *fakeTrivy) string { f.Close(); return f.URL },
-			ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, "unreachable"),
+			ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, "unreachable: connection refused"),
 		Entry("down keeps the DB unknown", "scan-down-db", func(f *fakeTrivy) string { f.Close(); return f.URL },
 			ConditionVulnerabilityDBReady, metav1.ConditionUnknown, ReasonScannerUnavailable, "did not answer"),
 		Entry("cloud metadata address", "scan-metadata", func(*fakeTrivy) string { return "https://" + metadataIP },
 			ConditionScannerReady, metav1.ConditionFalse, ReasonScannerUnavailable, "internal address "+metadataIP),
 	)
 
+	It("keeps server text out of status", func() {
+		f := newFakeTrivy()
+		f.body.Store(`{"Version":"0.76.1","` + strings.Repeat("a", 60000) + `":1}`)
+		t := createGatedTarget("scan-huge-key", f.URL, f.caPEM())
+		Eventually(targetCondition(t.Name, ConditionScannerReady)).Should(
+			HaveField("Message", Equal(errInvalidVersion.Error())))
+		for _, e := range recorder.Events("", t.Name) {
+			Expect(len(e)).To(BeNumerically("<", 512))
+		}
+	})
+
 	It("does not follow redirects", func() {
 		f := newFakeTrivy()
 		f.status.Store(http.StatusMovedPermanently)
 		t := createGatedTarget("scan-no-follow", f.URL, f.caPEM())
-		Eventually(targetCondition(t.Name, ConditionScannerReady)).Should(cond(metav1.ConditionFalse, ReasonScannerUnavailable, "status 301"))
+		Eventually(targetCondition(t.Name, ConditionScannerReady)).Should(cond(metav1.ConditionFalse, ReasonScannerUnavailable, "redirect refused (HTTP status 301)"))
 		Expect(f.requests.Load()).To(BeNumerically("==", 1))
 	})
 
 	It("needs the scanner CA for a private https server", func() {
 		f := newFakeTrivy()
 		t := createGatedTarget("scan-no-ca", f.URL, nil)
-		Eventually(targetCondition(t.Name, ConditionScannerReady)).Should(cond(metav1.ConditionFalse, ReasonScannerUnavailable, "certificate"))
+		Eventually(targetCondition(t.Name, ConditionScannerReady)).Should(cond(metav1.ConditionFalse, ReasonScannerUnavailable, "TLS: server certificate not trusted"))
 	})
 
 	It("reports a missing CA Secret on ScannerReady only", func() {

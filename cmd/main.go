@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"net/netip"
 	"net/url"
 	"os"
@@ -89,6 +90,18 @@ func validateTrivy(image, version, serverURL string) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return errors.New("--trivy-url must be an http or https URL")
 	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsRune(serverURL, '#') {
+		return errors.New("--trivy-url must not contain credentials, a query or a fragment")
+	}
+	return nil
+}
+
+// validateClusterDomain checks --cluster-domain: a lower-case DNS
+// subdomain without a trailing dot.
+func validateClusterDomain(d string) error {
+	if errs := validation.IsDNS1123Subdomain(d); len(errs) > 0 {
+		return fmt.Errorf("--cluster-domain: %s", strings.Join(errs, "; "))
+	}
 	return nil
 }
 
@@ -108,7 +121,7 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var trivyImage, trivyVersion, trivyURL string
-	var operatorNamespace, syncImage, deniedCIDRs string
+	var operatorNamespace, syncImage, deniedCIDRs, clusterDomain string
 	var argoTracking, argoInstanceLabel string
 	flag.StringVar(&operatorNamespace, "operator-namespace", os.Getenv("POD_NAMESPACE"),
 		"The namespace that holds sync CronJobs, Jobs and target Secrets. Defaults to $POD_NAMESPACE.")
@@ -123,6 +136,8 @@ func main() {
 	flag.StringVar(&trivyImage, "trivy-image", "", "Trivy image of the gate, pinned by digest. Set by the chart.")
 	flag.StringVar(&trivyVersion, "trivy-version", "", "Trivy version of the gate image and server. Set by the chart.")
 	flag.StringVar(&trivyURL, "trivy-url", "", "URL of the in-chart Trivy server. Set by the chart.")
+	flag.StringVar(&clusterDomain, "cluster-domain", controller.DefaultClusterDomain,
+		"DNS domain of the cluster. Scanner Service names are dialed as <svc>.<ns>.svc.<domain>.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -160,6 +175,10 @@ func main() {
 	}
 	if errs := validation.IsQualifiedName(argoInstanceLabel); len(errs) > 0 {
 		setupLog.Error(nil, "Invalid --argocd-instance-label", "value", argoInstanceLabel, "reason", strings.Join(errs, "; "))
+		os.Exit(1)
+	}
+	if err := validateClusterDomain(clusterDomain); err != nil {
+		setupLog.Error(err, "Invalid --cluster-domain")
 		os.Exit(1)
 	}
 	if err := validateTrivy(trivyImage, trivyVersion, trivyURL); err != nil {
@@ -293,12 +312,13 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ClusterMirrorTargetReconciler{
-		Recorder:    mgr.GetEventRecorder("tagwarden"),
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Namespace:   operatorNamespace,
-		Scanner:     controller.ScannerConfig{URL: trivyURL, Image: trivyImage, Version: trivyVersion},
-		DeniedCIDRs: deniedPrefixes,
+		Recorder:      mgr.GetEventRecorder("tagwarden"),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Namespace:     operatorNamespace,
+		Scanner:       controller.ScannerConfig{URL: trivyURL, Image: trivyImage, Version: trivyVersion},
+		DeniedCIDRs:   deniedPrefixes,
+		ClusterDomain: clusterDomain,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "clustermirrortarget")
 		os.Exit(1)
