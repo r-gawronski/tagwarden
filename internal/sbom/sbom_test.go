@@ -33,6 +33,11 @@ const (
 	spdxDoc = `{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","packages":[]}`
 	gen     = "trivy/0.76.1"
 	amd64   = "linux/amd64"
+	cdxMT   = "application/vnd.cyclonedx+json"
+	kMT     = "mediaType"
+	kDigest = "digest"
+	kSize   = "size"
+	emptyCf = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 )
 
 var (
@@ -51,7 +56,7 @@ func TestFormat(t *testing.T) {
 		mt    types.MediaType
 		trivy string
 	}{
-		{CycloneDX, true, "application/vnd.cyclonedx+json", "cyclonedx"},
+		{CycloneDX, true, cdxMT, "cyclonedx"},
 		{SPDX, true, "application/spdx+json", "spdx-json"},
 		{"cyclonedx", false, "", ""},
 		{"", false, "", ""},
@@ -76,7 +81,7 @@ func TestCheck(t *testing.T) {
 		limit int64
 		err   error
 	}{
-		{name: "cyclonedx", f: CycloneDX, in: cdxDoc},
+		{name: "cyclonedx 1.6", f: CycloneDX, in: cdxDoc},
 		{name: "cyclonedx 1.10", f: CycloneDX, in: `{"bomFormat":"CycloneDX","specVersion":"1.10"}`},
 		{name: "spdx", f: SPDX, in: spdxDoc},
 		{name: "spdx 2.2 with whitespace", f: SPDX, in: " \n{\"spdxVersion\":\"SPDX-2.2\",\"SPDXID\":\"SPDXRef-DOCUMENT\"}\n"},
@@ -164,14 +169,14 @@ func TestReferrerImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	docHash, _, _ := v1.SHA256(strings.NewReader(cdxDoc))
-	if m.SchemaVersion != 2 || m.MediaType != types.OCIManifestSchema1 || m.ArtifactType != "application/vnd.cyclonedx+json" {
+	if m.SchemaVersion != 2 || m.MediaType != types.OCIManifestSchema1 || m.ArtifactType != cdxMT {
 		t.Errorf("manifest header = %d %q %q", m.SchemaVersion, m.MediaType, m.ArtifactType)
 	}
 	if m.Config.MediaType != EmptyConfigMediaType || m.Config.Size != 2 ||
-		m.Config.Digest.String() != "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" {
+		m.Config.Digest.String() != emptyCf {
 		t.Errorf("config = %+v, want the OCI empty descriptor", m.Config)
 	}
-	if len(m.Layers) != 1 || m.Layers[0].MediaType != "application/vnd.cyclonedx+json" ||
+	if len(m.Layers) != 1 || m.Layers[0].MediaType != cdxMT ||
 		m.Layers[0].Digest != docHash || m.Layers[0].Size != int64(len(cdxDoc)) {
 		t.Errorf("layers = %+v", m.Layers)
 	}
@@ -179,10 +184,10 @@ func TestReferrerImage(t *testing.T) {
 		t.Errorf("subject = %+v, want %+v", m.Subject, child)
 	}
 	want := map[string]string{
-		"org.opencontainers.image.created": "2026-11-04T12:00:00Z",
-		AnnotationGenerator:                gen,
-		AnnotationFormat:                   "CycloneDX",
-		AnnotationJavaScanned:              "false",
+		annotationCreated:     "2026-11-04T12:00:00Z",
+		AnnotationGenerator:   gen,
+		AnnotationFormat:      "CycloneDX",
+		AnnotationJavaScanned: "false",
 	}
 	if !equalMaps(m.Annotations, want) {
 		t.Errorf("annotations = %v, want %v", m.Annotations, want)
@@ -232,10 +237,10 @@ func TestReferrerImageOptions(t *testing.T) {
 	var m manifest
 	_ = json.Unmarshal(raw, &m)
 	want := map[string]string{
-		"org.opencontainers.image.created": "2026-11-04T12:00:00Z",
-		AnnotationGenerator:                gen,
-		AnnotationFormat:                   "SPDX",
-		AnnotationPlatform:                 amd64,
+		annotationCreated:   "2026-11-04T12:00:00Z",
+		AnnotationGenerator: gen,
+		AnnotationFormat:    "SPDX",
+		AnnotationPlatform:  amd64,
 	}
 	if m.ArtifactType != "application/spdx+json" || !equalMaps(m.Annotations, want) {
 		t.Errorf("artifactType %q, annotations %v, want %v", m.ArtifactType, m.Annotations, want)
@@ -251,7 +256,7 @@ func TestReferrerImageRejects(t *testing.T) {
 		"subject algorithm": func(r *Referrer) { r.Subject.Digest.Algorithm = "sha512" },
 		"subject hex":       func(r *Referrer) { r.Subject.Digest.Hex = "AA" },
 		"subject size":      func(r *Referrer) { r.Subject.Size = 0 },
-		"subject type":      func(r *Referrer) { r.Subject.MediaType = "application/vnd.cyclonedx+json" },
+		"subject type":      func(r *Referrer) { r.Subject.MediaType = cdxMT },
 		"generator":         func(r *Referrer) { r.Generator = "trivy 0.76.1" },
 		"no generator":      func(r *Referrer) { r.Generator = "" },
 		"platform":          func(r *Referrer) { r.Platform = "linux/amd64/v1/x" },
@@ -273,12 +278,12 @@ func TestReferrerImageRejects(t *testing.T) {
 func upstreamManifest(mod func(m map[string]any)) []byte {
 	m := map[string]any{
 		"schemaVersion": 2,
-		"mediaType":     string(types.OCIManifestSchema1),
-		"artifactType":  "application/vnd.cyclonedx+json",
-		"config":        map[string]any{"mediaType": EmptyConfigMediaType, "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", "size": 2},
-		"layers": []any{map[string]any{"mediaType": "application/vnd.cyclonedx+json",
-			"digest": "sha256:" + strings.Repeat("b", 64), "size": 10}},
-		"subject": map[string]any{"mediaType": string(types.OCIManifestSchema1), "digest": child.Digest.String(), "size": child.Size},
+		kMT:             string(types.OCIManifestSchema1),
+		"artifactType":  cdxMT,
+		"config":        map[string]any{kMT: EmptyConfigMediaType, kDigest: emptyCf, kSize: 2},
+		"layers": []any{map[string]any{kMT: cdxMT,
+			kDigest: "sha256:" + strings.Repeat("b", 64), kSize: 10}},
+		"subject": map[string]any{kMT: string(types.OCIManifestSchema1), kDigest: child.Digest.String(), kSize: child.Size},
 	}
 	if mod != nil {
 		mod(m)
@@ -298,25 +303,25 @@ func TestUpstream(t *testing.T) {
 		{"cyclonedx referrer", CycloneDX, upstreamManifest(nil), true},
 		{"config media type without artifactType", CycloneDX, upstreamManifest(func(m map[string]any) {
 			delete(m, "artifactType")
-			m["config"] = map[string]any{"mediaType": "application/vnd.cyclonedx+json", "digest": layer, "size": 10}
+			m["config"] = map[string]any{kMT: cdxMT, kDigest: layer, kSize: 10}
 		}), true},
 		{"other annotations", CycloneDX, upstreamManifest(func(m map[string]any) {
-			m["annotations"] = map[string]string{"org.opencontainers.image.created": "x"}
+			m["annotations"] = map[string]string{annotationCreated: "x"}
 		}), true},
 		{"wrong format", SPDX, upstreamManifest(nil), false},
 		{"wrong subject", CycloneDX, upstreamManifest(func(m map[string]any) {
-			m["subject"] = map[string]any{"mediaType": string(types.OCIManifestSchema1), "digest": "sha256:" + strings.Repeat("c", 64), "size": 1}
+			m["subject"] = map[string]any{kMT: string(types.OCIManifestSchema1), kDigest: "sha256:" + strings.Repeat("c", 64), kSize: 1}
 		}), false},
 		{"no subject", CycloneDX, upstreamManifest(func(m map[string]any) { delete(m, "subject") }), false},
-		{"index", CycloneDX, upstreamManifest(func(m map[string]any) { m["mediaType"] = string(types.OCIImageIndex) }), false},
-		{"docker manifest", CycloneDX, upstreamManifest(func(m map[string]any) { m["mediaType"] = string(types.DockerManifestSchema2) }), false},
+		{"index", CycloneDX, upstreamManifest(func(m map[string]any) { m[kMT] = string(types.OCIImageIndex) }), false},
+		{"docker manifest", CycloneDX, upstreamManifest(func(m map[string]any) { m[kMT] = string(types.DockerManifestSchema2) }), false},
 		{"two layers", CycloneDX, upstreamManifest(func(m map[string]any) {
 			l := m["layers"].([]any)
 			m["layers"] = append(l, l[0])
 		}), false},
 		{"no layers", CycloneDX, upstreamManifest(func(m map[string]any) { m["layers"] = []any{} }), false},
 		{"layer of another type", CycloneDX, upstreamManifest(func(m map[string]any) {
-			m["layers"] = []any{map[string]any{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": layer, "size": 10}}
+			m["layers"] = []any{map[string]any{kMT: "application/vnd.oci.image.layer.v1.tar+gzip", kDigest: layer, kSize: 10}}
 		}), false},
 		{"artifactType differs from config", CycloneDX, upstreamManifest(func(m map[string]any) { m["artifactType"] = "application/vnd.in-toto+json" }), false},
 		{"reserved annotation", CycloneDX, upstreamManifest(func(m map[string]any) {
@@ -354,7 +359,7 @@ func TestReserved(t *testing.T) {
 		want bool
 	}{
 		{nil, false},
-		{map[string]string{"org.opencontainers.image.created": "x"}, false},
+		{map[string]string{annotationCreated: "x"}, false},
 		{map[string]string{"dev.tagwardenx.y": "x"}, false},
 		{map[string]string{"tagwarden.dev/x": "x"}, false},
 		{map[string]string{AnnotationGenerator: "x"}, true},
@@ -367,7 +372,7 @@ func TestReserved(t *testing.T) {
 }
 
 func TestGenerated(t *testing.T) {
-	cdx := "application/vnd.cyclonedx+json"
+	cdx := cdxMT
 	ann := func(kv ...string) map[string]string {
 		m := map[string]string{AnnotationGenerator: gen, AnnotationFormat: "CycloneDX"}
 		for i := 0; i+1 < len(kv); i += 2 {
