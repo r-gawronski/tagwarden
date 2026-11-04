@@ -59,6 +59,8 @@ type testRegistry struct {
 	writes atomic.Int32
 	// manifestGets counts GET requests for manifests.
 	manifestGets atomic.Int32
+	// tagLists counts GET requests for /tags/list.
+	tagLists atomic.Int32
 	// headStatus, when set, answers every manifest HEAD with this status.
 	headStatus atomic.Int32
 	mu         stdsync.Mutex
@@ -80,6 +82,8 @@ type regOpts struct {
 	auth bool
 	// noHeadDigest drops Docker-Content-Digest from HEAD responses.
 	noHeadDigest bool
+	// listFails answers /tags/list with 500.
+	listFails bool
 }
 
 func newRegistry(t *testing.T, o regOpts) *testRegistry {
@@ -97,6 +101,13 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 		}
 		if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/manifests/") {
 			r.manifestGets.Add(1)
+		}
+		if strings.HasSuffix(req.URL.Path, "/tags/list") {
+			r.tagLists.Add(1)
+			if o.listFails {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 		}
 		if code := r.headStatus.Load(); code != 0 && req.Method == http.MethodHead && strings.Contains(req.URL.Path, "/manifests/") {
 			w.WriteHeader(int(code))
@@ -427,6 +438,43 @@ func TestRunMaxTags(t *testing.T) {
 	}
 	if n := dst.writes.Load(); n != 0 {
 		t.Fatalf("target written %d times", n)
+	}
+}
+
+func TestRunExplicitTagsNeverListSource(t *testing.T) {
+	src := newRegistry(t, regOpts{listFails: true})
+	dst := newRegistry(t, regOpts{})
+	push(t, src.repo, v100, image(t))
+	push(t, src.repo, "latest", image(t))
+	res, err := Run(context.Background(), Request{
+		Source: src.repo, Target: dst.repo, MaxTags: 1,
+		Policy: tags.Policy{Tags: []string{"latest", v100, "missing", v100}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := src.tagLists.Load(); n != 0 {
+		t.Fatalf("source tags listed %d times", n)
+	}
+	if want := []string{v100, "latest"}; !slices.Equal(res.Selected, want) || !slices.Equal(slices.Sorted(slices.Values(list(t, dst.repo))), []string{"latest", v100}) {
+		t.Fatalf("selected %v, target %v, want %v", res.Selected, list(t, dst.repo), want)
+	}
+}
+
+func TestRunMixedSelectionStillLists(t *testing.T) {
+	src := newRegistry(t, regOpts{})
+	dst := newRegistry(t, regOpts{})
+	push(t, src.repo, v100, image(t))
+	push(t, src.repo, "latest", image(t))
+	res, err := Run(context.Background(), Request{
+		Source: src.repo, Target: dst.repo,
+		Policy: tags.Policy{KeepLatest: 1, Tags: []string{"latest"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.tagLists.Load() == 0 || !slices.Equal(res.Selected, []string{v100, "latest"}) {
+		t.Fatalf("lists %d, selected %v", src.tagLists.Load(), res.Selected)
 	}
 }
 
