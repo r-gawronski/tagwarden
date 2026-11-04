@@ -59,9 +59,18 @@ change recompiles the manager (about 3 minutes).
 
 ## CI
 
-Every pull request runs all required checks, whatever it touches. On pushes
-to `main`, changes that touch only Markdown, `docs/`, `LICENSE` or
-`.github/CODEOWNERS` skip CI, CodeQL and e2e.
+Every pull request reports all required checks. A pull request that
+changes only docs (`**/*.md`, `docs/`, `LICENSE`, `.github/CODEOWNERS`,
+`.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md`,
+`.github/release.yml`) skips the heavy jobs, which then show as success.
+Anything else counts as code and runs everything. The same rule applies to
+pushes to `main`: a docs-only merge skips CI, CodeQL, the image build (no new
+`main-<sha>` image) and e2e. If the check cannot tell, it runs everything.
+DCO and secret scanning always run.
+
+A new push to a pull request or to `main` cancels the older run of the same
+workflow. Release tag runs never cancel each other. Scorecard runs weekly and
+on demand, not on every push.
 
 On pull requests the e2e workflow runs only when the pull request has the
 `e2e` label: when the label is added and on every push after that. Without

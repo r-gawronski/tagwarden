@@ -10,6 +10,9 @@ on:
       - "docs/**"
       - LICENSE
       - .github/CODEOWNERS
+      - ".github/ISSUE_TEMPLATE/**"
+      - .github/pull_request_template.md
+      - .github/release.yml
   push:
     branches: [main]
     paths-ignore:
@@ -17,6 +20,9 @@ on:
       - "docs/**"
       - LICENSE
       - .github/CODEOWNERS
+      - ".github/ISSUE_TEMPLATE/**"
+      - .github/pull_request_template.md
+      - .github/release.yml
   schedule:
     - cron: "0 3 * * 1"
 
@@ -31,8 +37,8 @@ jobs:
       (github.event.action != 'labeled' || github.event.label.name == 'e2e'))
     # Job level, so a run that skips the job does not cancel a running one.
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
