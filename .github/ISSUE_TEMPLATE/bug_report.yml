@@ -1,0 +1,40 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security problems here. See SECURITY.md.
+        Remove credentials, hostnames and registry URLs you do not want public.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The ArtifactMirror or ClusterMirrorTarget YAML helps most.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Tagwarden version
+      description: Image tag or commit.
+    validations:
+      required: true
+  - type: input
+    id: kubernetes
+    attributes:
+      label: Kubernetes version and distribution
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and status
+      description: Controller logs, sync Job logs, `kubectl describe` output. Check for secrets first.
+      render: shell

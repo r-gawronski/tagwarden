@@ -3,6 +3,8 @@
 [![CI](https://github.com/r-gawronski/tagwarden/actions/workflows/ci.yaml/badge.svg)](https://github.com/r-gawronski/tagwarden/actions/workflows/ci.yaml)
 [![E2E Tests](https://github.com/r-gawronski/tagwarden/actions/workflows/test-e2e.yaml/badge.svg)](https://github.com/r-gawronski/tagwarden/actions/workflows/test-e2e.yaml)
 [![License](https://img.shields.io/github/license/r-gawronski/tagwarden)](LICENSE)
+[![CodeQL](https://github.com/r-gawronski/tagwarden/actions/workflows/codeql.yaml/badge.svg)](https://github.com/r-gawronski/tagwarden/actions/workflows/codeql.yaml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/r-gawronski/tagwarden/badge)](https://scorecard.dev/viewer/?uri=github.com/r-gawronski/tagwarden)
 [![Go version](https://img.shields.io/github/go-mod/go-version/r-gawronski/tagwarden)](go.mod)
 
 Tagwarden is a Kubernetes operator that keeps your own OCI registry
@@ -16,7 +18,7 @@ It's made for clusters that can't pull from the internet directly. Maybe
 all you have is an HTTPS proxy, and someone wants to know exactly which
 images got in. Tagwarden handles both.
 
-> **Status: alpha.** The API is `v1alpha1` and can still change. Images
+> **Status: alpha.** The API is `v1alpha1`, and APIs may change before v1. Images
 > and OCI charts work today. Classic Helm repositories and signature
 > verification come next.
 

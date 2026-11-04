@@ -1,4 +1,3 @@
-# Needs GitHub Advanced Security for the SARIF upload while the repository is private.
 name: Scorecard
 
 on:
@@ -13,15 +12,13 @@ permissions:
 
 jobs:
   analysis:
-    # Skipped while the repository is private.
-    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
       actions: read
-      # Used by publish_results once the repository is public.
+      # Used by publish_results.
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,8 +28,7 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          # Flip to true when the repository goes public.
-          publish_results: false
+          publish_results: true
       - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: results.sarif

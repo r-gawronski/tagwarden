@@ -25,9 +25,10 @@ Write a failing test before the code that makes it pass. Use table tests for pur
 Run:
 
 ```sh
-make manifests generate fmt vet lint test
-go tool govulncheck ./...
+make lint test chart-check vulncheck
 ```
+
+If you changed API types or markers, also run `make manifests generate fmt vet`.
 
 Commit any generated files that change. CI runs the same checks.
 
@@ -64,6 +65,12 @@ On pull requests the e2e workflow runs only when the pull request has the
 the label the job is skipped, and a skipped check shows as success in the
 pull request. It always runs on pushes to `main` and weekly.
 
+The vulnerability gate tests download the scanner database (about 1.6 GiB)
+and pull images from the internet, so they run separately: `make
+test-e2e-gate`. In CI they run on pull requests with the `e2e-gate` label,
+nightly and on manual dispatch. Add the label when a change touches
+`internal/vuln/` or the gate code.
+
 Add the `e2e` label before merge when a change touches the controller, the
 sync code, the registry transport, the chart or the e2e tests. Leave it off
 while you iterate on review fixes if you like, but add it before the last
@@ -71,11 +78,16 @@ push.
 
 ## Merge checklist
 
+Maintainers merge with squash. The pull request title becomes the commit
+message, so write it as a Conventional Commit.
+
 - CI, CodeQL and DCO are green.
 - A pull request that touches the controller, sync, registry, chart or e2e
   code has a green e2e run on its last commit. A skipped e2e check does not
-  count. Until branch protection exists, this checklist is the only thing
-  that enforces it.
+  count. A ruleset on main requires a pull request, squash merge, linear
+  history and green lint, test, generate-check, govulncheck, chart,
+  analyze, dco and gitleaks checks. The e2e runs are opt-in by label, so
+  the reviewer enforces this item.
 
 ## Security
 
