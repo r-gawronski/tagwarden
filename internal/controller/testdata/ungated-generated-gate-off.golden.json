@@ -1,0 +1,271 @@
+{
+  "configMap": {
+    "metadata": {
+      "name": "team-a-auto-11cf7d7efd22a5b3-f91cd2bc",
+      "labels": {
+        "app.kubernetes.io/managed-by": "tagwarden",
+        "tagwarden.dev/mirror": "f91cd2bcf660fbe5611a"
+      },
+      "annotations": {
+        "tagwarden.dev/mirror-name": "auto-11cf7d7efd22a5b3",
+        "tagwarden.dev/mirror-namespace": "team-a"
+      }
+    },
+    "data": {
+      "spec.json": "{\n  \"mirror\": {\n    \"namespace\": \"team-a\",\n    \"name\": \"auto-11cf7d7efd22a5b3\"\n  },\n  \"source\": \"registry.k8s.io/pause\",\n  \"target\": \"registry.example.internal:8443/team-a/registry.k8s.io/pause\",\n  \"tags\": {\n    \"include\": [\n      \"^\\\\d+\\\\.\\\\d+$\"\n    ],\n    \"exclude\": [\n      \"-rc\"\n    ],\n    \"semverRange\": \"\\u003e=3.9\",\n    \"keepLatest\": 3,\n    \"allowPrerelease\": true,\n    \"tags\": [\n      \"3.10\"\n    ]\n  },\n  \"requiredPlatforms\": [\n    \"linux/amd64\",\n    \"linux/arm64/v8\"\n  ],\n  \"onTagMutation\": \"Fail\",\n  \"maxTags\": 10000,\n  \"allowedSources\": [\n    \"registry.k8s.io\",\n    \"ghcr.io\"\n  ],\n  \"deniedCIDRs\": [\n    \"10.96.0.0/12\"\n  ]\n}"
+    }
+  },
+  "cronJob": {
+    "metadata": {
+      "name": "team-a-auto-11cf7d7efd22a5b3-f91cd2bc",
+      "labels": {
+        "app.kubernetes.io/managed-by": "tagwarden",
+        "tagwarden.dev/egress": "proxy",
+        "tagwarden.dev/mirror": "f91cd2bcf660fbe5611a",
+        "tagwarden.dev/target": "default"
+      },
+      "annotations": {
+        "tagwarden.dev/cronjob-checksum": "26e6e5f6a3809f97d05334fb10a220fe5cf72c6ca5d21ba4cce3241ab8b3d417",
+        "tagwarden.dev/mirror-name": "auto-11cf7d7efd22a5b3",
+        "tagwarden.dev/mirror-namespace": "team-a"
+      }
+    },
+    "spec": {
+      "schedule": "0 3 * * *",
+      "startingDeadlineSeconds": 300,
+      "concurrencyPolicy": "Forbid",
+      "suspend": false,
+      "jobTemplate": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "tagwarden",
+            "tagwarden.dev/egress": "proxy",
+            "tagwarden.dev/mirror": "f91cd2bcf660fbe5611a",
+            "tagwarden.dev/target": "default"
+          },
+          "annotations": {
+            "tagwarden.dev/mirror-name": "auto-11cf7d7efd22a5b3",
+            "tagwarden.dev/mirror-namespace": "team-a"
+          }
+        },
+        "spec": {
+          "activeDeadlineSeconds": 3600,
+          "podFailurePolicy": {
+            "rules": [
+              {
+                "action": "FailJob",
+                "onExitCodes": {
+                  "containerName": "sync",
+                  "operator": "In",
+                  "values": [
+                    3
+                  ]
+                }
+              }
+            ]
+          },
+          "backoffLimit": 2,
+          "template": {
+            "metadata": {
+              "labels": {
+                "app.kubernetes.io/managed-by": "tagwarden",
+                "tagwarden.dev/egress": "proxy",
+                "tagwarden.dev/mirror": "f91cd2bcf660fbe5611a",
+                "tagwarden.dev/target": "default"
+              },
+              "annotations": {
+                "tagwarden.dev/mirror-name": "auto-11cf7d7efd22a5b3",
+                "tagwarden.dev/mirror-namespace": "team-a",
+                "tagwarden.dev/spec-checksum": "cb66048a5e1e35254521fb9c7de8051e05d157a3af8e9be47d108a38341b32e5"
+              }
+            },
+            "spec": {
+              "volumes": [
+                {
+                  "name": "spec",
+                  "configMap": {
+                    "name": "team-a-auto-11cf7d7efd22a5b3-f91cd2bc",
+                    "items": [
+                      {
+                        "key": "spec.json",
+                        "path": "spec.json"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "target-auth",
+                  "secret": {
+                    "secretName": "registry-push",
+                    "items": [
+                      {
+                        "key": ".dockerconfigjson",
+                        "path": ".dockerconfigjson"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "tmp",
+                  "emptyDir": {}
+                },
+                {
+                  "name": "target-ca",
+                  "secret": {
+                    "secretName": "registry-ca",
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "client-cert",
+                  "secret": {
+                    "secretName": "registry-client-tls",
+                    "items": [
+                      {
+                        "key": "tls.crt",
+                        "path": "tls.crt"
+                      },
+                      {
+                        "key": "tls.key",
+                        "path": "tls.key"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "proxy-ca",
+                  "secret": {
+                    "secretName": "proxy-ca",
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                }
+              ],
+              "containers": [
+                {
+                  "name": "sync",
+                  "image": "registry.example.internal/tagwarden:test",
+                  "args": [
+                    "sync",
+                    "--spec",
+                    "/etc/tagwarden/spec.json"
+                  ],
+                  "env": [
+                    {
+                      "name": "HTTPS_PROXY",
+                      "value": "http://proxy.example.internal:3128"
+                    },
+                    {
+                      "name": "NO_PROXY",
+                      "value": ".example.internal,10.0.0.0/8"
+                    },
+                    {
+                      "name": "TAGWARDEN_PROXY_USER",
+                      "valueFrom": {
+                        "secretKeyRef": {
+                          "name": "proxy-auth",
+                          "key": "username"
+                        }
+                      }
+                    },
+                    {
+                      "name": "TAGWARDEN_PROXY_PASSWORD",
+                      "valueFrom": {
+                        "secretKeyRef": {
+                          "name": "proxy-auth",
+                          "key": "password"
+                        }
+                      }
+                    }
+                  ],
+                  "resources": {
+                    "limits": {
+                      "cpu": "1",
+                      "memory": "512Mi"
+                    },
+                    "requests": {
+                      "cpu": "50m",
+                      "memory": "64Mi"
+                    }
+                  },
+                  "volumeMounts": [
+                    {
+                      "name": "spec",
+                      "readOnly": true,
+                      "mountPath": "/etc/tagwarden"
+                    },
+                    {
+                      "name": "target-auth",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/target"
+                    },
+                    {
+                      "name": "tmp",
+                      "mountPath": "/tmp"
+                    },
+                    {
+                      "name": "target-ca",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/target-ca"
+                    },
+                    {
+                      "name": "client-cert",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/client-cert"
+                    },
+                    {
+                      "name": "proxy-ca",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/proxy-ca"
+                    }
+                  ],
+                  "terminationMessagePolicy": "File",
+                  "securityContext": {
+                    "capabilities": {
+                      "drop": [
+                        "ALL"
+                      ]
+                    },
+                    "readOnlyRootFilesystem": true,
+                    "allowPrivilegeEscalation": false
+                  }
+                }
+              ],
+              "restartPolicy": "Never",
+              "serviceAccountName": "tagwarden-sync",
+              "automountServiceAccountToken": false,
+              "securityContext": {
+                "runAsUser": 65532,
+                "runAsGroup": 65532,
+                "runAsNonRoot": true,
+                "fsGroup": 65532,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "enableServiceLinks": false
+            }
+          },
+          "ttlSecondsAfterFinished": 86400
+        }
+      },
+      "successfulJobsHistoryLimit": 3,
+      "failedJobsHistoryLimit": 3
+    },
+    "status": {}
+  }
+}
