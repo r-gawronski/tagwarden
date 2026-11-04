@@ -343,6 +343,14 @@ type TargetLimits struct {
 	// +optional
 	MaxExplicitTags *int32 `json:"maxExplicitTags,omitempty"`
 
+	// maxListedTags caps the source tags a sync run lists for include,
+	// semverRange or keepLatest. A larger source fails the run; selection
+	// never runs on a truncated list. Defaults to 10000.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100000
+	// +optional
+	MaxListedTags *int32 `json:"maxListedTags,omitempty"`
+
 	// maxArtifactSize caps the size of one artifact: config and layers of
 	// the manifest, or of every manifest in an index. The referrers copied
 	// for an artifact in one run, such as signatures and SBOMs, share a

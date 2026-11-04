@@ -502,6 +502,15 @@ spec:
                     maximum: 100
                     minimum: 1
                     type: integer
+                  maxListedTags:
+                    description: |-
+                      maxListedTags caps the source tags a sync run lists for include,
+                      semverRange or keepLatest. A larger source fails the run; selection
+                      never runs on a truncated list. Defaults to 10000.
+                    format: int32
+                    maximum: 100000
+                    minimum: 1
+                    type: integer
                   maxMirrorsPerNamespace:
                     description: |-
                       maxMirrorsPerNamespace caps the ArtifactMirrors of one namespace that

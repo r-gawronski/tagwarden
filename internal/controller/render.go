@@ -75,8 +75,6 @@ const (
 	// defaultTokenKey is the key of the scanner token in its Secret.
 	defaultTokenKey = "token"
 	specKey         = "spec.json"
-	// maxListedTags caps the upstream tag listing of a sync run.
-	maxListedTags = tags.MaxTags
 )
 
 // mirrorHash is the first 20 hex characters of sha256(namespace/name).
@@ -234,7 +232,7 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 		Tags:              tagPolicy(m.Spec.Tags),
 		RequiredPlatforms: m.Spec.RequiredPlatforms,
 		OnTagMutation:     mutation,
-		MaxTags:           maxListedTags,
+		MaxTags:           int(limitOr(limitsOf(t).MaxListedTags, tags.MaxTags)),
 		MaxArtifactSize:   maxSize,
 		AllowedSources:    allowed,
 		DeniedCIDRs:       denied,

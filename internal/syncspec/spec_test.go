@@ -136,6 +136,7 @@ func TestDecodeRejects(t *testing.T) {
 		"no mutation policy": {`"onTagMutation": "Fail"`, `"onTagMutation": ""`},
 		"bad mutation":       {`"Fail"`, `"Replace"`},
 		"negative max":       {maxTags, `"maxTags": -1,`},
+		"max over limit":     {maxTags, `"maxTags": 100001,`},
 		"negative size":      {`"maxArtifactSize": 1048576`, `"maxArtifactSize": -1`},
 		"trailing data":      {"\n}", "\n}{}"},
 		"no allowed sources": {`["registry.k8s.io"]`, `[]`},

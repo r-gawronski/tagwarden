@@ -47,12 +47,13 @@ spec:
           example.com/team: a
   policy:
     onTagMutation: Fail
-  # Absent fields use the defaults: 1h, 50, 20, 50 and no size limit.
+  # Absent fields use the defaults: 1h, 50, 20, 50, 10000 and no size limit.
   limits:
     minSyncInterval: 1h
     maxMirrorsPerNamespace: 50
     maxKeepLatest: 20
     maxExplicitTags: 50
+    maxListedTags: 10000
     maxArtifactSize: 10Gi
   # Let pods annotated with tagwarden.dev/auto-mirror: default request
   # mirrors of their images. The project must be listed above.

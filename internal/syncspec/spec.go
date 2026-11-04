@@ -351,8 +351,8 @@ func (s *Spec) validate() error {
 	default:
 		return fmt.Errorf("onTagMutation: unknown value %q", s.OnTagMutation)
 	}
-	if s.MaxTags < 0 {
-		return errors.New("maxTags: must not be negative")
+	if s.MaxTags < 0 || s.MaxTags > tags.MaxTagsLimit {
+		return fmt.Errorf("maxTags: must be between 0 and %d", tags.MaxTagsLimit)
 	}
 	if s.MaxArtifactSize < 0 {
 		return errors.New("maxArtifactSize: must not be negative")
