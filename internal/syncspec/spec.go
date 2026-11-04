@@ -514,6 +514,10 @@ type Report struct {
 	// JudgedTruncated means it was cut; the cut tags are scanned again.
 	Judged          []SyncedTag `json:"judged,omitempty"`
 	JudgedTruncated bool        `json:"judgedTruncated,omitempty"`
+	// JudgedFingerprint is Gate.Fingerprint of the run, set on every gated
+	// run. The controller stores it with Judged and passes it back in
+	// Gate.JudgedFingerprint.
+	JudgedFingerprint string `json:"judgedFingerprint,omitempty"`
 }
 
 // TagFinding is the gate result of one tag with findings or a scan error.
@@ -570,7 +574,10 @@ func ParseReport(msg string) (Report, error) {
 			return Report{}, errors.New("report: invalid judged entry")
 		}
 	}
-	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0) {
+	if r.JudgedFingerprint != "" && !fingerprintPattern.MatchString(r.JudgedFingerprint) {
+		return Report{}, errors.New("report: invalid judged fingerprint")
+	}
+	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || r.JudgedFingerprint != "") {
 		return Report{}, errors.New("report: gate fields in version 1")
 	}
 	switch r.Gate {

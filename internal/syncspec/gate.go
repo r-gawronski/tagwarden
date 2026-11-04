@@ -17,10 +17,14 @@ limitations under the License.
 package syncspec
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -131,6 +135,10 @@ type Gate struct {
 	// error are reported too. Never derive it from status.synced: a tag on
 	// the target is not a tag that was judged.
 	Judged []SyncedTag `json:"judged,omitempty"`
+	// JudgedFingerprint is the policy fingerprint Judged was produced
+	// under (Report.JudgedFingerprint). When it differs from the current
+	// Fingerprint, the Job ignores Judged and judges every tag again.
+	JudgedFingerprint string `json:"judgedFingerprint,omitempty"`
 }
 
 // GateScanner is the Trivy server and client of the gate.
@@ -181,7 +189,7 @@ const (
 // place that reads the API gate types for the Job. The scanner URL is
 // normalised with ScannerURL for clusterDomain, so the Job and the sidecar
 // use the same host as the controller's probe.
-func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, clusterDomain string, excs []v1alpha1.VulnerabilityException, judged []SyncedTag) (*Gate, error) {
+func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, clusterDomain string, excs []v1alpha1.VulnerabilityException, judged []SyncedTag, judgedFingerprint string) (*Gate, error) {
 	out := &Gate{
 		Action: v1alpha1.GateActionReport, Severity: v1alpha1.SeverityThresholdCritical,
 		IgnoreUnfixed: g.IgnoreUnfixed, IncludeUnknown: g.IncludeUnknown,
@@ -192,7 +200,7 @@ func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, clusterDomain str
 			Timeout: metav1.Duration{Duration: DefaultScannerTimeout},
 			JavaDB:  v1alpha1.JavaDBDisabled,
 		},
-		Judged: judged,
+		Judged: judged, JudgedFingerprint: judgedFingerprint,
 	}
 	if g.Action != "" {
 		out.Action = g.Action
@@ -257,9 +265,38 @@ func (g *Gate) VulnExceptions() []vuln.Exception {
 	return out
 }
 
+// Fingerprint is a stable hash of everything that decides a verdict: the
+// policy, the exceptions active at now (with their scope and expiry) and
+// the scanner major.minor. A judged verdict holds only under the same
+// fingerprint, so an expired or removed exception, a stricter policy or a
+// scanner upgrade makes every tag be judged again.
+func (g *Gate) Fingerprint(now time.Time) string {
+	var excs []GateException
+	for _, e := range g.Exceptions {
+		if !now.Before(e.Expires.Time) {
+			continue
+		}
+		e.Namespaces, e.Digests, e.Vulnerabilities = slices.Sorted(slices.Values(e.Namespaces)),
+			slices.Sorted(slices.Values(e.Digests)), slices.Sorted(slices.Values(e.Vulnerabilities))
+		e.Expires = metav1.NewTime(e.Expires.UTC())
+		excs = append(excs, e)
+	}
+	slices.SortFunc(excs, func(a, b GateException) int { return strings.Compare(a.Name, b.Name) })
+	v := strings.SplitN(g.Scanner.Version, ".", 3)
+	b, _ := json.Marshal(struct {
+		Action, Severity, OnScanError string
+		IgnoreUnfixed, IncludeUnknown bool
+		Scanner                       string
+		Exceptions                    []GateException
+	}{string(g.Action), string(g.Severity), string(g.OnScanError), g.IgnoreUnfixed, g.IncludeUnknown,
+		strings.Join(v[:min(2, len(v))], "."), excs})
+	return fmt.Sprintf("%x", sha256.Sum256(b))
+}
+
 var (
-	versionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
-	vulnIDPattern  = regexp.MustCompile(`^[A-Z]+-[0-9A-Za-z-]{1,64}$`)
+	versionPattern     = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	vulnIDPattern      = regexp.MustCompile(`^[A-Z]+-[0-9A-Za-z-]{1,64}$`)
 )
 
 // VulnID reports whether id fits the ID pattern of status and reports.
@@ -289,6 +326,9 @@ func (g *Gate) validate(target name.Repository) error {
 				return fmt.Errorf("exceptions: %s: invalid digest", e.Name)
 			}
 		}
+	}
+	if g.JudgedFingerprint != "" && !fingerprintPattern.MatchString(g.JudgedFingerprint) {
+		return errors.New("judgedFingerprint: must be 64 hex characters")
 	}
 	for _, r := range g.Judged {
 		if !tagPattern.MatchString(r.Tag) || !digestPattern.MatchString(r.Digest) {

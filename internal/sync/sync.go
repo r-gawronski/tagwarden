@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -529,6 +530,10 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash, skipped *[]string) (i
 		if err := s.checkReferrerSize(ctx, desc, &budget); err != nil {
 			return n, err
 		}
+		if !s.jsonArtifact(desc) {
+			*skipped = append(*skipped, desc.Digest.String())
+			continue
+		}
 		if err := s.copy(ctx, desc); err != nil {
 			return n, err
 		}
@@ -561,6 +566,10 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash, skipped *[]string) (i
 		}
 		if err := s.checkReferrerSize(ctx, desc, &budget); err != nil {
 			return n, err
+		}
+		if !s.jsonArtifact(desc) {
+			*skipped = append(*skipped, desc.Digest.String())
+			continue
 		}
 		if err := s.ensure(ctx, desc); err != nil {
 			return n, err
@@ -634,6 +643,30 @@ func (s *syncer) ungatedArtifact(desc *remote.Descriptor) bool {
 	}
 	m, err := v1.ParseManifest(bytes.NewReader(desc.Manifest))
 	return err == nil && vuln.SupplyChainArtifact(layerTypes(m))
+}
+
+// jsonArtifact checks the content behind ungatedArtifact's labels: with the
+// gate on, every layer must be JSON, read from the source after the size
+// check bounded it.
+func (s *syncer) jsonArtifact(desc *remote.Descriptor) bool {
+	if s.gate == nil {
+		return true
+	}
+	img, err := desc.Image()
+	if err != nil {
+		return false
+	}
+	m, err := img.Manifest()
+	if err != nil {
+		return false
+	}
+	return jsonLayers(m, func(h v1.Hash) (io.ReadCloser, error) {
+		l, err := img.LayerByDigest(h)
+		if err != nil {
+			return nil, err
+		}
+		return l.Compressed()
+	})
 }
 
 func layerTypes(m *v1.Manifest) []string {

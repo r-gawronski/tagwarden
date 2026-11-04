@@ -125,7 +125,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, termPath string, 
 	audit(stdout, spec, res)
 	r := summarize(res)
 	if spec.Gate != nil {
-		gateSummary(&r, res)
+		gateSummary(&r, res, req.Gate.Fingerprint)
 	}
 	code = syncspec.ExitOK
 	if err != nil {

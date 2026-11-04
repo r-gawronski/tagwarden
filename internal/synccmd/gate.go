@@ -50,19 +50,25 @@ func newGate(spec syncspec.Spec, p options) (*sync.Gate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scanner transport: %w", err)
 	}
+	// Verdicts judged under another policy, exception set or scanner minor
+	// version do not hold: judge every tag again.
+	fp := g.Fingerprint(time.Now())
 	judged := map[string]string{}
-	for _, r := range g.Judged {
-		judged[r.Tag] = r.Digest
+	if g.JudgedFingerprint == fp {
+		for _, r := range g.Judged {
+			judged[r.Tag] = r.Digest
+		}
 	}
 	out := &sync.Gate{
-		Policy:     g.Policy(),
-		Exceptions: g.VulnExceptions(),
-		Namespace:  spec.Mirror.Namespace,
-		Repository: syncspec.CanonicalRegistry(spec.SourceRepo.RegistryStr()) + "/" + spec.SourceRepo.RepositoryStr(),
-		Judged:     judged,
-		LayoutDir:  p.layoutDir,
-		ScanDir:    p.scanDir,
-		ServerURL:  g.Scanner.URL,
+		Policy:      g.Policy(),
+		Exceptions:  g.VulnExceptions(),
+		Namespace:   spec.Mirror.Namespace,
+		Repository:  syncspec.CanonicalRegistry(spec.SourceRepo.RegistryStr()) + "/" + spec.SourceRepo.RepositoryStr(),
+		Judged:      judged,
+		Fingerprint: fp,
+		LayoutDir:   p.layoutDir,
+		ScanDir:     p.scanDir,
+		ServerURL:   g.Scanner.URL,
 		Client: &http.Client{
 			Transport:     t,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -107,8 +113,9 @@ var severityNames = map[vuln.Severity]v1alpha1.Severity{
 }
 
 // gateSummary adds the version 2 fields of a gated run to r.
-func gateSummary(r *report, res sync.Result) {
+func gateSummary(r *report, res sync.Result, fingerprint string) {
 	r.V = syncspec.ReportVersionGate
+	r.JudgedFingerprint = fingerprint
 	r.Gate = res.Gate
 	r.JavaScanned = &res.JavaScanned
 	r.Blocked = len(res.Blocked)

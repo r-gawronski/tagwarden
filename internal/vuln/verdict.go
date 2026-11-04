@@ -124,24 +124,29 @@ var attestationLayers = []string{
 }
 
 // supplyChainLayers are attestation, signature and SBOM layer media types.
+// All are JSON, so callers can check the content. Notation's COSE
+// signatures and XML or text SBOMs are left out: their content cannot be
+// told from a disguised image layer that cheaply.
 var supplyChainLayers = append(slices.Clone(attestationLayers),
 	"application/vnd.dev.cosign.simplesigning.v1+json",
 	"application/vnd.dev.sigstore.bundle.v0.3+json",
 	"application/spdx+json",
-	"text/spdx",
 	"application/vnd.cyclonedx+json",
-	"application/vnd.cyclonedx+xml",
+	"application/jose+json",
 )
 
 // SkipManifest reports whether an image manifest with these layer media
-// types is an attestation, not an image to scan: it has layers and all of
-// them are in-toto or DSSE. The platform (unknown/unknown) and the
+// types may be an attestation, not an image to scan: it has layers and all
+// of them are labelled in-toto or DSSE. The label is not enough: some
+// runtimes sniff compression from content and unpack a relabelled image
+// layer, so the caller must also check that every layer is JSON. The platform (unknown/unknown) and the
 // attestation annotation are publisher-controlled and never decide.
 func SkipManifest(layers []string) bool { return onlyOf(layers, attestationLayers) }
 
 // SupplyChainArtifact reports whether a referrer or cosign tag-scheme
-// manifest with these layer media types holds only signatures,
-// attestations or SBOMs, so the gate may copy it without a scan.
+// manifest with these layer media types is labelled as only signatures,
+// attestations or SBOMs. Like SkipManifest, the caller must also check
+// that every layer is JSON before it copies the artifact without a scan.
 func SupplyChainArtifact(layers []string) bool { return onlyOf(layers, supplyChainLayers) }
 
 func onlyOf(layers, allowed []string) bool {

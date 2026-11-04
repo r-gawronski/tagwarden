@@ -68,6 +68,8 @@ type Gate struct {
 	// JavaDB is pulled from the target registry before the first scan.
 	// Nil means JAR files are not scanned.
 	JavaDB *name.Tag
+	// Fingerprint is syncspec Gate.Fingerprint of the run, reported as is.
+	Fingerprint string
 	// Now and Poll are for tests: the clock and the sidecar poll interval.
 	Now  func() time.Time
 	Poll time.Duration
@@ -408,7 +410,7 @@ func writeLayout(dir string, desc *remote.Descriptor) (remote.Taggable, []child,
 		if err != nil {
 			return nil, nil, err
 		}
-		c.skip = vuln.SkipManifest(layerTypes(mf))
+		c.skip = vuln.SkipManifest(layerTypes(mf)) && jsonLayers(mf, p.Blob)
 		li, err := p.Image(desc.Digest)
 		return li, []child{c}, err
 	}
@@ -440,7 +442,7 @@ func writeLayout(dir string, desc *remote.Descriptor) (remote.Taggable, []child,
 			if err != nil {
 				return nil, nil, err
 			}
-			c.skip = vuln.SkipManifest(layerTypes(mf))
+			c.skip = vuln.SkipManifest(layerTypes(mf)) && jsonLayers(mf, p.Blob)
 		case m.MediaType.IsIndex():
 			ci, err := idx.ImageIndex(m.Digest)
 			if err != nil {
@@ -485,3 +487,27 @@ func (l *layoutIndex) IndexManifest() (*v1.IndexManifest, error) {
 }
 func (l *layoutIndex) Image(h v1.Hash) (v1.Image, error)           { return l.top.Image(h) }
 func (l *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) { return l.top.ImageIndex(h) }
+
+// maxJSONLayer caps one attestation, signature or SBOM layer read for the
+// content check.
+const maxJSONLayer = 32 << 20
+
+// jsonLayers reports whether every layer of m, read with open, is valid
+// JSON of at most maxJSONLayer bytes. In-toto statements, DSSE envelopes,
+// signatures and the allowed SBOMs are JSON; a relabelled image layer is
+// gzip, zstd or tar and fails, so it is scanned or skipped, never trusted.
+func jsonLayers(m *v1.Manifest, open func(v1.Hash) (io.ReadCloser, error)) bool {
+	for _, l := range m.Layers {
+		rc, err := open(l.Digest)
+		if err != nil {
+			return false
+		}
+		// Reading to the end lets a registry reader verify the digest.
+		b, err := io.ReadAll(io.LimitReader(rc, maxJSONLayer+1))
+		_ = rc.Close()
+		if err != nil || len(b) > maxJSONLayer || !json.Valid(b) {
+			return false
+		}
+	}
+	return true
+}

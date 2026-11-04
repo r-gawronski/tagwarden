@@ -247,12 +247,12 @@ func TestGateSummaryRoundTrip(t *testing.T) {
 					res = sync.Result{Selected: []string{v110}, Blocked: []sync.Artifact{a}}
 				}
 				r := summarize(res)
-				gateSummary(&r, res)
+				gateSummary(&r, res, strings.Repeat("f", 64))
 				got, err := syncspec.ParseReport(string(encode(r)))
 				if err != nil {
 					t.Fatalf("%s/%q/%v: %v", v, reason, block, err)
 				}
-				if (len(got.Judged) == 1) != (v != vuln.ScanError) {
+				if (len(got.Judged) == 1) != (v != vuln.ScanError) || got.JudgedFingerprint != strings.Repeat("f", 64) {
 					t.Fatalf("%s/%q/%v: judged %v", v, reason, block, got.Judged)
 				}
 			}
@@ -296,5 +296,43 @@ func TestRunGatedScannerAddressRefused(t *testing.T) {
 	r, err := syncspec.ParseReport(msg)
 	if code != syncspec.ExitSyncFailed || err != nil || r.Gate != syncspec.GateScannerUnavailable {
 		t.Fatalf("exit %d, %v: %s\n%s", code, err, msg, out)
+	}
+}
+
+// Judged pairs hold only under the fingerprint they were produced under.
+func TestRunGatedJudgedFingerprint(t *testing.T) {
+	src, dst := newRegistry(t, false), newRegistry(t, true)
+	pushImages(t, src, v110)
+	e := newEnv(t, src, dst, password)
+	e.gated(t, src.String(), nil, time.Hour, clean, "0", true)
+	code, out, msg := e.run(t)
+	r, err := syncspec.ParseReport(msg)
+	if code != syncspec.ExitOK || err != nil || len(r.Judged) != 1 || len(r.JudgedFingerprint) != 64 {
+		t.Fatalf("exit %d, %v: %s\n%s", code, err, msg, out)
+	}
+	for _, tc := range []struct {
+		name        string
+		fingerprint string
+		scanned     bool
+	}{
+		{"same policy", r.JudgedFingerprint, false},
+		{"other policy", strings.Repeat("0", 64), true},
+		{"none", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var spec map[string]any
+			b, _ := os.ReadFile(e.spec) //nolint:gosec // test temp dir
+			_ = json.Unmarshal(b, &spec)
+			g := spec["gate"].(map[string]any)
+			g["judged"], g["judgedFingerprint"] = r.Judged, tc.fingerprint
+			b, _ = json.Marshal(spec)
+			e.write(t, e.spec, string(b))
+			code, out, msg := e.run(t)
+			got, err := syncspec.ParseReport(msg)
+			if code != syncspec.ExitOK || err != nil || got.JudgedFingerprint != r.JudgedFingerprint ||
+				strings.Contains(out, `"scan"`) != tc.scanned {
+				t.Fatalf("exit %d, %v: %s\n%s", code, err, msg, out)
+			}
+		})
 	}
 }

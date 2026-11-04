@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +40,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -317,6 +319,15 @@ func attestationImage(t *testing.T) v1.Image {
 	return must(mutate.AppendLayers(empty.Image, static.NewLayer([]byte(`{"_type":"https://in-toto.io/Statement/v1"}`), "application/vnd.in-toto+json")))
 }
 
+// relabelled is a runnable image whose gzip tar layer claims media type mt.
+func relabelled(t *testing.T, mt types.MediaType) v1.Image {
+	t.Helper()
+	l := must(random.Layer(256, types.DockerLayer))
+	rc := must(l.Compressed())
+	defer func() { _ = rc.Close() }()
+	return must(mutate.AppendLayers(empty.Image, static.NewLayer(must(io.ReadAll(rc)), mt)))
+}
+
 // The platform label is publisher-controlled: an image labelled
 // unknown/unknown is scanned, a nested index labelled so cannot be judged,
 // and an index of attestations only is never a pass.
@@ -328,6 +339,8 @@ func TestGateUnknownPlatformLabel(t *testing.T) {
 		verdict vuln.Verdict
 	}{
 		{"real image", func(t *testing.T) mutate.Appendable { return image(t) }, true, vuln.FindingsFound},
+		// Some runtimes sniff compression and unpack a relabelled layer.
+		{"image relabelled as in-toto", func(t *testing.T) mutate.Appendable { return relabelled(t, "application/vnd.in-toto+json") }, true, vuln.FindingsFound},
 		{"nested index", func(t *testing.T) mutate.Appendable { return index(t, "linux/amd64") }, false, vuln.ScanError},
 		{"attestations only", func(t *testing.T) mutate.Appendable { return attestationImage(t) }, false, vuln.ScanError},
 	} {
@@ -643,7 +656,11 @@ func TestGateReferrers(t *testing.T) {
 	runnable := pushReferrer(t, src.repo, *subject)
 	sig := signature(t, subject)
 	push(t, src.repo, "unused", sig)
-	sigTag := push(t, src.repo, fallbackTag(d)+".sig", image(t))
+	sigTag := push(t, src.repo, fallbackTag(d)+".sig", relabelled(t, "application/vnd.dev.cosign.simplesigning.v1+json"))
+	disguised := mutate.Subject(relabelled(t, "application/vnd.dev.cosign.simplesigning.v1+json"), *subject).(v1.Image)
+	push(t, src.repo, "disguised", disguised)
+	jose := mutate.Subject(must(mutate.AppendLayers(empty.Image, static.NewLayer([]byte(`{"payload":"e30","signatures":[]}`), "application/jose+json"))), *subject).(v1.Image)
+	push(t, src.repo, "jose", jose)
 
 	e := newGate(t, vuln.Policy{Action: vuln.Report}, always(clean, "0"))
 	res, err := Run(context.Background(), gatedRequest(src, dst, e.gate))
@@ -651,10 +668,12 @@ func TestGateReferrers(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := res.Copied[0]
-	if _, ok := headDigest(t, dst.repo.Digest(digestOf(t, sig).String())); !ok {
-		t.Fatal("signature referrer not copied")
+	for _, c := range []v1.Image{sig, jose} {
+		if _, ok := headDigest(t, dst.repo.Digest(digestOf(t, c).String())); !ok {
+			t.Fatal("signature referrer not copied")
+		}
 	}
-	for _, h := range []v1.Hash{runnable, sigTag} {
+	for _, h := range []v1.Hash{runnable, sigTag, digestOf(t, disguised)} {
 		if _, ok := headDigest(t, dst.repo.Digest(h.String())); ok || !slices.Contains(a.SkippedReferrers, h.String()) {
 			t.Fatalf("%s copied or not reported: %v", h, a.SkippedReferrers)
 		}

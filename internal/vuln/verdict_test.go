@@ -264,6 +264,10 @@ func TestSkipManifest(t *testing.T) {
 		{[]string{sig}, false, true},
 		{[]string{spdx, sig}, false, true},
 		{[]string{sig, "application/vnd.docker.image.rootfs.diff.tar.gzip"}, false, false},
+		{[]string{"application/jose+json"}, false, true},
+		{[]string{"application/cose"}, false, false},
+		{[]string{"text/spdx"}, false, false},
+		{[]string{"application/vnd.cyclonedx+xml"}, false, false},
 	}
 	for _, tc := range tests {
 		if got := SkipManifest(tc.layers); got != tc.skip {

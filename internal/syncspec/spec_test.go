@@ -28,6 +28,11 @@ import (
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
+const (
+	scannerVersion = "0.76.1"
+	nextMinor      = "0.77.0"
+)
+
 const valid = `{
   "mirror": {"namespace": "team-a", "name": "pause"},
   "source": "registry.k8s.io/pause",
@@ -232,6 +237,8 @@ func TestParseReportV2(t *testing.T) {
 		"gate fields in v1": `{"v":1,"findings":1}`,
 		"judged in v1":      `{"v":1,"judged":[{"tag":"v1","digest":"` + digest + `"}]}`,
 		"bad judged":        `{"v":2,"judged":[{"tag":"v1","digest":"sha256:1"}]}`,
+		"bad fingerprint":   `{"v":2,"judgedFingerprint":"abc"}`,
+		"fingerprint in v1": `{"v":1,"judgedFingerprint":"` + strings.Repeat("a", 64) + `"}`,
 		"negative count":    `{"v":2,"scanErrors":-1}`,
 		"unknown gate":      `{"v":2,"gate":"fine"}`,
 		"bad id":            strings.Replace(entry(""), "CVE-2026-1", "cve; rm", 1),
@@ -258,8 +265,8 @@ func TestNewGate(t *testing.T) {
 		Spec: v1alpha1.VulnerabilityExceptionSpec{Namespaces: []string{"team-a"}, Repository: "docker.io/library/nginx",
 			Vulnerabilities: []string{"CVE-2026-1"}, Expires: expires},
 	}}
-	d := ScannerDefaults{URL: "http://tagwarden-trivy.tagwarden-system.svc:4954", Version: "0.76.1", Image: "trivy@sha256:" + strings.Repeat("a", 64)}
-	g, err := NewGate(&v1alpha1.VulnerabilityGate{Enabled: true}, d, "cluster.local", excs, []SyncedTag{{Tag: "v1", Digest: "sha256:" + strings.Repeat("b", 64)}})
+	d := ScannerDefaults{URL: "http://tagwarden-trivy.tagwarden-system.svc:4954", Version: scannerVersion, Image: "trivy@sha256:" + strings.Repeat("a", 64)}
+	g, err := NewGate(&v1alpha1.VulnerabilityGate{Enabled: true}, d, "cluster.local", excs, []SyncedTag{{Tag: "v1", Digest: "sha256:" + strings.Repeat("b", 64)}}, strings.Repeat("f", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,16 +285,73 @@ func TestNewGate(t *testing.T) {
 	g, err = NewGate(&v1alpha1.VulnerabilityGate{
 		Action: v1alpha1.GateActionBlock, Severity: v1alpha1.SeverityThresholdHigh, OnScanError: v1alpha1.GateActionBlock,
 		IgnoreUnfixed: true, IncludeUnknown: true, MaxDBAge: &metav1.Duration{Duration: time.Hour},
-		Scanner: &v1alpha1.ScannerSpec{URL: "https://trivy.example.internal", Image: "x@sha256:" + strings.Repeat("c", 64), Version: "0.77.0",
+		Scanner: &v1alpha1.ScannerSpec{URL: "https://trivy.example.internal", Image: "x@sha256:" + strings.Repeat("c", 64), Version: nextMinor,
 			Timeout: &metav1.Duration{Duration: time.Minute}, JavaDB: v1alpha1.JavaDBPerJob, JavaDBRepository: "registry.example.internal/platform/trivy-java-db:1"},
-	}, d, "cluster.local", nil, nil)
+	}, d, "cluster.local", nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	p = g.Policy()
 	if p.Action != vuln.Block || p.Severity != vuln.High || p.OnScanError != vuln.Block || !p.IgnoreUnfixed || !p.IncludeUnknown ||
-		g.Scanner.URL != "https://trivy.example.internal." || g.Scanner.InCluster || g.Scanner.Version != "0.77.0" || g.Scanner.JavaDB != v1alpha1.JavaDBPerJob {
+		g.Scanner.URL != "https://trivy.example.internal." || g.Scanner.InCluster || g.Scanner.Version != nextMinor || g.Scanner.JavaDB != v1alpha1.JavaDBPerJob {
 		t.Fatalf("overrides %+v %+v", g, p)
+	}
+}
+
+func TestGateFingerprint(t *testing.T) {
+	now := time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)
+	exc := func(name string, expires time.Time) GateException {
+		return GateException{Name: name, Namespaces: []string{"b", "a"}, Repository: "docker.io/library/nginx",
+			Vulnerabilities: []string{"CVE-2", "CVE-1"}, Expires: metav1.NewTime(expires)}
+	}
+	base := func() *Gate {
+		return &Gate{Action: v1alpha1.GateActionReport, Severity: v1alpha1.SeverityThresholdCritical, OnScanError: v1alpha1.GateActionReport,
+			Scanner:    GateScanner{Version: scannerVersion},
+			Exceptions: []GateException{exc("x", now.Add(time.Hour)), exc("y", now.Add(2*time.Hour))}}
+	}
+	fp := base().Fingerprint(now)
+	if len(fp) != 64 {
+		t.Fatal(fp)
+	}
+	same := map[string]func(g *Gate){
+		"exception order": func(g *Gate) { g.Exceptions[0], g.Exceptions[1] = g.Exceptions[1], g.Exceptions[0] },
+		"namespace order": func(g *Gate) { g.Exceptions[0].Namespaces = []string{"a", "b"} },
+		"patch version":   func(g *Gate) { g.Scanner.Version = "0.76.9" },
+		"max DB age":      func(g *Gate) { g.MaxDBAge.Duration = time.Hour },
+		"judged":          func(g *Gate) { g.Judged = []SyncedTag{{Tag: "v1"}} },
+		"expired dropped": func(g *Gate) { g.Exceptions = append(g.Exceptions, exc("z", now)) },
+		"timezone of time": func(g *Gate) {
+			g.Exceptions[0].Expires = metav1.NewTime(now.Add(time.Hour).In(time.FixedZone("x", 3600)))
+		},
+	}
+	for name, mod := range same {
+		g := base()
+		mod(g)
+		if g.Fingerprint(now) != fp {
+			t.Errorf("%s changed the fingerprint", name)
+		}
+	}
+	differ := map[string]func(g *Gate){
+		"stricter action":     func(g *Gate) { g.Action = v1alpha1.GateActionBlock },
+		"lower severity":      func(g *Gate) { g.Severity = v1alpha1.SeverityThresholdHigh },
+		"ignore unfixed":      func(g *Gate) { g.IgnoreUnfixed = true },
+		"include unknown":     func(g *Gate) { g.IncludeUnknown = true },
+		"block on scan error": func(g *Gate) { g.OnScanError = v1alpha1.GateActionBlock },
+		"minor version":       func(g *Gate) { g.Scanner.Version = nextMinor },
+		"exception gone":      func(g *Gate) { g.Exceptions = g.Exceptions[:1] },
+		"exception IDs":       func(g *Gate) { g.Exceptions[0].Vulnerabilities = []string{"CVE-1"} },
+		"expiry moved":        func(g *Gate) { g.Exceptions[0].Expires = metav1.NewTime(now.Add(3 * time.Hour)) },
+	}
+	for name, mod := range differ {
+		g := base()
+		mod(g)
+		if g.Fingerprint(now) == fp {
+			t.Errorf("%s kept the fingerprint", name)
+		}
+	}
+	// An exception that expires between runs changes the fingerprint.
+	if base().Fingerprint(now.Add(90*time.Minute)) == fp {
+		t.Error("expiry kept the fingerprint")
 	}
 }
 
@@ -300,7 +364,7 @@ func TestDecodeGate(t *testing.T) {
 	gate := func(mod func(map[string]any)) string {
 		g := map[string]any{
 			"action": "Block", "severity": "Critical", "onScanError": "Report", "maxDBAge": "72h",
-			"scanner": map[string]any{"url": "http://tagwarden-trivy.tagwarden-system.svc:4954", "version": "0.76.1", "timeout": "10m", "javaDB": "Disabled"},
+			"scanner": map[string]any{"url": "http://tagwarden-trivy.tagwarden-system.svc:4954", "version": scannerVersion, "timeout": "10m", "javaDB": "Disabled"},
 		}
 		mod(g)
 		b, _ := json.Marshal(g)
@@ -345,6 +409,7 @@ func TestDecodeGate(t *testing.T) {
 		"exception no names": func(g map[string]any) {
 			g["exceptions"] = []any{map[string]any{"name": "x", "repository": "r", "expires": "2027-01-01T00:00:00Z"}}
 		},
+		"fingerprint":   func(g map[string]any) { g["judgedFingerprint"] = "nope" },
 		"judged":        func(g map[string]any) { g["judged"] = []any{map[string]any{"tag": "v1", "digest": "sha256:1"}} },
 		"unknown field": func(g map[string]any) { g["token"] = "s3cret" },
 	} {
