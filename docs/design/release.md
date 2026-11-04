@@ -63,11 +63,12 @@ is allowed from `GITHUB_TOKEN`). The signing identity stays
 `build.yaml@refs/tags/v<version>`. An admin can still push a `v*` tag by hand;
 that triggers `build.yaml` through `push`.
 
-The `release tags` ruleset must list the GitHub Actions app (integration
-15368) as a bypass actor, or the workflow cannot create the tag.
-
-The `release tags` ruleset limits who can create, update or delete `v*` tags
-to repository admins.
+The `release tags` ruleset blocks moving and deleting `v*` tags; only
+repository admins can bypass it. Creating a tag is not restricted by the
+ruleset, because a personal repository cannot list the GitHub Actions app as
+a bypass actor. Creating one still needs write access: a collaborator with
+write, or a workflow on `main` with `contents: write`. Fork pull requests get
+a read-only token, and the default workflow token is read-only.
 
 ## GitHub Release
 
