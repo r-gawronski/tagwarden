@@ -41,7 +41,7 @@ const (
 	exitCrashed = 2
 )
 
-// +kubebuilder:rbac:groups=batch,namespace=system,resources=jobs,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=batch,namespace=system,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",namespace=system,resources=pods,verbs=get;list;watch
 
 // syncStatus records the result of the most recent finished Job of m. The
