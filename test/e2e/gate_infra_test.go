@@ -336,9 +336,9 @@ func awaitGatedRun(ns string, img gateImage) *mirrorv1alpha1.ArtifactMirror {
 func podEvents(ns, pod string) map[string][]corev1.Event { return objectEvents(ns, "Pod", pod) }
 
 // objectEvents returns the Events recorded for an object, by reason.
-func objectEvents(ns, kind, name string) map[string][]corev1.Event {
+func objectEvents(ns, kind, object string) map[string][]corev1.Event {
 	out, err := utils.Run(exec.Command("kubectl", "get", "events", "-n", ns, "-o", "json",
-		"--field-selector", "involvedObject.kind="+kind+",involvedObject.name="+name))
+		"--field-selector", "involvedObject.kind="+kind+",involvedObject.name="+object))
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	var list corev1.EventList
 	ExpectWithOffset(1, json.Unmarshal([]byte(out), &list)).To(Succeed())

@@ -485,8 +485,9 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 			}).Should(Succeed())
 			Eventually(func(g Gomega) {
 				// An earlier scanner probe may have left its own Event of this reason.
-				msgs := []string{}
-				for _, e := range podEvents(ns, "app")["VulnerabilityScanFailed"] {
+				evs := podEvents(ns, "app")["VulnerabilityScanFailed"]
+				msgs := make([]string, 0, len(evs))
+				for _, e := range evs {
 					msgs = append(msgs, e.Message)
 				}
 				g.Expect(msgs).To(ContainElement(ContainSubstring("scanner sidecar did not start")))
