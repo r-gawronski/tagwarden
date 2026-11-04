@@ -292,6 +292,19 @@ jobs:
         run: |
           pre=()
           [[ "$TAG" == *-* ]] && pre=(--prerelease)
-          gh release create "$TAG" --verify-tag --title "$TAG" "${pre[@]}" \
-            --notes-file release/notes.md --generate-notes \
+          V=${TAG#v}
+          notes=(--notes-file release/notes.md)
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/$GH_REPO/contents/CHANGELOG.md?ref=$TAG" > CHANGELOG.md || : > CHANGELOG.md
+          awk -v v="$V" '/^## \[/ { on = index($0, "## [" v "]") == 1; next } on' CHANGELOG.md > changelog.md
+          if grep -q '[^[:space:]]' changelog.md; then
+            cat changelog.md > full.md
+            printf '\n' >> full.md
+            cat release/notes.md >> full.md
+            notes=(--notes-file full.md)
+          else
+            echo "::warning::CHANGELOG.md has no section for $V; falling back to generated notes"
+            notes+=(--generate-notes)
+          fi
+          gh release create "$TAG" --verify-tag --title "$TAG" "${pre[@]}" "${notes[@]}" \
             release/*.tgz release/*.spdx.json

@@ -55,6 +55,16 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 notice: ## Regenerate NOTICE from the NOTICE files of compiled-in Go modules.
 	hack/notice.sh
 
+GIT_CLIFF_IMAGE ?= orhunp/git-cliff:2.10.0
+
+.PHONY: changelog
+changelog: ## Move the commits since the last tag into CHANGELOG.md as a VERSION section.
+	@test -n "$(VERSION)" || { echo "usage: make changelog VERSION=x.y.z" >&2; exit 1; }
+	@set -e; n=$$(mktemp); o=$$(mktemp); trap 'rm -f "$$n" "$$o"' EXIT; \
+	docker run --rm -v "$$PWD":/app -w /app $(GIT_CLIFF_IMAGE) --unreleased --tag v$(VERSION) --strip header > "$$n"; \
+	awk 'FNR==NR { new = new $$0 "\n"; next } { print } /^## \[Unreleased\]/ { printf "\n%s", new }' "$$n" CHANGELOG.md > "$$o"; \
+	cat "$$o" > CHANGELOG.md
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...

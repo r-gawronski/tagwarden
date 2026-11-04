@@ -41,6 +41,9 @@ jobs:
             exit 1
           fi
           grep -q 'HTTP 404' <<<"$out" || { echo "::error::tag lookup failed: $out"; exit 1; }
+          gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GH_REPO/contents/CHANGELOG.md?ref=$SHA" \
+            | awk -v v="$V" 'index($0, "## [" v "]") == 1 { found = 1 } END { exit !found }' \
+            || { echo "::error::CHANGELOG.md has no '## [$V]' section; run make changelog VERSION=$V and merge it first"; exit 1; }
           obj=$(gh api "repos/$GH_REPO/git/tags" -f tag="v$V" -f message="v$V" -f object="$SHA" -f type=commit --jq .sha)
           gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/v$V" -f sha="$obj" >/dev/null
           gh workflow run build.yaml --ref "v$V"
