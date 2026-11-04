@@ -96,6 +96,21 @@ func validateTrivy(image, version, serverURL string) error {
 	return nil
 }
 
+// validateTrivyTokenSecret checks --trivy-token-secret: optional, a Secret
+// name, and only together with --trivy-url.
+func validateTrivyTokenSecret(name, serverURL string) error {
+	if name == "" {
+		return nil
+	}
+	if serverURL == "" {
+		return errors.New("--trivy-token-secret needs --trivy-url")
+	}
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		return fmt.Errorf("--trivy-token-secret: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 // validateClusterDomain checks --cluster-domain: a lower-case DNS
 // subdomain without a trailing dot.
 func validateClusterDomain(d string) error {
@@ -120,7 +135,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
-	var trivyImage, trivyVersion, trivyURL string
+	var trivyImage, trivyVersion, trivyURL, trivyTokenSecret string
 	var operatorNamespace, syncImage, deniedCIDRs, clusterDomain string
 	var argoTracking, argoInstanceLabel string
 	flag.StringVar(&operatorNamespace, "operator-namespace", os.Getenv("POD_NAMESPACE"),
@@ -136,6 +151,8 @@ func main() {
 	flag.StringVar(&trivyImage, "trivy-image", "", "Trivy image of the gate, pinned by digest. Set by the chart.")
 	flag.StringVar(&trivyVersion, "trivy-version", "", "Trivy version of the gate image and server. Set by the chart.")
 	flag.StringVar(&trivyURL, "trivy-url", "", "URL of the in-chart Trivy server. Set by the chart.")
+	flag.StringVar(&trivyTokenSecret, "trivy-token-secret", "",
+		"Secret in the operator namespace with the token of the in-chart Trivy server (key token). Set by the chart.")
 	flag.StringVar(&clusterDomain, "cluster-domain", controller.DefaultClusterDomain,
 		"DNS domain of the cluster. Scanner Service names are dialed as <svc>.<ns>.svc.<domain>.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -182,6 +199,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err := validateTrivy(trivyImage, trivyVersion, trivyURL); err != nil {
+		setupLog.Error(err, "Invalid vulnerability gate flags")
+		os.Exit(1)
+	}
+	if err := validateTrivyTokenSecret(trivyTokenSecret, trivyURL); err != nil {
 		setupLog.Error(err, "Invalid vulnerability gate flags")
 		os.Exit(1)
 	}
@@ -296,6 +317,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	scanner := controller.ScannerConfig{
+		URL: trivyURL, Image: trivyImage, Version: trivyVersion, TokenSecret: trivyTokenSecret,
+	}
 	if err := (&controller.ArtifactMirrorReconciler{
 		Client:      mgr.GetClient(),
 		APIReader:   mgr.GetAPIReader(),
@@ -307,6 +331,8 @@ func main() {
 
 		ArgoCDTracking:      argoTracking,
 		ArgoCDInstanceLabel: argoInstanceLabel,
+		Scanner:             scanner,
+		ClusterDomain:       clusterDomain,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "artifactmirror")
 		os.Exit(1)
@@ -316,7 +342,7 @@ func main() {
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		Namespace:     operatorNamespace,
-		Scanner:       controller.ScannerConfig{URL: trivyURL, Image: trivyImage, Version: trivyVersion},
+		Scanner:       scanner,
 		DeniedCIDRs:   deniedPrefixes,
 		ClusterDomain: clusterDomain,
 	}).SetupWithManager(mgr); err != nil {

@@ -124,5 +124,6 @@ the image tag.
 - --trivy-image={{ include "tagwarden.trivyImage" . }}
 - --trivy-version={{ .Values.trivy.image.tag }}
 - --trivy-url=http://{{ include "tagwarden.trivyName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.:4954
+- --trivy-token-secret={{ .Values.trivy.token.existingSecret | default (include "tagwarden.resourceName" (dict "suffix" "trivy-token" "context" .)) }}
 {{- end }}
 {{- end }}

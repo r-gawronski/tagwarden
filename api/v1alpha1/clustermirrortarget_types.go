@@ -557,8 +557,9 @@ type ScannerSpec struct {
 	CABundleSecretRef *SecretKeyRef `json:"caBundleSecretRef,omitempty"`
 
 	// tokenSecretRef holds the server token, sent in the Trivy-Token
-	// header. Defaults to the token Secret the chart creates. Only the
-	// scanner sidecar gets it.
+	// header. Defaults to the token Secret the chart creates, but only
+	// when url is empty: an external server without tokenSecretRef gets
+	// no token. Only the scanner sidecar gets it.
 	// +optional
 	TokenSecretRef *TokenSecretKeyRef `json:"tokenSecretRef,omitempty"`
 

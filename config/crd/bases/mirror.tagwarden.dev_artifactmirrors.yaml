@@ -388,6 +388,41 @@ spec:
                 maxItems: 20
                 type: array
                 x-kubernetes-list-type: atomic
+              gate:
+                description: |-
+                  gate holds the judged verdicts of a generated mirror of a gated
+                  target. Absent on mirrors that are not gated.
+                properties:
+                  judged:
+                    description: |-
+                      judged lists the tags and digests a gated run gave a final verdict
+                      (passed, accepted or findings), never scan errors. At most 200; tags
+                      that do not fit are scanned again.
+                    items:
+                      description: SyncedTag records a mirrored tag and its digest.
+                      properties:
+                        digest:
+                          description: digest is the manifest digest the tag was copied
+                            by.
+                          type: string
+                        tag:
+                          description: tag is the mirrored tag.
+                          type: string
+                      required:
+                      - digest
+                      - tag
+                      type: object
+                    maxItems: 200
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  judgedFingerprint:
+                    description: |-
+                      judgedFingerprint is the policy fingerprint the judged list was made
+                      under: the gate policy, the active exceptions and the scanner
+                      major.minor. A Job under another fingerprint judges every tag again.
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
+                type: object
               javaScanned:
                 description: |-
                   javaScanned is false on generated mirrors of a gated target while

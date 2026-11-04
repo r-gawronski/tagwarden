@@ -18,6 +18,8 @@ package main
 
 import "testing"
 
+const testURL = "http://x:4954"
+
 func TestValidateTrivy(t *testing.T) {
 	const (
 		ver = "0.76.1"
@@ -31,8 +33,8 @@ func TestValidateTrivy(t *testing.T) {
 		{name: "unset", ok: true},
 		{name: "all set", image: img, version: ver, url: "http://tagwarden-trivy.tagwarden-system.svc:4954", ok: true},
 		{name: "only image", image: img},
-		{name: "tag only image", image: "r/trivy:0.76.1", version: ver, url: "http://x:4954"},
-		{name: "bad version", image: img, version: "latest", url: "http://x:4954"},
+		{name: "tag only image", image: "r/trivy:0.76.1", version: ver, url: testURL},
+		{name: "bad version", image: img, version: "latest", url: testURL},
 		{name: "no scheme", image: img, version: ver, url: "x:4954"},
 		{name: "ftp", image: img, version: ver, url: "ftp://x"},
 		{name: "fully qualified", image: img, version: ver,
@@ -44,6 +46,25 @@ func TestValidateTrivy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := validateTrivy(tc.image, tc.version, tc.url); (err == nil) != tc.ok {
+				t.Errorf("err = %v, want ok = %v", err, tc.ok)
+			}
+		})
+	}
+}
+
+func TestValidateTrivyTokenSecret(t *testing.T) {
+	for _, tc := range []struct {
+		name, ref, url string
+		ok             bool
+	}{
+		{name: "unset", ok: true},
+		{name: "unset with url", url: testURL, ok: true},
+		{name: "set", ref: "tagwarden-trivy-token", url: testURL, ok: true},
+		{name: "without url", ref: "tagwarden-trivy-token"},
+		{name: "invalid name", ref: "Trivy_Token", url: testURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateTrivyTokenSecret(tc.ref, tc.url); (err == nil) != tc.ok {
 				t.Errorf("err = %v, want ok = %v", err, tc.ok)
 			}
 		})

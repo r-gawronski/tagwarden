@@ -330,6 +330,26 @@ type VulnerabilityFinding struct {
 	ScannedAt metav1.Time `json:"scannedAt"`
 }
 
+// GateStatus holds the judged verdicts of a generated mirror of a gated
+// target. The controller passes them back to the sync Job, which skips the
+// scan of a judged tag and digest while the fingerprint still matches.
+type GateStatus struct {
+	// judgedFingerprint is the policy fingerprint the judged list was made
+	// under: the gate policy, the active exceptions and the scanner
+	// major.minor. A Job under another fingerprint judges every tag again.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	// +optional
+	JudgedFingerprint string `json:"judgedFingerprint,omitempty"`
+
+	// judged lists the tags and digests a gated run gave a final verdict
+	// (passed, accepted or findings), never scan errors. At most 200; tags
+	// that do not fit are scanned again.
+	// +kubebuilder:validation:MaxItems=200
+	// +listType=atomic
+	// +optional
+	Judged []SyncedTag `json:"judged,omitempty"`
+}
+
 // ArtifactMirrorStatus defines the observed state of ArtifactMirror.
 type ArtifactMirrorStatus struct {
 	// lastSyncStartTime is when the last sync Job started, scheduled or
@@ -371,6 +391,11 @@ type ArtifactMirrorStatus struct {
 	// stay visible. Absent on mirrors that are not gated.
 	// +optional
 	JavaScanned *bool `json:"javaScanned,omitempty"`
+
+	// gate holds the judged verdicts of a generated mirror of a gated
+	// target. Absent on mirrors that are not gated.
+	// +optional
+	Gate *GateStatus `json:"gate,omitempty"`
 
 	// observedGeneration is the spec generation the status refers to.
 	// +optional
