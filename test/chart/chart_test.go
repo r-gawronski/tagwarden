@@ -179,6 +179,7 @@ func TestTrivyEnabled(t *testing.T) {
 		"- --trivy-image=registry.example.internal/platform/trivy:0.76.1@sha256:",
 		"- --trivy-version=0.76.1\n",
 		"- --trivy-url=http://tagwarden-trivy.tagwarden-system.svc.cluster.local.:4954\n",
+		"- --trivy-token-secret=tagwarden-trivy-token\n",
 		"- --listen=0.0.0.0:4954\n",
 		"runAsUser: 65532\n",
 		"readOnlyRootFilesystem: true\n",
@@ -202,7 +203,8 @@ func TestTrivyEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, existing)
 	}
-	if strings.Contains(existing, "tagwarden-trivy-token") || !strings.Contains(existing, "name: mine\n") {
+	if strings.Contains(existing, "tagwarden-trivy-token") || !strings.Contains(existing, "name: mine\n") ||
+		!strings.Contains(existing, "- --trivy-token-secret=mine\n") {
 		t.Error("existing token Secret is not used instead of the generated one")
 	}
 }

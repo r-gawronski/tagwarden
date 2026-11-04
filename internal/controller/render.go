@@ -37,6 +37,7 @@ import (
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
 	"github.com/r-gawronski/tagwarden/internal/tags"
+	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
 // Labels and annotations on the objects rendered for a mirror. Names may be
@@ -58,12 +59,22 @@ const (
 	LabelEgress  = "tagwarden.dev/egress"
 	EgressProxy  = "proxy"
 	EgressDirect = "direct"
+	// LabelScanner is ScannerTrivy on gated sync pods, so the Trivy
+	// server's NetworkPolicy admits them.
+	LabelScanner = "tagwarden.dev/scanner"
+	ScannerTrivy = "trivy"
 
 	// SyncServiceAccount runs the sync pods unless a pod uses cloud auth
 	// with spec.workloadIdentity.serviceAccountName. It has no RBAC bindings.
 	SyncServiceAccount = "tagwarden-sync"
 	syncContainer      = "sync"
-	specKey            = "spec.json"
+	scannerContainer   = "scanner"
+	workVolume         = "work"
+	scanVolume         = "scan"
+	trivyTokenEnv      = "TRIVY_TOKEN" //nolint:gosec // env var name, not a credential
+	// defaultTokenKey is the key of the scanner token in its Secret.
+	defaultTokenKey = "token"
+	specKey         = "spec.json"
 	// maxListedTags caps the upstream tag listing of a sync run.
 	maxListedTags = tags.MaxTags
 )
@@ -275,12 +286,46 @@ func renderConfigMap(cm *corev1.ConfigMap, m *mirrorv1alpha1.ArtifactMirror, spe
 	cm.Data = map[string]string{specKey: string(spec)}
 }
 
+// sidecar is the scanner sidecar of a gated sync pod.
+type sidecar struct {
+	// gate is the resolved gate of the spec: scanner URL, image, timeout
+	// and javaDB mode.
+	gate *syncspec.Gate
+	// scanner is the target's scanner spec, nil for the defaults.
+	scanner *mirrorv1alpha1.ScannerSpec
+	// token is the Secret with the server token, nil for none.
+	token *mirrorv1alpha1.TokenSecretKeyRef
+}
+
+// Scan volume sizes: TMPDIR and reports need little, the Java DB of
+// javaDB PerJob needs its tarball and the unpacked DB.
+var (
+	scanVolumeSize       = resource.MustParse("64Mi")
+	scanVolumeSizePerJob = resource.MustParse("3Gi")
+	defaultWorkSize      = resource.MustParse("20Gi")
+)
+
+// sidecarResources are the scanner resources unless the target sets them.
+func sidecarResources(s *mirrorv1alpha1.ScannerSpec) corev1.ResourceRequirements {
+	if s != nil && s.Resources != nil {
+		return *s.Resources
+	}
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("2Gi")},
+	}
+}
+
 // renderCronJob sets the CronJob spec. Only fixed paths, the sync image and
 // Secret references go into the pod; tenant fields reach the Job only
-// through the spec file.
-func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, image string, spec []byte, trackLabels, trackAnnotations map[string]string) {
+// through the spec file. sc adds the scanner sidecar of a gated Job; nil
+// renders the Job without it.
+func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, image string, spec []byte, sc *sidecar, trackLabels, trackAnnotations map[string]string) {
 	labels, annotations := mirrorMeta(m)
 	labels[LabelTarget] = targetLabel(t.Name)
+	if sc != nil {
+		labels[LabelScanner] = ScannerTrivy
+	}
 	labels[LabelEgress] = EgressDirect
 	if t.Spec.Proxy != nil && t.Spec.Proxy.HTTPSProxy != "" {
 		labels[LabelEgress] = EgressProxy
@@ -392,6 +437,19 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 		}
 	}
 
+	syncSecurity := &corev1.SecurityContext{
+		ReadOnlyRootFilesystem:   new(true),
+		AllowPrivilegeEscalation: new(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
+	var initContainers []corev1.Container
+	if sc != nil {
+		var c corev1.Container
+		volumes, mounts, c = scannerSidecar(sc, volumes, mounts)
+		c.SecurityContext = syncSecurity.DeepCopy()
+		initContainers = []corev1.Container{c}
+	}
+
 	cj.Spec = batchv1.CronJobSpec{
 		Schedule:                   m.Spec.Schedule,
 		Suspend:                    new(m.Spec.Suspend),
@@ -428,16 +486,13 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 							FSGroup:        ptr.To[int64](65532),
 							SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 						},
+						InitContainers: initContainers,
 						Containers: []corev1.Container{{
-							Name:  syncContainer,
-							Image: image,
-							Args:  []string{"sync", "--spec", syncspec.SpecFile},
-							Env:   env,
-							SecurityContext: &corev1.SecurityContext{
-								ReadOnlyRootFilesystem:   new(true),
-								AllowPrivilegeEscalation: new(false),
-								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-							},
+							Name:            syncContainer,
+							Image:           image,
+							Args:            []string{"sync", "--spec", syncspec.SpecFile},
+							Env:             env,
+							SecurityContext: syncSecurity,
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("50m"),
@@ -464,6 +519,69 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	cj.Annotations[annotationCronJobChecksum] = hex.EncodeToString(sum[:])
 }
 
+// scannerSidecar adds the gate volumes to the sync pod and returns the
+// scanner container, a native sidecar that runs syncspec.SidecarScript. It
+// gets the token and the scanner CA only: no registry Secrets, no proxy,
+// the layout read-only. The security context is set by the caller.
+func scannerSidecar(sc *sidecar, volumes []corev1.Volume, mounts []corev1.VolumeMount) ([]corev1.Volume, []corev1.VolumeMount, corev1.Container) {
+	work, scan := defaultWorkSize, scanVolumeSize
+	if sc.gate.Scanner.JavaDB == mirrorv1alpha1.JavaDBPerJob {
+		scan = scanVolumeSizePerJob
+	}
+	if s := sc.scanner; s != nil && s.Storage != nil {
+		work = *s.Storage
+	}
+	workDir := filepath.Dir(syncspec.LayoutDir)
+	volumes = append(volumes,
+		corev1.Volume{Name: workVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &work}}},
+		corev1.Volume{Name: scanVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &scan}}})
+	mounts = append(mounts,
+		corev1.VolumeMount{Name: workVolume, MountPath: workDir},
+		corev1.VolumeMount{Name: scanVolume, MountPath: syncspec.ScanDir})
+	scannerMounts := []corev1.VolumeMount{
+		{Name: workVolume, MountPath: workDir, ReadOnly: true},
+		{Name: scanVolume, MountPath: syncspec.ScanDir},
+	}
+	// sync reads the server's /version itself, so both containers get the CA.
+	if s := sc.scanner; s != nil && s.CABundleSecretRef != nil {
+		volumes = append(volumes, corev1.Volume{Name: "scanner-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName:  s.CABundleSecretRef.Name,
+			Items:       []corev1.KeyToPath{{Key: s.CABundleSecretRef.Key, Path: filepath.Base(syncspec.ScannerCAFile)}},
+			DefaultMode: ptr.To[int32](0o440),
+		}}})
+		ca := corev1.VolumeMount{Name: "scanner-ca", MountPath: filepath.Dir(syncspec.ScannerCAFile), ReadOnly: true}
+		mounts = append(mounts, ca)
+		scannerMounts = append(scannerMounts, ca)
+	}
+	env := []corev1.EnvVar{
+		{Name: syncspec.ScannerURLEnv, Value: sc.gate.Scanner.URL},
+		{Name: syncspec.ScannerTimeoutEnv, Value: sc.gate.Scanner.Timeout.Duration.String()},
+		{Name: syncspec.ScannerJavaDBEnv, Value: string(sc.gate.Scanner.JavaDB)},
+		{Name: syncspec.ScannerTemplateEnv, Value: vuln.ReportTemplate},
+		{Name: "HOME", Value: syncspec.ScanDir},
+		{Name: "TMPDIR", Value: syncspec.ScanDir},
+		{Name: "NO_PROXY", Value: "*"},
+	}
+	if tok := sc.token; tok != nil {
+		// Optional: without the Secret the sidecar still starts, the server
+		// refuses its scans and onScanError applies, instead of a pod that
+		// never starts its sync container.
+		env = append(env, corev1.EnvVar{Name: trivyTokenEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: tok.Name}, Key: cmp.Or(tok.Key, defaultTokenKey), Optional: new(true),
+		}}})
+	}
+	return volumes, mounts, corev1.Container{
+		Name:                     scannerContainer,
+		Image:                    sc.gate.Scanner.Image,
+		Command:                  []string{"/bin/sh", "-c", syncspec.SidecarScript},
+		Env:                      env,
+		RestartPolicy:            ptr.To(corev1.ContainerRestartPolicyAlways),
+		Resources:                sidecarResources(sc.scanner),
+		TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+		VolumeMounts:             scannerMounts,
+	}
+}
+
 // securityDrift reports whether the tagwarden.dev/ labels or security-relevant
 // fields of a live sync pod template differ from the desired ones. A hand edit
 // keeps the checksum annotation, so the checksum alone would let it persist.
@@ -475,7 +593,7 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 func securityDrift(live, want *corev1.PodTemplateSpec) bool {
 	fields := func(t *corev1.PodTemplateSpec) []any {
 		p := &t.Spec
-		f := make([]any, 0, 19+8*len(p.Containers))
+		f := make([]any, 0, 19+8*len(p.Containers)+9*len(p.InitContainers))
 		own := map[string]string{}
 		for k, v := range t.Labels {
 			if strings.HasPrefix(k, "tagwarden.dev/") {
@@ -488,6 +606,9 @@ func securityDrift(live, want *corev1.PodTemplateSpec) bool {
 			p.ImagePullSecrets, p.Volumes, len(p.InitContainers), len(p.Containers))
 		for _, c := range p.Containers {
 			f = append(f, c.Name, c.Image, c.Command, c.Args, c.Env, c.EnvFrom, c.SecurityContext, c.VolumeMounts)
+		}
+		for _, c := range p.InitContainers {
+			f = append(f, c.Name, c.Image, c.Command, c.Args, c.Env, c.EnvFrom, c.SecurityContext, c.VolumeMounts, c.RestartPolicy)
 		}
 		return f
 	}

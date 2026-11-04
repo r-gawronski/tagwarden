@@ -89,6 +89,12 @@ type ArtifactMirrorReconciler struct {
 	ArgoCDTracking string
 	// ArgoCDInstanceLabel is Argo CD's label for label tracking mode.
 	ArgoCDInstanceLabel string
+	// Scanner holds the manager's --trivy-* flags, the scanner defaults of
+	// gated Jobs.
+	Scanner ScannerConfig
+	// ClusterDomain qualifies cluster Service names of scanners. Defaults
+	// to cluster.local.
+	ClusterDomain string
 
 	// trackingMismatch holds the tracking id last reported per mirror.
 	trackingMismatch sync.Map
@@ -223,7 +229,15 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		return notReady(reason, msg)
 	}
 
-	spec, err := json.MarshalIndent(syncSpec(&t, m, r.DeniedCIDRs), "", "  ")
+	s := syncSpec(&t, m, r.DeniedCIDRs)
+	sc, msg, err := r.gate(ctx, &t, m, &s)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if msg != "" {
+		return notReady(ReasonScannerUnavailable, msg)
+	}
+	spec, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -251,7 +265,7 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		desired := cj.DeepCopy()
 		var trackLabels, trackAnnotations map[string]string
 		trackLabels, trackAnnotations, mismatch = argoTracking(r.ArgoCDTracking, r.ArgoCDInstanceLabel, m, key.Namespace, key.Name)
-		renderCronJob(desired, &t, m, r.SyncImage, spec, trackLabels, trackAnnotations)
+		renderCronJob(desired, &t, m, r.SyncImage, spec, sc, trackLabels, trackAnnotations)
 		op, err = controllerutil.CreateOrUpdate(ctx, r.Client, cj, func() error {
 			if err := checkOwner("CronJob", cj, m); err != nil {
 				return err
@@ -578,6 +592,19 @@ func (r *ArtifactMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					if t := &targets.Items[i]; t.Name != o.GetName() && registryKey(t.Spec.Registry) == key {
 						reqs = append(reqs, r.mirrorsMatching(ctx, client.MatchingFields{indexTargetName: t.Name})...)
 					}
+				}
+				return reqs
+			})).
+		// An exception changes the gate spec of the generated mirrors it
+		// covers; old and new objects are both mapped, so a narrowed scope
+		// re-renders the mirrors it left. Expiry arrives as the Active
+		// condition update of the exception controller.
+		Watches(&mirrorv1alpha1.VulnerabilityException{}, handler.EnqueueRequestsFromMapFunc(
+			func(ctx context.Context, o client.Object) []reconcile.Request {
+				e := o.(*mirrorv1alpha1.VulnerabilityException)
+				reqs := make([]reconcile.Request, 0, len(e.Spec.Namespaces))
+				for _, ns := range e.Spec.Namespaces {
+					reqs = append(reqs, r.mirrorsMatching(ctx, client.InNamespace(ns), client.MatchingFields{indexTargetName: e.Spec.TargetRef})...)
 				}
 				return reqs
 			})).
