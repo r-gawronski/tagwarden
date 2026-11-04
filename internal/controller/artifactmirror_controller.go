@@ -137,7 +137,8 @@ func (r *ArtifactMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	old := m.Status.DeepCopy()
 	oldReady := meta.FindStatusCondition(old.Conditions, ConditionReady)
 	var ev pending
-	res, err := r.reconcile(ctx, &m, &ev)
+	var applied []*batchv1.Job
+	res, err := r.reconcile(ctx, &m, &ev, &applied)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -151,6 +152,7 @@ func (r *ArtifactMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 	}
+	r.markApplied(ctx, applied)
 	// Events follow the status they describe, so a failed update does not
 	// leave an Event for a state that was never recorded.
 	for _, e := range ev {
@@ -195,7 +197,7 @@ func checkOwner(kind string, obj client.Object, m *mirrorv1alpha1.ArtifactMirror
 }
 
 // reconcile sets the Ready condition and renders or removes the CronJob.
-func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, ev *pending) (ctrl.Result, error) {
+func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, ev *pending, applied *[]*batchv1.Job) (ctrl.Result, error) {
 	notReady := func(reason, msg string) (ctrl.Result, error) {
 		r.setReady(m, metav1.ConditionFalse, reason, msg)
 		if v := pendingRequest(m); v != "" {
@@ -300,7 +302,7 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		ev.add(corev1.EventTypeNormal, "Created", "Reconcile", fmt.Sprintf("Created CronJob %s/%s", key.Namespace, key.Name))
 	}
 	r.setReady(m, metav1.ConditionTrue, ReasonReady, fmt.Sprintf("CronJob %s/%s mirrors to %s", key.Namespace, key.Name, targetRepo(&t, m)))
-	if err := r.syncStatus(ctx, m, gated, ev); err != nil {
+	if err := r.syncStatus(ctx, m, gated, ev, applied); err != nil {
 		return ctrl.Result{}, err
 	}
 	return r.syncRequestAndWatch(ctx, &t, m, cj, sc != nil, ev)

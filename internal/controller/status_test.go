@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,10 +28,18 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
+)
+
+const (
+	syncName = "b-sync"
+	opsNS    = "ops"
 )
 
 func finishedJobAt(name, trigger string, at time.Time) *batchv1.Job {
@@ -62,7 +71,7 @@ func TestRecordJobRescanLeavesSyncState(t *testing.T) {
 		wantReason string
 	}{
 		{"all scanned", syncspec.ExitOK, metav1.ConditionTrue, ReasonRescanned},
-		{"scan errors fail the run", syncspec.ExitSyncFailed, metav1.ConditionFalse, ReasonSyncFailed},
+		{"scan errors fail the run", syncspec.ExitSyncFailed, metav1.ConditionFalse, ReasonRescanFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synced := metav1.NewTime(t0.Add(-time.Hour))
@@ -71,7 +80,7 @@ func TestRecordJobRescanLeavesSyncState(t *testing.T) {
 			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{Type: ConditionSynced, Status: metav1.ConditionTrue, Reason: ReasonSynced})
 			job := finishedJobAt("j", TriggerRescan, t0)
 			var ev pending
-			recordJob(m, job, finished(job), termination(t, tc.code, &syncspec.Report{V: syncspec.ReportVersion}), false, true, &ev)
+			recordJob(m, job, finished(job), termination(t, tc.code, &syncspec.Report{V: syncspec.ReportVersion}), false, &ev)
 
 			if c := meta.FindStatusCondition(m.Status.Conditions, ConditionRescanned); c == nil || c.Status != tc.wantStatus || c.Reason != tc.wantReason {
 				t.Errorf("Rescanned %+v", c)
@@ -81,6 +90,12 @@ func TestRecordJobRescanLeavesSyncState(t *testing.T) {
 			}
 			if !m.Status.LastSuccessfulSyncTime.Equal(&synced) {
 				t.Errorf("lastSuccessfulSyncTime moved to %v", m.Status.LastSuccessfulSyncTime)
+			}
+			if c := meta.FindStatusCondition(m.Status.Conditions, ConditionRescanned); c.Status == metav1.ConditionFalse && !strings.Contains(c.Message, "rescan failed") {
+				t.Errorf("message %q", c.Message)
+			}
+			if m.Status.LastSyncTime != nil {
+				t.Errorf("lastSyncTime moved to %v", m.Status.LastSyncTime)
 			}
 			if len(ev) != 1 || ev[0].action != "Rescan" {
 				t.Errorf("events %+v", ev)
@@ -96,19 +111,20 @@ func TestRecordJobsSyncAndRescanTogether(t *testing.T) {
 	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	m := &mirrorv1alpha1.ArtifactMirror{}
 	m.Namespace, m.Name = "ns", "m"
-	rescanJob, syncJob := finishedJobAt("b-rescan", TriggerRescan, t0.Add(time.Minute)), finishedJobAt("a-sync", "", t0)
+	// Same second: the sync still goes first although its name sorts last.
+	rescanJob, syncJob := finishedJobAt("a-rescan", TriggerRescan, t0), finishedJobAt(syncName, "", t0)
 	jobs := finishedJobs([]batchv1.Job{*rescanJob, *syncJob}, m)
-	if len(jobs) != 2 || jobs[0].job.Name != "a-sync" {
+	if len(jobs) != 2 || jobs[0].job.Name != syncName {
 		t.Fatalf("order %v", jobs)
 	}
 	reports := map[string]*corev1.ContainerStateTerminated{
-		"a-sync": termination(t, syncspec.ExitOK, v2(fpA, syncspec.GateOK, []string{tag11, tag10}, []string{tag11, tag10})),
-		"b-rescan": termination(t, syncspec.ExitOK, rescanReport(fpA, []string{tag10}, []string{tag11, tag10},
-			rescanFinding(tag11, t0.Add(time.Minute), mirrorv1alpha1.VulnerableUntagged))),
+		syncName: termination(t, syncspec.ExitOK, v2(fpA, syncspec.GateOK, []string{tag11, tag10}, []string{tag11, tag10})),
+		"a-rescan": termination(t, syncspec.ExitOK, rescanReport(fpA, []string{tag10}, []string{tag11, tag10},
+			rescanFinding(tag11, t0, mirrorv1alpha1.VulnerableUntagged))),
 	}
 	var ev pending
 	for _, f := range jobs {
-		recordJob(m, f.job, f.done, reports[f.job.Name], true, true, &ev)
+		recordJob(m, f.job, f.done, reports[f.job.Name], true, &ev)
 	}
 	if len(m.Status.Vulnerable) != 1 || m.Status.Vulnerable[0].Action != mirrorv1alpha1.VulnerableUntagged {
 		t.Errorf("vulnerable %+v", m.Status.Vulnerable)
@@ -159,8 +175,8 @@ func TestRescanBase(t *testing.T) {
 				t.Fatal(err)
 			}
 			c := fake.NewClientBuilder().WithScheme(s).Build()
-			r := &ArtifactMirrorReconciler{Client: c, APIReader: c, Namespace: "ops"}
-			cj := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: "ops", Name: "cj", UID: "u"}}
+			r := &ArtifactMirrorReconciler{Client: c, APIReader: c, Namespace: opsNS}
+			cj := &batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: opsNS, Name: "cj", UID: "u"}}
 			cj.Spec.JobTemplate.Spec.Template.Spec.Containers = []corev1.Container{{Name: syncContainer}}
 			if _, err := r.rescan(context.Background(), tg, m, cj, &pending{}); err != nil {
 				t.Fatal(err)
@@ -170,5 +186,67 @@ func TestRescanBase(t *testing.T) {
 				t.Fatalf("jobs %d, err %v, want %d", len(jobs.Items), err, tc.want)
 			}
 		})
+	}
+}
+
+// Reconciling twice applies each finished Job once and keeps the untag.
+func TestSyncStatusAppliesEachJobOnce(t *testing.T) {
+	const tag11 = "1.1"
+	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	m := &mirrorv1alpha1.ArtifactMirror{}
+	m.Namespace, m.Name = "ns", "m"
+	s := goldenScheme(t)
+	for _, add := range []func(*runtime.Scheme) error{batchv1.AddToScheme, corev1.AddToScheme} {
+		if err := add(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	objs := make([]client.Object, 0, 4)
+	for _, j := range []struct {
+		name, trigger string
+		term          *corev1.ContainerStateTerminated
+	}{
+		{syncName, "", termination(t, syncspec.ExitOK, v2(fpA, syncspec.GateOK, []string{tag11, tag10}, []string{tag11, tag10}))},
+		{"a-rescan", TriggerRescan, termination(t, syncspec.ExitOK, rescanReport(fpA, []string{tag10}, []string{tag11, tag10},
+			rescanFinding(tag11, t0, mirrorv1alpha1.VulnerableUntagged)))},
+	} {
+		job := finishedJobAt(j.name, j.trigger, t0)
+		job.Namespace, job.UID = opsNS, types.UID(j.name)
+		job.Labels = map[string]string{LabelMirror: mirrorHash("ns", "m")}
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: opsNS, Name: j.name + "-pod",
+			Labels: map[string]string{batchv1.JobNameLabel: j.name}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(job, batchv1.SchemeGroupVersion.WithKind("Job"))}},
+			Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: syncContainer, State: corev1.ContainerState{Terminated: j.term}}}}}
+		objs = append(objs, job, pod)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+	r := &ArtifactMirrorReconciler{Client: c, Namespace: opsNS}
+
+	events := make([]event, 0, 8)
+	for range 2 {
+		var ev pending
+		var applied []*batchv1.Job
+		if err := r.syncStatus(context.Background(), m, true, &ev, &applied); err != nil {
+			t.Fatal(err)
+		}
+		r.markApplied(context.Background(), applied)
+		events = append(events, ev...)
+	}
+	if len(m.Status.Vulnerable) != 1 || m.Status.Vulnerable[0].Tag != tag11 || m.Status.Vulnerable[0].Action != mirrorv1alpha1.VulnerableUntagged {
+		t.Errorf("vulnerable %+v", m.Status.Vulnerable)
+	}
+	if got := tagsOf(m.Status.Synced, func(s mirrorv1alpha1.SyncedTag) string { return s.Tag }); !slices.Equal(got, []string{tag10}) {
+		t.Errorf("synced %v", got)
+	}
+	count := map[string]int{}
+	for _, e := range events {
+		count[e.action+"/"+e.reason]++
+	}
+	for _, k := range []string{"Sync/" + ReasonSynced, "Rescan/" + ReasonRescanned, "Rescan/" + reasonTagUntagged} {
+		if count[k] != 1 {
+			t.Errorf("event %s x%d in %v", k, count[k], count)
+		}
+	}
+	if m.Status.LastSyncTime == nil || !m.Status.LastSyncTime.Time.Equal(t0) {
+		t.Errorf("lastSyncTime %v", m.Status.LastSyncTime)
 	}
 }

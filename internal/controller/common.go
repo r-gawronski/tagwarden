@@ -59,6 +59,7 @@ const (
 	ReasonTargetConflict               = "TargetConflict"
 	ReasonSynced                       = "Synced"
 	ReasonRescanned                    = "Rescanned"
+	ReasonRescanFailed                 = "RescanFailed"
 	ReasonTruncated                    = "Truncated"
 	ReasonSyncFailed                   = "SyncFailed"
 	ReasonConfigRejected               = "ConfigRejected"

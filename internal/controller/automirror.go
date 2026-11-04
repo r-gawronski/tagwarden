@@ -437,6 +437,11 @@ func (r *AutoMirrorReconciler) relay(pod *corev1.Pod, state string, cur *mirrorv
 			fmt.Sprintf("%s: %s", c.Reason, c.Message))
 		return
 	}
+	if c := meta.FindStatusCondition(cur.Status.Conditions, ConditionRescanned); c != nil && c.Status == metav1.ConditionFalse {
+		r.report(pod, state, "rescanned:"+c.Reason+c.Message, corev1.EventTypeWarning, ReasonRescanFailed,
+			fmt.Sprintf("%s: %s", c.Reason, c.Message))
+		return
+	}
 	r.report(pod, state, "requested", corev1.EventTypeNormal, reasonMirrorRequested,
 		fmt.Sprintf("Mirror of %s tags %v requested as ArtifactMirror %s", state, want, cur.Name))
 }
@@ -591,7 +596,7 @@ func (r *AutoMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// The conditions that become pod Events, as one comparable string.
 	relayed := func(m *mirrorv1alpha1.ArtifactMirror) string {
 		var out strings.Builder
-		for _, t := range []string{ConditionReady, ConditionSynced, ConditionVulnerabilityGate} {
+		for _, t := range []string{ConditionReady, ConditionSynced, ConditionRescanned, ConditionVulnerabilityGate} {
 			if c := meta.FindStatusCondition(m.Status.Conditions, t); c != nil {
 				fmt.Fprintf(&out, "%s=%s/%s/%s;", t, c.Status, c.Reason, c.Message)
 			}
