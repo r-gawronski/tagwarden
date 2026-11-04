@@ -27,7 +27,7 @@ definition for `make docker-build` and the e2e tests.
 |---------|--------|
 | Pull request | Both platforms built, not pushed. Trivy scans the `linux/amd64` image and fails on fixed CRITICAL or HIGH findings. The release chart is packaged and linted with version `0.0.0-ci.<shortsha>`. |
 | Push to `main` | Image `ghcr.io/<owner>/tagwarden:main-<shortsha>`, scanned per platform, signed, with an SBOM attestation per platform. |
-| Tag `v<semver>` | Image `ghcr.io/<owner>/tagwarden:<version>` as for `main`, and chart `oci://ghcr.io/<owner>/charts/tagwarden:<version>`, signed. Then a GitHub Release for the tag (see below). |
+| Tag `v<semver>` (pushed, or dispatched by the Release workflow) | Image `ghcr.io/<owner>/tagwarden:<version>` as for `main`, and chart `oci://ghcr.io/<owner>/charts/tagwarden:<version>`, signed. Then a GitHub Release for the tag (see below). |
 
 `<owner>` is the lowercased repository owner and `<version>` is the tag
 without the leading `v`. The job fails for a tag that is not strict
@@ -41,6 +41,30 @@ stops the job before anything is signed.
 
 GHCR packages start private. After the first push, the maintainer makes the
 image and chart packages public once.
+
+## Cutting a release
+
+Run the **Release** workflow (`.github/workflows/release.yaml`) from the
+Actions tab on `main`, or from a terminal:
+
+```sh
+gh workflow run release.yaml --ref main -f version=0.1.0-rc.1
+```
+
+`version` is strict semver without the leading `v`. The workflow refuses to
+run off `main`, refuses a version whose tag exists, creates the annotated tag
+`v<version>` on the `main` commit it runs on, and dispatches `build.yaml` on
+that tag. Only that dispatch publishes; a dispatch of `build.yaml` on a branch
+fails.
+
+Tags created with `GITHUB_TOKEN` do not trigger `push` workflows, which is why
+the Release workflow dispatches `build.yaml` explicitly (`workflow_dispatch`
+is allowed from `GITHUB_TOKEN`). The signing identity stays
+`build.yaml@refs/tags/v<version>`. An admin can still push a `v*` tag by hand;
+that triggers `build.yaml` through `push`.
+
+The `release tags` ruleset must list the GitHub Actions app (integration
+15368) as a bypass actor, or the workflow cannot create the tag.
 
 The `release tags` ruleset limits who can create, update or delete `v*` tags
 to repository admins.
