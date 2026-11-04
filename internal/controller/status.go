@@ -118,6 +118,13 @@ func recordJob(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batchv1
 		eventType = corev1.EventTypeNormal
 	}
 	ev.add(eventType, cond.Reason, action, cond.Message)
+	if rep != nil && !rescan && rep.Selection != nil {
+		sel := rep.Selection
+		selectedTags.WithLabelValues(m.Namespace, m.Name).Set(float64(sel.Selected))
+		if sel.Missing > 0 {
+			ev.add(corev1.EventTypeWarning, ReasonTagNotFound, action, "explicit tags not found upstream: "+missingList(sel))
+		}
+	}
 	// A report that claims another kind than the Job's only fills the condition.
 	if gated && rep != nil && rep.V == syncspec.ReportVersionGate && rep.Rescan == rescan {
 		start := job.CreationTimestamp.Time
@@ -190,6 +197,9 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 		if repErr != nil {
 			cond.Message += ": " + repErr.Error()
 		}
+	case term.ExitCode == syncspec.ExitOK && !rescan && rep.Selection != nil && rep.Selection.Selected == 0:
+		// Exit 0, so the Job is not retried, but the mirror is not in sync.
+		cond.Reason = ReasonNoTagsSelected
 	case term.ExitCode == syncspec.ExitOK:
 		cond.Status, cond.Reason = metav1.ConditionTrue, ReasonSynced
 		if rescan {
@@ -225,7 +235,11 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 			cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + "rescan failed: " + summary(rep)
 			return cond, &rep
 		}
-		cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + summary(rep)
+		msg := summary(rep)
+		if sel := rep.Selection; !rescan && sel != nil && (sel.Selected == 0 || sel.Missing > 0) {
+			msg = selectionNote(sel) + "; " + msg
+		}
+		cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + msg
 		return cond, &rep
 	}
 	return cond, nil
@@ -280,6 +294,46 @@ func summary(r syncspec.Report) string {
 		s += fmt.Sprintf("; %d errors, first: %s", len(r.Errors), e)
 	}
 	return s
+}
+
+// selectionNote explains an empty selection or missing explicit tags.
+func selectionNote(sel *syncspec.Selection) string {
+	var s []string
+	if sel.Selected == 0 {
+		s = append(s, fmt.Sprintf("no tags selected from %d listed", sel.Listed))
+		for _, c := range []struct {
+			n    int
+			text string
+		}{
+			{sel.Filtered, "removed by include/exclude"},
+			{sel.NotSemver, "not semver"},
+			{sel.OutOfRange, "outside semverRange"},
+			{sel.Prerelease, "prerelease skipped; set allowPrerelease"},
+			{sel.Trimmed, "dropped by keepLatest"},
+		} {
+			if c.n > 0 {
+				s = append(s, fmt.Sprintf("%d %s", c.n, c.text))
+			}
+		}
+	}
+	if sel.Missing > 0 {
+		s = append(s, "explicit tags not found upstream: "+missingList(sel))
+	}
+	return strings.Join(s, ", ")
+}
+
+// missingList names the missing explicit tags. The names come from the
+// Job, so they are cleaned and cut like a sync error.
+func missingList(sel *syncspec.Selection) string {
+	names := make([]string, 0, len(sel.MissingTags))
+	for _, t := range sel.MissingTags {
+		names = append(names, cut(strings.ToValidUTF8(t, "?"), maxErrorLen))
+	}
+	out := strings.Join(names, ", ")
+	if more := sel.Missing - len(names); more > 0 {
+		out += fmt.Sprintf(" and %d more", more)
+	}
+	return out
 }
 
 // cut shortens s to at most n bytes without splitting a UTF-8 sequence.

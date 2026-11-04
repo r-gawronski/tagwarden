@@ -36,6 +36,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,7 +51,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	twregistry "github.com/r-gawronski/tagwarden/internal/registry"
+	"github.com/r-gawronski/tagwarden/internal/sync"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
+	twtags "github.com/r-gawronski/tagwarden/internal/tags"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -896,5 +899,33 @@ func TestLookupRetryUnlocked(t *testing.T) {
 	}, twregistry.NewWindow())
 	if _, err := o.lookup(context.Background(), "registry.example.internal"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSelectionReport(t *testing.T) {
+	res := sync.Result{Stats: &twtags.Stats{Listed: 4, Prerelease: 2, Filtered: 2, Missing: []string{"a", "b", "c", "d", "e", "f", "g"}}}
+	r := summarize(res)
+	got, err := syncspec.ParseReport(string(encode(r)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &syncspec.Selection{Listed: 4, Filtered: 2, Prerelease: 2, Missing: 7, MissingTags: []string{"a", "b", "c", "d", "e"}}
+	if !reflect.DeepEqual(got.Selection, want) {
+		t.Errorf("got %+v, want %+v", got.Selection, want)
+	}
+	if got := summarize(sync.Result{}); got.Selection != nil {
+		t.Errorf("no stats, selection %+v", got.Selection)
+	}
+
+	// Names are dropped, the count stays, when the message is full.
+	r.Errors = []string{strings.Repeat("e", 200)}
+	for i := range 200 {
+		r.Synced = append(r.Synced, syncedTag{Tag: fmt.Sprintf("v1.0.%d-%s", i, strings.Repeat("x", 100)), Digest: "sha256:" + strings.Repeat("c", 64)})
+	}
+	r.Selection.MissingTags = []string{strings.Repeat("m", 128), strings.Repeat("n", 128)}
+	b := encode(r)
+	got, err = syncspec.ParseReport(string(b))
+	if err != nil || len(b) > maxTermination || got.Selection == nil || got.Selection.Missing != 7 {
+		t.Fatalf("%v, %d bytes: %s", err, len(b), b)
 	}
 }

@@ -544,6 +544,13 @@ func summarize(res sync.Result) report {
 			r.Synced = append(r.Synced, syncedTag{Tag: tag, Digest: d})
 		}
 	}
+	if st := res.Stats; st != nil {
+		r.Selection = &syncspec.Selection{
+			Listed: st.Listed, Filtered: st.Filtered, NotSemver: st.NotSemver, Prerelease: st.Prerelease,
+			OutOfRange: st.OutOfRange, Trimmed: st.Trimmed, Selected: st.Selected, Missing: len(st.Missing),
+			MissingTags: st.Missing[:min(len(st.Missing), syncspec.MaxMissingTags)],
+		}
+	}
 	return r
 }
 
@@ -598,6 +605,12 @@ func encode(r report) []byte {
 	if !fits(r) {
 		r.Truncated = true
 		r.Synced = synced[:largest(len(synced), func(k int) bool { r.Synced = synced[:k]; return fits(r) })]
+	}
+	// The missing tag names are the last to lose; their count stays.
+	if sel := r.Selection; sel != nil && !fits(r) {
+		c := *sel
+		c.MissingTags = nil
+		r.Selection = &c
 	}
 	// Judged tags that do not fit are only scanned again next run.
 	if r.Judged = judged; !fits(r) {

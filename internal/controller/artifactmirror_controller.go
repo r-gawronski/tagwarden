@@ -116,6 +116,9 @@ type ArtifactMirrorReconciler struct {
 func (r *ArtifactMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var m mirrorv1alpha1.ArtifactMirror
 	if err := r.Get(ctx, req.NamespacedName, &m); err != nil {
+		if apierrors.IsNotFound(err) {
+			selectedTags.DeleteLabelValues(req.Namespace, req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !m.DeletionTimestamp.IsZero() {

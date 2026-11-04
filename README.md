@@ -170,6 +170,22 @@ spec:
     maxArtifactSize: 5Gi         # config plus layers, all platforms
 ```
 
+### When nothing is selected
+
+A sync that selects no tags is not a success. The mirror gets
+`Synced=False` with reason `NoTagsSelected`, a Warning Event and a message
+with the counts: tags listed upstream, and how many `include`/`exclude`,
+`semverRange`, prerelease handling and `keepLatest` removed. The usual cause
+is `keepLatest` or `semverRange` dropping prereleases: set
+`allowPrerelease` if you want them. The sync Job still exits 0, so it is
+not retried.
+
+Explicit `tags` that do not exist upstream get a Warning Event
+`TagNotFound` naming up to five of them, also when other tags were
+selected. `Synced` stays True then, and the message lists the missing tags.
+The gauge `tagwarden_mirror_selected_tags{namespace,mirror}` holds the
+number of tags the last sync selected; alert on `== 0`.
+
 ### Sync now
 
 Need a sync before the next scheduled run? Set the

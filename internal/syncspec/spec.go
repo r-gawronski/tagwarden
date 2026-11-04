@@ -522,6 +522,28 @@ type Report struct {
 	// the target and nothing was copied. Its tag findings carry
 	// RescanAction.
 	Rescan bool `json:"rescan,omitempty"`
+
+	// Selection says what the tag selection did. Nil in a re-scan and from
+	// Jobs that predate it; the controller then judges nothing from it.
+	Selection *Selection `json:"selection,omitempty"`
+}
+
+// MaxMissingTags caps Selection.MissingTags.
+const MaxMissingTags = 5
+
+// Selection counts the tags each filter removed, as tags.Stats.
+type Selection struct {
+	Listed     int `json:"listed,omitempty"`
+	Filtered   int `json:"filtered,omitempty"`
+	NotSemver  int `json:"notSemver,omitempty"`
+	Prerelease int `json:"prerelease,omitempty"`
+	OutOfRange int `json:"outOfRange,omitempty"`
+	Trimmed    int `json:"trimmed,omitempty"`
+	Selected   int `json:"selected"`
+	// Missing counts explicit tags not found upstream; MissingTags names
+	// the first MaxMissingTags of them, and none when they do not fit.
+	Missing     int      `json:"missing,omitempty"`
+	MissingTags []string `json:"missingTags,omitempty"`
 }
 
 // TagFinding is the gate result of one tag with findings or a scan error.
@@ -576,6 +598,19 @@ func ParseReport(msg string) (Report, error) {
 	for _, s := range r.Synced {
 		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
 			return Report{}, errors.New("report: invalid synced entry")
+		}
+	}
+	if sel := r.Selection; sel != nil {
+		if min(sel.Listed, sel.Filtered, sel.NotSemver, sel.Prerelease, sel.OutOfRange, sel.Trimmed, sel.Selected, sel.Missing) < 0 {
+			return Report{}, errors.New("report: negative count")
+		}
+		if len(sel.MissingTags) > MaxMissingTags {
+			return Report{}, errors.New("report: invalid selection")
+		}
+		for _, t := range sel.MissingTags {
+			if !tagPattern.MatchString(t) {
+				return Report{}, errors.New("report: invalid selection")
+			}
 		}
 	}
 	for _, s := range r.Judged {

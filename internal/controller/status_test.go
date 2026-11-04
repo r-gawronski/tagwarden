@@ -24,14 +24,17 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
@@ -249,4 +252,110 @@ func TestSyncStatusAppliesEachJobOnce(t *testing.T) {
 	if m.Status.LastSyncTime == nil || !m.Status.LastSyncTime.Time.Equal(t0) {
 		t.Errorf("lastSyncTime %v", m.Status.LastSyncTime)
 	}
+}
+
+func syncWithSelection(t *testing.T, sel *syncspec.Selection) (*mirrorv1alpha1.ArtifactMirror, pending) {
+	t.Helper()
+	m := &mirrorv1alpha1.ArtifactMirror{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "sel"}}
+	job := finishedJobAt("j", "", time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC))
+	var ev pending
+	recordJob(m, job, finished(job), termination(t, syncspec.ExitOK, &syncspec.Report{V: syncspec.ReportVersion, Selection: sel}), false, &ev)
+	return m, ev
+}
+
+func TestRecordJobNoTagsSelected(t *testing.T) {
+	m, ev := syncWithSelection(t, &syncspec.Selection{Listed: 2, Filtered: 1, Prerelease: 1})
+	c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced)
+	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != ReasonNoTagsSelected {
+		t.Fatalf("Synced %+v", c)
+	}
+	for _, want := range []string{"2 listed", "1 removed by include/exclude", "1 prerelease skipped; set allowPrerelease"} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q lacks %q", c.Message, want)
+		}
+	}
+	if m.Status.LastSuccessfulSyncTime != nil {
+		t.Errorf("lastSuccessfulSyncTime %v", m.Status.LastSuccessfulSyncTime)
+	}
+	if len(ev) != 1 || ev[0].typ != corev1.EventTypeWarning || ev[0].reason != ReasonNoTagsSelected {
+		t.Errorf("events %+v", ev)
+	}
+	if v := gaugeValue(t, "ns", "sel"); v != 0 {
+		t.Errorf("gauge %v", v)
+	}
+}
+
+func TestRecordJobTagNotFound(t *testing.T) {
+	m, ev := syncWithSelection(t, &syncspec.Selection{Listed: 0, Selected: 1, Missing: 7, MissingTags: []string{"v9", "v8"}})
+	c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != ReasonSynced || m.Status.LastSuccessfulSyncTime == nil {
+		t.Fatalf("Synced %+v", c)
+	}
+	if !strings.Contains(c.Message, "v9, v8 and 5 more") {
+		t.Errorf("message %q", c.Message)
+	}
+	if len(ev) != 2 || ev[0].reason != ReasonSynced || ev[1].typ != corev1.EventTypeWarning || ev[1].reason != ReasonTagNotFound ||
+		!strings.Contains(ev[1].note, "v9, v8") {
+		t.Errorf("events %+v", ev)
+	}
+	if v := gaugeValue(t, "ns", "sel"); v != 1 {
+		t.Errorf("gauge %v", v)
+	}
+}
+
+func TestRecordJobSelectionLeavesOthersAlone(t *testing.T) {
+	// No selection (an older Job) and a re-scan never raise NoTagsSelected.
+	m, _ := syncWithSelection(t, nil)
+	if c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced); c.Reason != ReasonSynced {
+		t.Errorf("no selection: %+v", c)
+	}
+	m = &mirrorv1alpha1.ArtifactMirror{}
+	job := finishedJobAt("j", TriggerRescan, time.Now())
+	var ev pending
+	recordJob(m, job, finished(job), termination(t, syncspec.ExitOK, &syncspec.Report{V: syncspec.ReportVersion, Selection: &syncspec.Selection{}}), false, &ev)
+	if c := meta.FindStatusCondition(m.Status.Conditions, ConditionRescanned); c.Reason != ReasonRescanned {
+		t.Errorf("rescan: %+v", c)
+	}
+}
+
+func gaugeValue(t *testing.T, ns, name string) float64 {
+	t.Helper()
+	var d dto.Metric
+	if err := selectedTags.WithLabelValues(ns, name).Write(&d); err != nil {
+		t.Fatal(err)
+	}
+	return d.GetGauge().GetValue()
+}
+
+func TestReconcileDeletedMirrorDropsSelectedTagsSeries(t *testing.T) {
+	selectedTags.WithLabelValues("gone", "m").Set(3)
+	s := runtime.NewScheme()
+	if err := mirrorv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	r := &ArtifactMirrorReconciler{Client: fake.NewClientBuilder().WithScheme(s).Build(), Namespace: opsNS}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "gone", Name: "m"}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := testutilCount("gone"); n != 0 {
+		t.Errorf("series kept: %d", n)
+	}
+}
+
+func testutilCount(ns string) int {
+	mfs, _ := metrics.Registry.Gather()
+	n := 0
+	for _, mf := range mfs {
+		if mf.GetName() != "tagwarden_mirror_selected_tags" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "namespace" && l.GetValue() == ns {
+					n++
+				}
+			}
+		}
+	}
+	return n
 }
