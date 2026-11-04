@@ -29,6 +29,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -292,6 +293,10 @@ type Spec struct {
 	// GCP is required when a registry uses AuthGCPWorkloadIdentity.
 	GCP *GCP `json:"gcp,omitempty"`
 
+	// Gate is set for a gated generated mirror only. Without it the Job
+	// runs exactly as an ungated one.
+	Gate *Gate `json:"gate,omitempty"`
+
 	// SourceRepo, TargetRepo and DeniedPrefixes are set by Decode.
 	SourceRepo     name.Repository `json:"-"`
 	TargetRepo     name.Repository `json:"-"`
@@ -313,6 +318,11 @@ func Decode(r io.Reader) (Spec, error) {
 	}
 	if err := s.validate(); err != nil {
 		return Spec{}, fmt.Errorf("spec: %w", err)
+	}
+	if s.Gate != nil {
+		if err := s.Gate.validate(s.TargetRepo); err != nil {
+			return Spec{}, fmt.Errorf("spec: gate: %w", err)
+		}
 	}
 	return s, nil
 }
@@ -456,8 +466,12 @@ func AuthKeyHost(key string) string {
 // MaxReportSize is the Kubernetes limit for a termination message.
 const MaxReportSize = 4096
 
-// ReportVersion is the version of Report.
-const ReportVersion = 1
+// Report versions. Ungated Jobs write ReportVersion as before; gated Jobs
+// write ReportVersionGate, which adds the gate fields.
+const (
+	ReportVersion     = 1
+	ReportVersionGate = 2
+)
 
 // SyncedTag is a tag on the target and the digest it was copied by.
 type SyncedTag struct {
@@ -478,7 +492,53 @@ type Report struct {
 	ErrorsTruncated bool        `json:"errorsTruncated,omitempty"`
 	// Truncated means Synced was cut to fit the message.
 	Truncated bool `json:"truncated,omitempty"`
+
+	// Version 2. Counts of tags per verdict, and of tags the gate did not
+	// copy.
+	Findings   int `json:"findings,omitempty"`
+	Accepted   int `json:"accepted,omitempty"`
+	ScanErrors int `json:"scanErrors,omitempty"`
+	Blocked    int `json:"blocked,omitempty"`
+	// Gate is the run-level scanner check: GateOK or a scan error reason.
+	// Empty when the run had nothing to scan.
+	Gate string `json:"gate,omitempty"`
+	// JavaScanned is set on every gated run.
+	JavaScanned *bool `json:"javaScanned,omitempty"`
+	// TagFindings lists the tags with verdict findings or scan-error,
+	// newest first. FindingsTruncated means it was cut to fit.
+	TagFindings       []TagFinding `json:"tagFindings,omitempty"`
+	FindingsTruncated bool         `json:"findingsTruncated,omitempty"`
+	// Judged lists the tags this run gave a final verdict (passed,
+	// accepted or findings), never scan errors. The controller keeps them
+	// in a status field of their own and passes them back in Gate.Judged.
+	// JudgedTruncated means it was cut; the cut tags are scanned again.
+	Judged          []SyncedTag `json:"judged,omitempty"`
+	JudgedTruncated bool        `json:"judgedTruncated,omitempty"`
+	// JudgedFingerprint is Gate.Fingerprint of the run, set on every gated
+	// run. The controller stores it with Judged and passes it back in
+	// Gate.JudgedFingerprint.
+	JudgedFingerprint string `json:"judgedFingerprint,omitempty"`
 }
+
+// TagFinding is the gate result of one tag with findings or a scan error.
+type TagFinding struct {
+	Tag             string                  `json:"tag"`
+	Digest          string                  `json:"digest"`
+	Verdict         v1alpha1.FindingVerdict `json:"verdict"`
+	Outcome         v1alpha1.FindingOutcome `json:"outcome"`
+	PresentOnTarget bool                    `json:"presentOnTarget,omitempty"`
+	Severity        v1alpha1.Severity       `json:"severity,omitempty"`
+	Counts          v1alpha1.SeverityCounts `json:"counts,omitzero"`
+	// TopIDs are up to MaxReportIDs IDs, worst first.
+	TopIDs    []string `json:"topIDs,omitempty"`
+	ScanError string   `json:"scanError,omitempty"`
+	// DBUpdatedAt is the server DB time, RFC 3339, when the server was checked.
+	DBUpdatedAt string    `json:"dbUpdatedAt,omitempty"`
+	ScannedAt   time.Time `json:"scannedAt"`
+}
+
+// MaxReportIDs caps TagFinding.TopIDs.
+const MaxReportIDs = 3
 
 var (
 	tagPattern    = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`)
@@ -487,8 +547,9 @@ var (
 
 // ParseReport decodes a termination message. The message comes from the
 // Job, so it is untrusted: it must fit MaxReportSize, have version
-// ReportVersion, non-negative counts and valid tags and digests. Unknown
-// fields are ignored so that a newer Job can add some.
+// ReportVersion or ReportVersionGate, non-negative counts and valid tags,
+// digests and gate fields. Unknown fields are ignored so that a newer Job
+// can add some.
 func ParseReport(msg string) (Report, error) {
 	if len(msg) > MaxReportSize {
 		return Report{}, fmt.Errorf("report: larger than %d bytes", MaxReportSize)
@@ -497,15 +558,36 @@ func ParseReport(msg string) (Report, error) {
 	if err := json.Unmarshal([]byte(msg), &r); err != nil {
 		return Report{}, errors.New("report: not valid JSON")
 	}
-	if r.V != ReportVersion {
-		return Report{}, fmt.Errorf("report: version %d, want %d", r.V, ReportVersion)
+	if r.V != ReportVersion && r.V != ReportVersionGate {
+		return Report{}, fmt.Errorf("report: version %d, want %d or %d", r.V, ReportVersion, ReportVersionGate)
 	}
-	if min(r.Copied, r.Skipped, r.Mutated, r.Failed) < 0 {
+	if min(r.Copied, r.Skipped, r.Mutated, r.Failed, r.Findings, r.Accepted, r.ScanErrors, r.Blocked) < 0 {
 		return Report{}, errors.New("report: negative count")
 	}
 	for _, s := range r.Synced {
 		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
 			return Report{}, errors.New("report: invalid synced entry")
+		}
+	}
+	for _, s := range r.Judged {
+		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
+			return Report{}, errors.New("report: invalid judged entry")
+		}
+	}
+	if r.JudgedFingerprint != "" && !fingerprintPattern.MatchString(r.JudgedFingerprint) {
+		return Report{}, errors.New("report: invalid judged fingerprint")
+	}
+	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || r.JudgedFingerprint != "") {
+		return Report{}, errors.New("report: gate fields in version 1")
+	}
+	switch r.Gate {
+	case "", GateOK, GateDBStale, GateScannerUnavailable, GateVersionMismatch:
+	default:
+		return Report{}, errors.New("report: invalid gate")
+	}
+	for _, f := range r.TagFindings {
+		if err := f.validate(); err != nil {
+			return Report{}, fmt.Errorf("report: invalid tag finding: %w", err)
 		}
 	}
 	return r, nil
@@ -544,4 +626,37 @@ func ScannerURL(raw, clusterDomain string) (string, bool, error) {
 	}
 	u.Host = host
 	return u.String(), inCluster, nil
+}
+
+func (f TagFinding) validate() error {
+	if !tagPattern.MatchString(f.Tag) || !digestPattern.MatchString(f.Digest) {
+		return errors.New("tag or digest")
+	}
+	switch {
+	case f.Verdict == v1alpha1.VerdictFindings && f.ScanError == "":
+	case f.Verdict == v1alpha1.VerdictScanError && slices.Contains([]string{GateDBStale, GateScannerUnavailable, GateVersionMismatch, GateScanFailed}, f.ScanError):
+	default:
+		return errors.New("verdict")
+	}
+	if f.Outcome != v1alpha1.OutcomeCopied && f.Outcome != v1alpha1.OutcomeBlocked {
+		return errors.New("outcome")
+	}
+	switch f.Severity {
+	case "", v1alpha1.SeverityCritical, v1alpha1.SeverityHigh, v1alpha1.SeverityMedium, v1alpha1.SeverityLow, v1alpha1.SeverityUnknown:
+	default:
+		return errors.New("severity")
+	}
+	c := f.Counts
+	if min(c.Critical, c.High, c.Medium, c.Low, c.Unknown) < 0 {
+		return errors.New("negative count")
+	}
+	if len(f.TopIDs) > MaxReportIDs || slices.ContainsFunc(f.TopIDs, func(id string) bool { return !VulnID(id) }) {
+		return errors.New("topIDs")
+	}
+	if f.DBUpdatedAt != "" {
+		if _, err := time.Parse(time.RFC3339, f.DBUpdatedAt); err != nil {
+			return errors.New("dbUpdatedAt")
+		}
+	}
+	return nil
 }

@@ -244,19 +244,37 @@ func itoa(i int) string {
 	return s
 }
 
-func TestSkipPlatform(t *testing.T) {
+func TestSkipManifest(t *testing.T) {
+	const (
+		intoto = "application/vnd.in-toto+json"
+		dsse   = "application/vnd.dsse.envelope.v1+json"
+		tarGz  = "application/vnd.oci.image.layer.v1.tar+gzip"
+		sig    = "application/vnd.dev.cosign.simplesigning.v1+json"
+		spdx   = "application/spdx+json"
+	)
 	tests := []struct {
-		os, arch string
-		want     bool
+		layers         []string
+		skip, artifact bool
 	}{
-		{linux, amd64, false},
-		{unk, unk, true},
-		{unk, amd64, false},
-		{linux, unk, false},
+		{nil, false, false},
+		{[]string{intoto}, true, true},
+		{[]string{intoto, dsse}, true, true},
+		{[]string{intoto, tarGz}, false, false},
+		{[]string{tarGz}, false, false},
+		{[]string{sig}, false, true},
+		{[]string{spdx, sig}, false, true},
+		{[]string{sig, "application/vnd.docker.image.rootfs.diff.tar.gzip"}, false, false},
+		{[]string{"application/jose+json"}, false, true},
+		{[]string{"application/cose"}, false, false},
+		{[]string{"text/spdx"}, false, false},
+		{[]string{"application/vnd.cyclonedx+xml"}, false, false},
 	}
 	for _, tc := range tests {
-		if got := SkipPlatform(tc.os, tc.arch); got != tc.want {
-			t.Errorf("%v: got %v", tc, got)
+		if got := SkipManifest(tc.layers); got != tc.skip {
+			t.Errorf("SkipManifest(%v) = %v", tc.layers, got)
+		}
+		if got := SupplyChainArtifact(tc.layers); got != tc.artifact {
+			t.Errorf("SupplyChainArtifact(%v) = %v", tc.layers, got)
 		}
 	}
 }

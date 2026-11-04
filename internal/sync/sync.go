@@ -24,8 +24,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"os"
 	"slices"
 	"time"
 	"unicode/utf8"
@@ -37,6 +39,7 @@ import (
 
 	"github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/tags"
+	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
 // ErrArtifactTooLarge means the config and layers of an artifact add up to
@@ -69,6 +72,8 @@ type Request struct {
 	// summed over every manifest of an index, and separately the bytes of
 	// the referrers copied for it. Zero means no limit.
 	MaxArtifactSize int64
+	// Gate scans tags before they are copied. Nil copies without a scan.
+	Gate *Gate
 }
 
 // Artifact is one tag and the digest it resolved to. For a mutated tag
@@ -82,6 +87,12 @@ type Artifact struct {
 	// Referrers counts the referrers and cosign tag-scheme artifacts of the
 	// digest that the target holds after the run.
 	Referrers int
+	// Scan is the gate outcome; nil when the tag was not scanned.
+	Scan *Scan
+	// SkippedReferrers lists the digests of referrers and cosign tag-scheme
+	// artifacts the gate did not copy because they are not only
+	// signatures, attestations or SBOMs.
+	SkippedReferrers []string
 }
 
 // Result lists what happened to each selected tag. Overwritten mutated tags
@@ -93,14 +104,22 @@ type Result struct {
 	// them, newest version first.
 	Selected                         []string
 	Copied, Skipped, Mutated, Failed []Artifact
-	Errors                           []string
+	// Blocked lists the tags the gate did not copy.
+	Blocked []Artifact
+	Errors  []string
+	// Gate is the scanner check of a gated run, syncspec.GateOK or a scan
+	// error reason; empty when nothing was scanned.
+	Gate string
+	// JavaScanned means the Java DB was used, so JAR files were scanned.
+	JavaScanned bool
 }
 
 type syncer struct {
 	req       Request
 	platforms []v1.Platform
 	src, dst  *remote.Puller
-	push      *remote.Pusher
+	pusher    *remote.Pusher
+	gate      *gateState
 }
 
 // Run lists the source tags, selects them with r.Policy and copies each one
@@ -142,7 +161,16 @@ func Run(ctx context.Context, r Request) (Result, error) {
 		}
 		stamp(&res, tag, time.Now())
 	}
+	if s.gate != nil {
+		res.Gate, res.JavaScanned = s.gate.reason, s.gate.javaScanned
+		if s.gate.root != nil {
+			_ = s.gate.root.Close()
+		}
+	}
 	var errs []error
+	if err := blockedError(&res); err != nil {
+		errs = append(errs, err)
+	}
 	if mutated {
 		errs = append(errs, ErrTagMutated)
 	}
@@ -155,7 +183,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 // stamp sets the finish time of tag in every list. A tag is processed
 // once, so its entries are the last ones appended.
 func stamp(res *Result, tag string, t time.Time) {
-	for _, as := range [][]Artifact{res.Copied, res.Skipped, res.Mutated, res.Failed} {
+	for _, as := range [][]Artifact{res.Copied, res.Skipped, res.Mutated, res.Failed, res.Blocked} {
 		if n := len(as); n > 0 && as[n-1].Tag == tag {
 			as[n-1].Finished = t
 		}
@@ -174,6 +202,9 @@ func newSyncer(r Request) (*syncer, error) {
 		return nil, fmt.Errorf("sync: unknown onTagMutation %q", r.OnTagMutation)
 	}
 	s := &syncer{req: r}
+	if r.Gate != nil {
+		s.gate = &gateState{Gate: *r.Gate}
+	}
 	for _, p := range r.RequiredPlatforms {
 		pl, err := v1.ParsePlatform(p)
 		if err != nil {
@@ -189,7 +220,7 @@ func newSyncer(r Request) (*syncer, error) {
 	if s.dst, err = remote.NewPuller(r.TargetOpts...); err != nil {
 		return nil, err
 	}
-	if s.push, err = remote.NewPusher(r.TargetOpts...); err != nil {
+	if s.pusher, err = remote.NewPusher(r.TargetOpts...); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -236,14 +267,28 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 	case err != nil:
 		return fmt.Errorf("check target tag: %w", err)
 	case dst.Digest == src.Digest:
-		if a.Referrers, err = s.referrers(ctx, src.Digest); err != nil {
-			return err
+		if s.gate != nil && s.gate.Judged[tag] != a.Digest {
+			if a.Scan, err = s.scanPresent(ctx, s.src, s.req.Source, a.Digest); err != nil {
+				return err
+			}
+		}
+		// A blocked tag gets nothing more, also when it is already there.
+		if a.Scan == nil || !a.Scan.Block {
+			if a.Referrers, err = s.referrers(ctx, src.Digest, &a.SkippedReferrers); err != nil {
+				return err
+			}
 		}
 		res.Skipped = append(res.Skipped, a)
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationIgnore:
 		// Report what the target holds, not the upstream digest.
 		a.Digest, a.UpstreamDigest = dst.Digest.String(), a.Digest
+		// The target digest is what nodes pull, so the gate judges it.
+		if s.gate != nil && s.gate.Judged[tag] != a.Digest {
+			if a.Scan, err = s.scanPresent(ctx, s.dst, s.req.Target, a.Digest); err != nil {
+				return err
+			}
+		}
 		res.Skipped = append(res.Skipped, a)
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationOverwrite:
@@ -260,16 +305,27 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 	if err := s.checkPlatforms(desc); err != nil {
 		return err
 	}
-	if err := s.checkSize(ctx, desc); err != nil {
+	if err := s.checkSize(ctx, s.src, s.req.Source, desc); err != nil {
 		return err
 	}
-	if err := s.copy(ctx, desc); err != nil {
+	var from remote.Taggable = desc
+	if s.gate != nil {
+		defer func() { _ = os.RemoveAll(s.gate.LayoutDir) }()
+		if a.Scan, from, err = s.scan(ctx, desc, false); err != nil {
+			return err
+		}
+		if a.Scan.Block {
+			res.Blocked = append(res.Blocked, a)
+			return nil
+		}
+	}
+	if err := s.push(ctx, desc.Digest, from); err != nil {
 		return err
 	}
-	if a.Referrers, err = s.referrers(ctx, desc.Digest); err != nil {
+	if a.Referrers, err = s.referrers(ctx, desc.Digest, &a.SkippedReferrers); err != nil {
 		return err
 	}
-	if err := s.push.Put(ctx, s.req.Target.Tag(tag), desc); err != nil {
+	if err := s.pusher.Put(ctx, s.req.Target.Tag(tag), desc); err != nil {
 		return fmt.Errorf("tag target: %w", err)
 	}
 	if overwrite {
@@ -320,11 +376,11 @@ func (s *syncer) checkPlatforms(desc *remote.Descriptor) error {
 
 // checkSize refuses an artifact larger than MaxArtifactSize before anything
 // of it is copied (threat model T10).
-func (s *syncer) checkSize(ctx context.Context, desc *remote.Descriptor) error {
+func (s *syncer) checkSize(ctx context.Context, p *remote.Puller, repo name.Repository, desc *remote.Descriptor) error {
 	if s.req.MaxArtifactSize <= 0 {
 		return nil
 	}
-	n, err := s.size(ctx, desc)
+	n, err := s.size(ctx, p, repo, desc)
 	if err != nil {
 		return err
 	}
@@ -342,7 +398,7 @@ func (s *syncer) checkReferrerSize(ctx context.Context, desc *remote.Descriptor,
 	if s.req.MaxArtifactSize <= 0 {
 		return nil
 	}
-	n, err := s.size(ctx, desc)
+	n, err := s.size(ctx, s.src, s.req.Source, desc)
 	if err != nil {
 		return err
 	}
@@ -357,7 +413,7 @@ func (s *syncer) checkReferrerSize(ctx context.Context, desc *remote.Descriptor,
 // of an index, as the manifests declare them. ggcr checks each blob
 // against its declared size when it copies it. The sum saturates instead
 // of overflowing.
-func (s *syncer) size(ctx context.Context, desc *remote.Descriptor) (int64, error) {
+func (s *syncer) size(ctx context.Context, p *remote.Puller, repo name.Repository, desc *remote.Descriptor) (int64, error) {
 	var total int64
 	add := func(n int64) error {
 		if n < 0 {
@@ -372,11 +428,11 @@ func (s *syncer) size(ctx context.Context, desc *remote.Descriptor) (int64, erro
 			return 0, err
 		}
 		for _, m := range im.Manifests {
-			child, err := s.src.Get(ctx, s.req.Source.Digest(m.Digest.String()))
+			child, err := p.Get(ctx, repo.Digest(m.Digest.String()))
 			if err != nil {
-				return 0, fmt.Errorf("fetch source manifest %s: %w", m.Digest, err)
+				return 0, fmt.Errorf("fetch manifest %s: %w", m.Digest, err)
 			}
-			n, err := s.size(ctx, child)
+			n, err := s.size(ctx, p, repo, child)
 			if err != nil {
 				return 0, err
 			}
@@ -409,17 +465,22 @@ func normalize(p v1.Platform) v1.Platform {
 	return p
 }
 
-// copy writes desc to the target by digest. ggcr keeps the original manifest
-// bytes, and the target digest is checked afterwards.
+// copy writes desc to the target by digest.
 func (s *syncer) copy(ctx context.Context, desc *remote.Descriptor) error {
-	ref := s.req.Target.Digest(desc.Digest.String())
-	if err := s.push.Push(ctx, ref, desc); err != nil {
-		return fmt.Errorf("copy %s: %w", desc.Digest, err)
+	return s.push(ctx, desc.Digest, desc)
+}
+
+// push writes t to the target as digest d. ggcr keeps the original manifest
+// bytes, and the target digest is checked afterwards.
+func (s *syncer) push(ctx context.Context, d v1.Hash, t remote.Taggable) error {
+	ref := s.req.Target.Digest(d.String())
+	if err := s.pusher.Push(ctx, ref, t); err != nil {
+		return fmt.Errorf("copy %s: %w", d, err)
 	}
 	// ggcr rejects a response for a digest reference whose digest differs,
 	// so a successful resolve proves the target holds the same digest.
 	if _, err := resolve(ctx, s.dst, ref); err != nil {
-		return fmt.Errorf("verify %s: %w", desc.Digest, err)
+		return fmt.Errorf("verify %s: %w", d, err)
 	}
 	return nil
 }
@@ -427,7 +488,7 @@ func (s *syncer) copy(ctx context.Context, desc *remote.Descriptor) error {
 // referrers copies the OCI referrers of d and the cosign tag-scheme
 // artifacts sha256-<hex>.sig, .att and .sbom that the target lacks. It
 // returns how many the target holds afterwards.
-func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
+func (s *syncer) referrers(ctx context.Context, d v1.Hash, skipped *[]string) (int, error) {
 	opts := append(slices.Clone(s.req.SourceOpts), remote.Reuse(s.src), remote.WithContext(ctx))
 	idx, err := remote.Referrers(s.req.Source.Digest(d.String()), opts...)
 	if err != nil {
@@ -462,8 +523,16 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		if err := json.Unmarshal(desc.Manifest, &mf); err != nil || mf.Subject == nil || mf.Subject.Digest != d {
 			continue
 		}
+		if !s.ungatedArtifact(desc) {
+			*skipped = append(*skipped, desc.Digest.String())
+			continue
+		}
 		if err := s.checkReferrerSize(ctx, desc, &budget); err != nil {
 			return n, err
+		}
+		if !s.jsonArtifact(desc) {
+			*skipped = append(*skipped, desc.Digest.String())
+			continue
 		}
 		if err := s.copy(ctx, desc); err != nil {
 			return n, err
@@ -491,13 +560,21 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash) (int, error) {
 		if err != nil {
 			return n, fmt.Errorf("fetch %s: %w", tag, err)
 		}
+		if !s.ungatedArtifact(desc) {
+			*skipped = append(*skipped, desc.Digest.String())
+			continue
+		}
 		if err := s.checkReferrerSize(ctx, desc, &budget); err != nil {
 			return n, err
+		}
+		if !s.jsonArtifact(desc) {
+			*skipped = append(*skipped, desc.Digest.String())
+			continue
 		}
 		if err := s.ensure(ctx, desc); err != nil {
 			return n, err
 		}
-		if err := s.push.Put(ctx, s.req.Target.Tag(tag), desc); err != nil {
+		if err := s.pusher.Put(ctx, s.req.Target.Tag(tag), desc); err != nil {
 			return n, fmt.Errorf("tag %s: %w", tag, err)
 		}
 		n++
@@ -551,4 +628,87 @@ func short(err error) string {
 		cut--
 	}
 	return msg[:cut] + "..."
+}
+
+// ungatedArtifact reports whether a referrer or cosign tag-scheme artifact
+// may be copied: always without the gate; with it, only an image manifest
+// whose layers are all signatures, attestations or SBOMs. Anything else,
+// such as a runnable image tagged sha256-<hex>.sig, would bypass the scan.
+func (s *syncer) ungatedArtifact(desc *remote.Descriptor) bool {
+	if s.gate == nil {
+		return true
+	}
+	if !desc.MediaType.IsImage() {
+		return false
+	}
+	m, err := v1.ParseManifest(bytes.NewReader(desc.Manifest))
+	return err == nil && vuln.SupplyChainArtifact(layerTypes(m))
+}
+
+// jsonArtifact checks the content behind ungatedArtifact's labels: with the
+// gate on, every layer must be JSON, read from the source after the size
+// check bounded it.
+func (s *syncer) jsonArtifact(desc *remote.Descriptor) bool {
+	if s.gate == nil {
+		return true
+	}
+	img, err := desc.Image()
+	if err != nil {
+		return false
+	}
+	m, err := img.Manifest()
+	if err != nil {
+		return false
+	}
+	return jsonLayers(m, func(h v1.Hash) (io.ReadCloser, error) {
+		l, err := img.LayerByDigest(h)
+		if err != nil {
+			return nil, err
+		}
+		return l.Compressed()
+	})
+}
+
+func layerTypes(m *v1.Manifest) []string {
+	out := make([]string, 0, len(m.Layers))
+	for _, l := range m.Layers {
+		out = append(out, string(l.MediaType))
+	}
+	return out
+}
+
+// scanPresent scans a digest that is already on the target, read from p
+// and repo, so that a mirror without a judged verdict still reports it.
+// Nothing is pushed.
+func (s *syncer) scanPresent(ctx context.Context, p *remote.Puller, repo name.Repository, digest string) (*Scan, error) {
+	desc, err := p.Get(ctx, repo.Digest(digest))
+	if err != nil {
+		return nil, fmt.Errorf("fetch manifest: %w", err)
+	}
+	if err := s.checkSize(ctx, p, repo, desc); err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(s.gate.LayoutDir) }()
+	sc, _, err := s.scan(ctx, desc, true)
+	return sc, err
+}
+
+// blockedError reports tags blocked because they could not be judged, and
+// lists them in res.Errors. Tags blocked for findings are the gate working
+// and no error.
+func blockedError(res *Result) error {
+	var reasons []string
+	for _, a := range res.Blocked {
+		if a.Scan.Verdict != vuln.ScanError {
+			continue
+		}
+		res.Errors = append(res.Errors, fmt.Sprintf("%s: blocked: scan error %s: %s", a.Tag, a.Scan.Reason, a.Scan.Detail))
+		if !slices.Contains(reasons, a.Scan.Reason) {
+			reasons = append(reasons, a.Scan.Reason)
+		}
+	}
+	if len(reasons) == 0 {
+		return nil
+	}
+	return &ScanBlockedError{Reasons: reasons}
 }
