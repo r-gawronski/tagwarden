@@ -77,7 +77,9 @@ const (
 // /bin/sh -c. It handles one request at a time and only names that are 64
 // lower-case hex characters. The token comes from TRIVY_TOKEN. The hex check
 // lists the characters: a range such as [0-9a-f] depends on the locale and
-// can match upper case.
+// can match upper case. The sync container can write the working directory
+// /scan, so --config and --ignorefile point at /dev/null: a planted
+// trivy.yaml or .trivyignore there is never read.
 const SidecarScript = `set -u
 cd /scan || exit 1
 mkdir -p req out cache
@@ -97,7 +99,7 @@ while :; do
     trivy image --server "$TAGWARDEN_SCANNER_URL" --token-header Trivy-Token \
       --input "/work/layout@sha256:$h" --scanners vuln \
       --skip-db-update --skip-java-db-update --skip-version-check --disable-telemetry \
-      --timeout "$TAGWARDEN_SCANNER_TIMEOUT" "$java" $ca \
+      --timeout "$TAGWARDEN_SCANNER_TIMEOUT" --config /dev/null --ignorefile /dev/null "$java" $ca \
       --format template --template "$TAGWARDEN_REPORT_TEMPLATE" > "out/$h.json"
     echo $? > "out/$h.exit.tmp"
     mv -f "out/$h.exit.tmp" "out/$h.exit"
@@ -266,10 +268,11 @@ func (g *Gate) VulnExceptions() []vuln.Exception {
 }
 
 // Fingerprint is a stable hash of everything that decides a verdict: the
-// policy, the exceptions active at now (with their scope and expiry) and
-// the scanner major.minor. A judged verdict holds only under the same
-// fingerprint, so an expired or removed exception, a stricter policy or a
-// scanner upgrade makes every tag be judged again.
+// policy, the exceptions active at now (with their scope and expiry), the
+// scanner major.minor and the javaDB mode. A judged verdict holds only
+// under the same fingerprint, so an expired or removed exception, a
+// stricter policy, a scanner upgrade or turning on the Java DB makes every
+// tag be judged again.
 func (g *Gate) Fingerprint(now time.Time) string {
 	var excs []GateException
 	for _, e := range g.Exceptions {
@@ -286,10 +289,10 @@ func (g *Gate) Fingerprint(now time.Time) string {
 	b, _ := json.Marshal(struct {
 		Action, Severity, OnScanError string
 		IgnoreUnfixed, IncludeUnknown bool
-		Scanner                       string
+		Scanner, JavaDB               string
 		Exceptions                    []GateException
 	}{string(g.Action), string(g.Severity), string(g.OnScanError), g.IgnoreUnfixed, g.IncludeUnknown,
-		strings.Join(v[:min(2, len(v))], "."), excs})
+		strings.Join(v[:min(2, len(v))], "."), string(g.Scanner.JavaDB), excs})
 	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
 
