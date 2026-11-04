@@ -1,0 +1,20 @@
+# Gated sync pods also reach the Trivy server. The sync-egress policy of
+# infra.yaml (DNS, proxy, target only) would block it, and the chart's
+# Trivy policy only opens the ingress side. Pods carry the label
+# tagwarden.dev/scanner: trivy when the Job has the scanner sidecar.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sync-egress-scanner
+  namespace: tagwarden-system
+spec:
+  podSelector:
+    matchLabels: {tagwarden.dev/scanner: trivy}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: trivy
+      ports:
+        - {port: 4954, protocol: TCP}

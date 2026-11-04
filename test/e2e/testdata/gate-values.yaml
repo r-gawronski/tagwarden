@@ -1,0 +1,75 @@
+# Helm values of the vulnerability gate e2e tests: the platform feeds target
+# that mirrors the Trivy DB, the gated target for generated mirrors and one
+# user mirror. Trivy itself is switched on by the test (see gateHelm), after
+# the feeds have synced. Secrets and namespaces exist before the upgrade.
+networkPolicy: {enabled: true}
+targets:
+  # The platform team's target. Only feeds belong here: every tag may move
+  # (onTagMutation Overwrite), see "DB distribution" in the design.
+  - name: scanner-feeds
+    spec:
+      registry: target.e2e-infra.svc.cluster.local:5000
+      credentialsSecretRef: {name: target-push}
+      caBundleSecretRef: {name: e2e-ca}
+      proxy:
+        httpsProxy: http://proxy.e2e-infra.svc.cluster.local:3128
+        noProxy: [target.e2e-infra.svc.cluster.local]
+        credentialsSecretRef: {name: proxy-auth}
+      allowedSources: [ghcr.io]
+      projects:
+        - name: platform
+          namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: tagwarden-system}
+      policy: {onTagMutation: Overwrite}
+      limits: {minSyncInterval: 1h, maxArtifactSize: 2Gi}
+  # The gated target. The scenarios change autoMirror.vulnerabilityGate with
+  # kubectl patch; the defaults here are the permissive ones.
+  - name: e2e-gate
+    spec:
+      registry: target.e2e-infra.svc.cluster.local:5000
+      credentialsSecretRef: {name: target-push}
+      caBundleSecretRef: {name: e2e-ca}
+      proxy:
+        httpsProxy: http://proxy.e2e-infra.svc.cluster.local:3128
+        noProxy: [target.e2e-infra.svc.cluster.local]
+        credentialsSecretRef: {name: proxy-auth}
+      sourceCABundles:
+        - registry: source.example.internal:5000
+          secretRef: {name: e2e-ca}
+      allowedSources: [docker.io, registry.k8s.io, source.example.internal:5000]
+      projects:
+        - name: auto
+          namespaceSelector:
+            matchLabels: {e2e.tagwarden.dev/team: "true"}
+        - name: mirror
+          namespaceSelector:
+            matchLabels: {e2e.tagwarden.dev/team: "true"}
+          allowRepositoryOverride: true
+      autoMirror:
+        enabled: true
+        project: auto
+        schedule: "0 0 1 1 *"
+        vulnerabilityGate:
+          enabled: true
+          action: Report
+          onScanError: Report
+          severity: Critical
+mirrors:
+  - name: trivy-db
+    namespace: tagwarden-system
+    spec:
+      targetRef: scanner-feeds
+      schedule: "0 0 1 1 *"
+      source: {registry: ghcr.io, repository: aquasecurity/trivy-db}
+      target: {project: platform}
+      tags: {tags: ["2"]}
+  # A user mirror on the gated target: never scanned, must keep syncing
+  # while the scanner is down.
+  - name: user-app
+    namespace: e2e-team
+    spec:
+      targetRef: e2e-gate
+      schedule: "0 0 1 1 *"
+      source: {registry: source.example.internal:5000, repository: e2e/app}
+      target: {project: mirror, repository: e2e/user-app}
+      tags: {keepLatest: 1}

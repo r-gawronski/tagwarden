@@ -19,7 +19,6 @@ limitations under the License.
 package e2e
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -43,7 +42,7 @@ import (
 // The mirror tests run a source registry, a target registry and a Squid
 // proxy in e2e-infra. NetworkPolicies let the sync pods reach only DNS, the
 // proxy and the target, and only the proxy reaches the source.
-var _ = Describe("Mirroring", Ordered, func() {
+var _ = Describe("Mirroring", Ordered, Label("mirror"), func() {
 	var (
 		ca               *testCA
 		srcRepo, dstRepo name.Repository
@@ -58,39 +57,8 @@ var _ = Describe("Mirroring", Ordered, func() {
 		removeLeftovers()
 		ca = newTestCA()
 
-		By("deploying the registries, the proxy and the NetworkPolicies")
-		infra, err := os.ReadFile("test/e2e/testdata/infra.yaml")
-		Expect(err).NotTo(HaveOccurred())
-		kubectlApply(infra)
-		hosts := map[string]string{"source": "source.example.internal", "target": "target.e2e-infra.svc.cluster.local"}
-		for svc, host := range hosts {
-			crt, key := ca.leaf(host)
-			applySecret(infraNamespace, svc+"-tls", corev1.SecretTypeTLS,
-				map[string][]byte{corev1.TLSCertKey: crt, corev1.TLSPrivateKeyKey: key})
-		}
-
-		By("creating the target Secrets in the operator namespace")
-		applySecret(namespace, "e2e-ca", corev1.SecretTypeOpaque, map[string][]byte{"ca.crt": ca.pem})
-		auth := base64.StdEncoding.EncodeToString([]byte(e2eUser + ":" + e2ePassword))
-		dockerConfig, err := json.Marshal(map[string]any{
-			"auths": map[string]any{targetHost: map[string]string{"auth": auth}},
-		})
-		Expect(err).NotTo(HaveOccurred())
-		applySecret(namespace, "target-push", corev1.SecretTypeDockerConfigJson,
-			map[string][]byte{corev1.DockerConfigJsonKey: dockerConfig})
-		applySecret(namespace, "proxy-auth", corev1.SecretTypeBasicAuth, map[string][]byte{
-			corev1.BasicAuthUsernameKey: []byte(e2eUser), corev1.BasicAuthPasswordKey: []byte(e2ePassword),
-		})
-
-		By("creating the tenant namespaces")
-		kubectlApply([]byte(fmt.Sprintf(`{"apiVersion":"v1","kind":"List","items":[`+
-			`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":%q,"labels":{"e2e.tagwarden.dev/team":"true"}}},`+
-			`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":%q}}]}`, e2eTeam, e2eOther)))
-
-		By("waiting for the registries and the proxy")
-		_, err = utils.Run(exec.Command("kubectl", "wait", "deployment", "--all", "-n", infraNamespace,
-			"--for=condition=Available", "--timeout=5m"))
-		Expect(err).NotTo(HaveOccurred())
+		var err error
+		deployInfra(ca)
 
 		By("seeding the source with three releases")
 		srcRepo, err = name.NewRepository(portForward("source") + "/e2e/app")
