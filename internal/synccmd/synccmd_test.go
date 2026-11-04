@@ -208,11 +208,11 @@ func (e *env) write(t *testing.T, path, content string) {
 }
 
 // run returns the exit code, stdout and the termination message.
-func (e *env) run(t *testing.T) (int, string, string) {
+func (e *env) run(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	var out bytes.Buffer
 	term := filepath.Join(e.dir, "termination-log")
-	code := run(context.Background(), []string{"--spec", e.spec}, &out, term, e.opts, func(k string) string { return e.vars[k] })
+	code := run(context.Background(), append([]string{"--spec", e.spec}, args...), &out, term, e.opts, func(k string) string { return e.vars[k] })
 	msg, err := os.ReadFile(term) //nolint:gosec // test temp dir
 	if err != nil {
 		t.Fatal(err)

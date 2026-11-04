@@ -52,12 +52,21 @@ func newGate(spec syncspec.Spec, p options) (*sync.Gate, error) {
 	}
 	// Verdicts judged under another policy, exception set or scanner minor
 	// version do not hold: judge every tag again.
-	fp := g.Fingerprint(time.Now())
+	// With a rescan interval, a pair judged longer ago is scanned again,
+	// which bounds a forged judged pair (threat model T12).
+	now := time.Now()
+	fp := g.Fingerprint(now)
 	judged := map[string]string{}
 	if g.JudgedFingerprint == fp {
 		for _, r := range g.Judged {
-			judged[r.Tag] = r.Digest
+			if g.Holds(r, now) {
+				judged[r.Tag] = r.Digest
+			}
 		}
+	}
+	untaggable := map[string]bool{}
+	for _, t := range g.Untaggable {
+		untaggable[t] = true
 	}
 	out := &sync.Gate{
 		Policy:      g.Policy(),
@@ -73,9 +82,11 @@ func newGate(spec syncspec.Spec, p options) (*sync.Gate, error) {
 			Transport:     t,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		Version:  g.Scanner.Version,
-		MaxDBAge: g.MaxDBAge.Duration,
-		Timeout:  g.Scanner.Timeout.Duration,
+		Version:    g.Scanner.Version,
+		MaxDBAge:   g.MaxDBAge.Duration,
+		Timeout:    g.Scanner.Timeout.Duration,
+		Untag:      g.OnVulnerableTag == v1alpha1.OnVulnerableTagUntag && g.Action == v1alpha1.GateActionBlock,
+		Untaggable: untaggable,
 	}
 	if g.Scanner.JavaDB == v1alpha1.JavaDBPerJob {
 		tag, err := name.NewTag(g.Scanner.JavaDBRepository, name.StrictValidation)
@@ -112,15 +123,18 @@ var severityNames = map[vuln.Severity]v1alpha1.Severity{
 	vuln.Low: v1alpha1.SeverityLow, vuln.Unknown: v1alpha1.SeverityUnknown,
 }
 
-// gateSummary adds the version 2 fields of a gated run to r.
-func gateSummary(r *report, res sync.Result, fingerprint string) {
+// gateSummary adds the version 2 fields of a gated run to r. In a
+// re-scan report a tag with findings is Copied while it stays on the
+// target and Blocked once untagged, and carries the rescan action.
+func gateSummary(r *report, res sync.Result, fingerprint string, rescan bool) {
 	r.V = syncspec.ReportVersionGate
+	r.Rescan = rescan
 	r.JudgedFingerprint = fingerprint
 	r.Gate = res.Gate
 	r.JavaScanned = &res.JavaScanned
 	r.Blocked = len(res.Blocked)
 	scans := map[string]sync.Artifact{}
-	for _, as := range [][]sync.Artifact{res.Skipped, res.Copied, res.Blocked} {
+	for _, as := range [][]sync.Artifact{res.Skipped, res.Copied, res.Blocked, res.Untagged} {
 		for _, a := range as {
 			if a.Scan != nil {
 				scans[a.Tag] = a
@@ -161,7 +175,13 @@ func gateSummary(r *report, res sync.Result, fingerprint string) {
 		if sc.Verdict == vuln.ScanError {
 			f.Verdict, f.ScanError = v1alpha1.VerdictScanError, reportReason(sc.Reason)
 		}
-		if sc.Block {
+		switch {
+		case rescan && sc.Verdict == vuln.FindingsFound:
+			f.RescanAction = a.Untag
+			if a.Untag == v1alpha1.VulnerableUntagged {
+				f.Outcome = v1alpha1.OutcomeBlocked
+			}
+		case !rescan && sc.Block:
 			f.Outcome = v1alpha1.OutcomeBlocked
 		}
 		if !sc.DBUpdatedAt.IsZero() {

@@ -18,6 +18,7 @@ package syncspec
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -269,7 +270,7 @@ func TestNewGate(t *testing.T) {
 			Vulnerabilities: []string{"CVE-2026-1"}, Expires: expires},
 	}}
 	d := ScannerDefaults{URL: "http://tagwarden-trivy.tagwarden-system.svc:4954", Version: scannerVersion, Image: "trivy@sha256:" + strings.Repeat("a", 64)}
-	g, err := NewGate(&v1alpha1.VulnerabilityGate{Enabled: true}, d, "cluster.local", excs, []SyncedTag{{Tag: "v1", Digest: "sha256:" + strings.Repeat("b", 64)}}, strings.Repeat("f", 64))
+	g, err := NewGate(&v1alpha1.VulnerabilityGate{Enabled: true}, d, "cluster.local", excs, []JudgedTag{{Tag: "v1", Digest: "sha256:" + strings.Repeat("b", 64)}}, strings.Repeat("f", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +278,8 @@ func TestNewGate(t *testing.T) {
 	if p.Action != vuln.Report || p.Severity != vuln.Critical || p.OnScanError != vuln.Report ||
 		g.MaxDBAge.Duration != DefaultMaxDBAge || g.Scanner.Timeout.Duration != DefaultScannerTimeout ||
 		g.Scanner.JavaDB != v1alpha1.JavaDBDisabled || g.Scanner.Version != d.Version || len(g.Judged) != 1 ||
-		g.Scanner.URL != "http://tagwarden-trivy.tagwarden-system.svc.cluster.local.:4954" || !g.Scanner.InCluster {
+		g.Scanner.URL != "http://tagwarden-trivy.tagwarden-system.svc.cluster.local.:4954" || !g.Scanner.InCluster ||
+		g.RescanInterval.Duration != 0 || g.OnVulnerableTag != "" {
 		t.Fatalf("defaults %+v %+v", g, p)
 	}
 	ve := g.VulnExceptions()
@@ -288,6 +290,7 @@ func TestNewGate(t *testing.T) {
 	g, err = NewGate(&v1alpha1.VulnerabilityGate{
 		Action: v1alpha1.GateActionBlock, Severity: v1alpha1.SeverityThresholdHigh, OnScanError: v1alpha1.GateActionBlock,
 		IgnoreUnfixed: true, IncludeUnknown: true, MaxDBAge: &metav1.Duration{Duration: time.Hour},
+		RescanInterval: &metav1.Duration{Duration: 24 * time.Hour}, OnVulnerableTag: v1alpha1.OnVulnerableTagUntag,
 		Scanner: &v1alpha1.ScannerSpec{URL: "https://trivy.example.internal", Image: "x@sha256:" + strings.Repeat("c", 64), Version: nextMinor,
 			Timeout: &metav1.Duration{Duration: time.Minute}, JavaDB: v1alpha1.JavaDBPerJob, JavaDBRepository: "registry.example.internal/platform/trivy-java-db:1"},
 	}, d, "cluster.local", nil, nil, "")
@@ -296,7 +299,8 @@ func TestNewGate(t *testing.T) {
 	}
 	p = g.Policy()
 	if p.Action != vuln.Block || p.Severity != vuln.High || p.OnScanError != vuln.Block || !p.IgnoreUnfixed || !p.IncludeUnknown ||
-		g.Scanner.URL != "https://trivy.example.internal." || g.Scanner.InCluster || g.Scanner.Version != nextMinor || g.Scanner.JavaDB != v1alpha1.JavaDBPerJob {
+		g.Scanner.URL != "https://trivy.example.internal." || g.Scanner.InCluster || g.Scanner.Version != nextMinor || g.Scanner.JavaDB != v1alpha1.JavaDBPerJob ||
+		g.RescanInterval.Duration != 24*time.Hour || g.OnVulnerableTag != v1alpha1.OnVulnerableTagUntag {
 		t.Fatalf("overrides %+v %+v", g, p)
 	}
 }
@@ -321,7 +325,9 @@ func TestGateFingerprint(t *testing.T) {
 		"namespace order": func(g *Gate) { g.Exceptions[0].Namespaces = []string{"a", "b"} },
 		"patch version":   func(g *Gate) { g.Scanner.Version = "0.76.9" },
 		"max DB age":      func(g *Gate) { g.MaxDBAge.Duration = time.Hour },
-		"judged":          func(g *Gate) { g.Judged = []SyncedTag{{Tag: "v1"}} },
+		"judged":          func(g *Gate) { g.Judged = []JudgedTag{{Tag: "v1"}} },
+		"rescan interval": func(g *Gate) { g.RescanInterval.Duration = time.Hour },
+		"untag":           func(g *Gate) { g.OnVulnerableTag, g.Untaggable = v1alpha1.OnVulnerableTagUntag, []string{"v1"} },
 		"expired dropped": func(g *Gate) { g.Exceptions = append(g.Exceptions, exc("z", now)) },
 		"timezone of time": func(g *Gate) {
 			g.Exceptions[0].Expires = metav1.NewTime(now.Add(time.Hour).In(time.FixedZone("x", 3600)))
@@ -413,9 +419,13 @@ func TestDecodeGate(t *testing.T) {
 		"exception no names": func(g map[string]any) {
 			g["exceptions"] = []any{map[string]any{"name": "x", "repository": "r", "expires": "2027-01-01T00:00:00Z"}}
 		},
-		"fingerprint":   func(g map[string]any) { g["judgedFingerprint"] = "nope" },
-		"judged":        func(g map[string]any) { g["judged"] = []any{map[string]any{"tag": "v1", "digest": "sha256:1"}} },
-		"unknown field": func(g map[string]any) { g["token"] = "s3cret" },
+		"fingerprint":     func(g map[string]any) { g["judgedFingerprint"] = "nope" },
+		"judged":          func(g map[string]any) { g["judged"] = []any{map[string]any{"tag": "v1", "digest": "sha256:1"}} },
+		"unknown field":   func(g map[string]any) { g["token"] = "s3cret" },
+		"onVulnerableTag": func(g map[string]any) { g["onVulnerableTag"] = "Delete" },
+		"untag on report": func(g map[string]any) { g["action"], g["onVulnerableTag"] = "Report", "Untag" },
+		"untaggable tag":  func(g map[string]any) { g["untaggable"] = []string{"../x"} },
+		"rescanInterval":  func(g map[string]any) { g["rescanInterval"] = "-1h" },
 	} {
 		if _, err := Decode(strings.NewReader(base(gate(mod)))); err == nil {
 			t.Errorf("%s: want error", name)
@@ -534,6 +544,56 @@ func TestScannerURL(t *testing.T) {
 		got, inCluster, err := ScannerURL(tt.raw, tt.domain)
 		if (err != nil) != tt.err || got != tt.want || inCluster != tt.inCluster {
 			t.Errorf("ScannerURL(%q, %q) = %q, %v, %v; want %q, %v", tt.raw, tt.domain, got, inCluster, err, tt.want, tt.inCluster)
+		}
+	}
+}
+
+func TestGateHolds(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	g := &Gate{}
+	if !g.Holds(JudgedTag{}, now) {
+		t.Error("without a rescan interval every judged pair holds")
+	}
+	g.RescanInterval.Duration = time.Hour
+	for name, tc := range map[string]struct {
+		at   time.Time
+		want bool
+	}{
+		"recent":      {now.Add(-time.Minute), true},
+		"at the edge": {now.Add(-time.Hour), true},
+		"older":       {now.Add(-time.Hour - time.Second), false},
+		"no judgedAt": {time.Time{}, false},
+	} {
+		if got := g.Holds(JudgedTag{JudgedAt: tc.at}, now); got != tc.want {
+			t.Errorf("%s: %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestParseRescanReport(t *testing.T) {
+	finding := func(verdict, action string) string {
+		f := `{"tag":"v1","digest":"sha256:` + strings.Repeat("a", 64) + `","verdict":"` + verdict + `","outcome":"Copied","scannedAt":"2026-11-03T10:00:00Z"`
+		if verdict == "ScanError" {
+			f += `,"scanError":"ScanFailed"`
+		}
+		if action != "" {
+			f += `,"rescanAction":"` + action + `"`
+		}
+		return f + `}`
+	}
+	msg := func(rescan bool, f string) string {
+		return fmt.Sprintf(`{"v":2,"synced":[],"rescan":%v,"tagFindings":[%s]}`, rescan, f)
+	}
+	for _, ok := range []string{msg(true, finding("Findings", "Kept")), msg(true, finding("Findings", "UntagRefused")),
+		msg(true, finding("ScanError", "")), msg(false, finding("Findings", ""))} {
+		if _, err := ParseReport(ok); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{msg(true, finding("Findings", "")), msg(true, finding("Findings", "Deleted")),
+		msg(true, finding("ScanError", "Kept")), msg(false, finding("Findings", "Kept")), `{"v":1,"synced":[],"rescan":true}`} {
+		if _, err := ParseReport(bad); err == nil {
+			t.Errorf("%s: want error", bad)
 		}
 	}
 }

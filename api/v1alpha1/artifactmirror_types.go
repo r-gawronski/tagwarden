@@ -330,6 +330,80 @@ type VulnerabilityFinding struct {
 	ScannedAt metav1.Time `json:"scannedAt"`
 }
 
+// VulnerableTagAction is what a re-scan did with a mirrored tag that has
+// findings.
+// +kubebuilder:validation:Enum=Kept;Untagged;UntagFailed;UntagRefused
+type VulnerableTagAction string
+
+const (
+	// VulnerableKept means the tag stays on the target (onVulnerableTag
+	// Report).
+	VulnerableKept VulnerableTagAction = "Kept"
+	// VulnerableUntagged means the target tag was deleted; the digest stays.
+	VulnerableUntagged VulnerableTagAction = "Untagged"
+	// VulnerableUntagFailed means the registry refused the tag delete; the
+	// tag stays, as under Report.
+	VulnerableUntagFailed VulnerableTagAction = "UntagFailed"
+	// VulnerableUntagRefused means the deletion rules kept the tag: this
+	// mirror has not recorded it, or another mirror selects it.
+	VulnerableUntagRefused VulnerableTagAction = "UntagRefused"
+)
+
+// VulnerableTag is a tag on the target that a re-scan found vulnerable.
+type VulnerableTag struct {
+	// tag is the target tag.
+	// +kubebuilder:validation:MaxLength=128
+	// +required
+	Tag string `json:"tag"`
+
+	// digest is the index or manifest digest the target tag pointed to.
+	// +kubebuilder:validation:MaxLength=71
+	// +required
+	Digest string `json:"digest"`
+
+	// severity is the highest severity among the findings.
+	// +optional
+	Severity Severity `json:"severity,omitempty"`
+
+	// counts are the findings per severity.
+	// +optional
+	Counts SeverityCounts `json:"counts,omitzero"`
+
+	// topIDs are up to five vulnerability IDs, highest severity first.
+	// +kubebuilder:validation:MaxItems=5
+	// +kubebuilder:validation:items:Pattern=`^[A-Z]+-[0-9A-Za-z-]{1,64}$`
+	// +listType=atomic
+	// +optional
+	TopIDs []string `json:"topIDs,omitempty"`
+
+	// action is what the re-scan did with the tag.
+	// +required
+	Action VulnerableTagAction `json:"action"`
+
+	// scannedAt is when the tag was scanned.
+	// +required
+	ScannedAt metav1.Time `json:"scannedAt"`
+}
+
+// JudgedTag is a tag and digest with a final gate verdict.
+type JudgedTag struct {
+	// tag is the target tag.
+	// +kubebuilder:validation:MaxLength=128
+	// +required
+	Tag string `json:"tag"`
+
+	// digest is the index or manifest digest that was judged.
+	// +kubebuilder:validation:MaxLength=71
+	// +required
+	Digest string `json:"digest"`
+
+	// judgedAt is the start of the Job that judged the pair, set by the
+	// controller. With rescanInterval set, a pair older than the interval,
+	// or without judgedAt, is judged again.
+	// +optional
+	JudgedAt *metav1.Time `json:"judgedAt,omitempty"`
+}
+
 // GateStatus holds the judged verdicts of a generated mirror of a gated
 // target. The controller passes them back to the sync Job, which skips the
 // scan of a judged tag and digest while the fingerprint still matches.
@@ -347,7 +421,7 @@ type GateStatus struct {
 	// +kubebuilder:validation:MaxItems=200
 	// +listType=atomic
 	// +optional
-	Judged []SyncedTag `json:"judged,omitempty"`
+	Judged []JudgedTag `json:"judged,omitempty"`
 }
 
 // ArtifactMirrorStatus defines the observed state of ArtifactMirror.
@@ -396,6 +470,18 @@ type ArtifactMirrorStatus struct {
 	// target. Absent on mirrors that are not gated.
 	// +optional
 	Gate *GateStatus `json:"gate,omitempty"`
+
+	// vulnerable lists the tags on the target that the last re-scan found
+	// vulnerable, most severe first, at most 20. A later sync that judges
+	// a tag again replaces its entry with one in findings.
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	// +optional
+	Vulnerable []VulnerableTag `json:"vulnerable,omitempty"`
+
+	// lastRescan is when the controller last started a re-scan Job.
+	// +optional
+	LastRescan *metav1.Time `json:"lastRescan,omitempty"`
 
 	// observedGeneration is the spec generation the status refers to.
 	// +optional

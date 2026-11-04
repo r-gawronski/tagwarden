@@ -29,6 +29,8 @@ const (
 	ConditionReady = "Ready"
 	// ConditionSynced reports the result of the last finished sync.
 	ConditionSynced = "Synced"
+	// ConditionRescanned reports the result of the last finished re-scan.
+	ConditionRescanned = "Rescanned"
 	// ConditionVulnerabilitiesFound is True on a generated mirror when a
 	// selected tag has findings.
 	ConditionVulnerabilitiesFound = "VulnerabilitiesFound"
@@ -56,6 +58,8 @@ const (
 	ReasonInvalidSpec                  = "InvalidSpec"
 	ReasonTargetConflict               = "TargetConflict"
 	ReasonSynced                       = "Synced"
+	ReasonRescanned                    = "Rescanned"
+	ReasonRescanFailed                 = "RescanFailed"
 	ReasonTruncated                    = "Truncated"
 	ReasonSyncFailed                   = "SyncFailed"
 	ReasonConfigRejected               = "ConfigRejected"

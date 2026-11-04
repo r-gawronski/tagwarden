@@ -70,6 +70,10 @@ type Gate struct {
 	JavaDB *name.Tag
 	// Fingerprint is syncspec Gate.Fingerprint of the run, reported as is.
 	Fingerprint string
+	// Untag deletes tags a re-scan finds vulnerable, but only those in
+	// Untaggable.
+	Untag      bool
+	Untaggable map[string]bool
 	// Now and Poll are for tests: the clock and the sidecar poll interval.
 	Now  func() time.Time
 	Poll time.Duration

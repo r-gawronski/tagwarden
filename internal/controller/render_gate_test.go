@@ -331,9 +331,10 @@ func TestGateResolution(t *testing.T) {
 
 func TestGateSpecExceptionsAndJudged(t *testing.T) {
 	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, MaxExceptionDuration: duration(48 * time.Hour)})
+	judgedAt := metav1.NewTime(time.Date(2026, 11, 4, 9, 0, 0, 0, time.FixedZone("x", 3600)))
 	m.Status.Gate = &mirrorv1alpha1.GateStatus{
 		JudgedFingerprint: strings.Repeat("a", 64),
-		Judged:            []mirrorv1alpha1.SyncedTag{{Tag: v310, Digest: "sha256:" + strings.Repeat("b", 64)}},
+		Judged:            []mirrorv1alpha1.JudgedTag{{Tag: v310, Digest: "sha256:" + strings.Repeat("b", 64), JudgedAt: &judgedAt}},
 	}
 	r := reconcilerWith(t,
 		exception("b-active", nil),
@@ -357,7 +358,7 @@ func TestGateSpecExceptionsAndJudged(t *testing.T) {
 		t.Errorf("exceptions = %v", names)
 	}
 	if spec.Gate.JudgedFingerprint != strings.Repeat("a", 64) ||
-		!slices.Equal(spec.Gate.Judged, []syncspec.SyncedTag{{Tag: v310, Digest: "sha256:" + strings.Repeat("b", 64)}}) {
+		!slices.Equal(spec.Gate.Judged, []syncspec.JudgedTag{{Tag: v310, Digest: "sha256:" + strings.Repeat("b", 64), JudgedAt: judgedAt.UTC()}}) {
 		t.Errorf("judged = %q %v", spec.Gate.JudgedFingerprint, spec.Gate.Judged)
 	}
 }

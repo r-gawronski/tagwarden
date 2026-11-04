@@ -518,6 +518,10 @@ type Report struct {
 	// run. The controller stores it with Judged and passes it back in
 	// Gate.JudgedFingerprint.
 	JudgedFingerprint string `json:"judgedFingerprint,omitempty"`
+	// Rescan marks the report of a re-scan Job: the tags were read from
+	// the target and nothing was copied. Its tag findings carry
+	// RescanAction.
+	Rescan bool `json:"rescan,omitempty"`
 }
 
 // TagFinding is the gate result of one tag with findings or a scan error.
@@ -535,6 +539,8 @@ type TagFinding struct {
 	// DBUpdatedAt is the server DB time, RFC 3339, when the server was checked.
 	DBUpdatedAt string    `json:"dbUpdatedAt,omitempty"`
 	ScannedAt   time.Time `json:"scannedAt"`
+	// RescanAction is set in a re-scan report for verdict findings only.
+	RescanAction v1alpha1.VulnerableTagAction `json:"rescanAction,omitempty"`
 }
 
 // MaxReportIDs caps TagFinding.TopIDs.
@@ -580,7 +586,7 @@ func ParseReport(msg string) (Report, error) {
 	if r.JudgedFingerprint != "" && !fingerprintPattern.MatchString(r.JudgedFingerprint) {
 		return Report{}, errors.New("report: invalid judged fingerprint")
 	}
-	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || r.JudgedFingerprint != "") {
+	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || r.JudgedFingerprint != "" || r.Rescan) {
 		return Report{}, errors.New("report: gate fields in version 1")
 	}
 	switch r.Gate {
@@ -589,7 +595,7 @@ func ParseReport(msg string) (Report, error) {
 		return Report{}, errors.New("report: invalid gate")
 	}
 	for _, f := range r.TagFindings {
-		if err := f.validate(); err != nil {
+		if err := f.validate(r.Rescan); err != nil {
 			return Report{}, fmt.Errorf("report: invalid tag finding: %w", err)
 		}
 	}
@@ -631,7 +637,7 @@ func ScannerURL(raw, clusterDomain string) (string, bool, error) {
 	return u.String(), inCluster, nil
 }
 
-func (f TagFinding) validate() error {
+func (f TagFinding) validate(rescan bool) error {
 	if !tagPattern.MatchString(f.Tag) || !digestPattern.MatchString(f.Digest) {
 		return errors.New("tag or digest")
 	}
@@ -665,6 +671,15 @@ func (f TagFinding) validate() error {
 		if _, err := time.Parse(time.RFC3339, f.DBUpdatedAt); err != nil {
 			return errors.New("dbUpdatedAt")
 		}
+	}
+	switch {
+	case !rescan || f.Verdict != v1alpha1.VerdictFindings:
+		if f.RescanAction != "" {
+			return errors.New("rescanAction")
+		}
+	case !slices.Contains([]v1alpha1.VulnerableTagAction{v1alpha1.VulnerableKept, v1alpha1.VulnerableUntagged,
+		v1alpha1.VulnerableUntagFailed, v1alpha1.VulnerableUntagRefused}, f.RescanAction):
+		return errors.New("rescanAction")
 	}
 	return nil
 }

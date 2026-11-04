@@ -144,25 +144,7 @@ func (r *ArtifactMirrorReconciler) syncNow(ctx context.Context, t *mirrorv1alpha
 		}
 	}
 
-	tmpl := cj.Spec.JobTemplate
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name, Namespace: cj.Namespace,
-			Labels:      maps.Clone(tmpl.Labels),
-			Annotations: maps.Clone(tmpl.Annotations),
-			// As with kubectl create job --from=cronjob, the CronJob
-			// controls the Job: its history limits and garbage collection
-			// cover it. The CronJob controller does not add it to
-			// status.active, so concurrencyPolicy does not see it, and it
-			// records an UnexpectedJob Event while the Job runs.
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cj, batchv1.SchemeGroupVersion.WithKind("CronJob"))},
-		},
-		Spec: *tmpl.Spec.DeepCopy(),
-	}
-	if job.Annotations == nil {
-		job.Annotations = map[string]string{}
-	}
-	job.Annotations[AnnotationTrigger] = TriggerManual
+	job := jobFrom(cj, name, TriggerManual)
 	if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
 		return ctrl.Result{}, err
 	}
@@ -171,13 +153,37 @@ func (r *ArtifactMirrorReconciler) syncNow(ctx context.Context, t *mirrorv1alpha
 	return ctrl.Result{}, nil
 }
 
+// jobFrom builds a Job from the CronJob template with the trigger
+// annotation. As with kubectl create job --from=cronjob, the CronJob
+// controls the Job: its history limits and garbage collection cover it.
+// The CronJob controller does not add it to status.active, so
+// concurrencyPolicy does not see it, and it records an UnexpectedJob Event
+// while the Job runs.
+func jobFrom(cj *batchv1.CronJob, name, trigger string) *batchv1.Job {
+	tmpl := cj.Spec.JobTemplate
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: cj.Namespace,
+			Labels:          maps.Clone(tmpl.Labels),
+			Annotations:     maps.Clone(tmpl.Annotations),
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cj, batchv1.SchemeGroupVersion.WithKind("CronJob"))},
+		},
+		Spec: *tmpl.Spec.DeepCopy(),
+	}
+	if job.Annotations == nil {
+		job.Annotations = map[string]string{}
+	}
+	job.Annotations[AnnotationTrigger] = trigger
+	return job
+}
+
 // trackSyncStart moves status.lastSyncStartTime to the latest start of a
-// sync Job of m. Jobs that have not started yet do not count; a request
+// sync Job of m; re-scans do not count. Jobs that have not started yet do not count; a request
 // sets the time when it creates its Job.
 func trackSyncStart(m *mirrorv1alpha1.ArtifactMirror, jobs []batchv1.Job) {
 	for i := range jobs {
 		s := jobs[i].Status.StartTime
-		if s != nil && ownedBy(&jobs[i], m) && (m.Status.LastSyncStartTime == nil || m.Status.LastSyncStartTime.Before(s)) {
+		if s != nil && ownedBy(&jobs[i], m) && jobs[i].Annotations[AnnotationTrigger] != TriggerRescan && (m.Status.LastSyncStartTime == nil || m.Status.LastSyncStartTime.Before(s)) {
 			m.Status.LastSyncStartTime = s.DeepCopy()
 		}
 	}

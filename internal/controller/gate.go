@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
@@ -49,18 +50,22 @@ func (r *ArtifactMirrorReconciler) gate(ctx context.Context, t *mirrorv1alpha1.C
 	if err := r.List(ctx, &list); err != nil {
 		return nil, "", err
 	}
-	var judged []syncspec.SyncedTag
+	var judged []syncspec.JudgedTag
 	var fingerprint string
 	if gs := m.Status.Gate; gs != nil {
 		fingerprint = gs.JudgedFingerprint
 		for _, j := range gs.Judged {
-			judged = append(judged, syncspec.SyncedTag{Tag: j.Tag, Digest: j.Digest})
+			jt := syncspec.JudgedTag{Tag: j.Tag, Digest: j.Digest}
+			if j.JudgedAt != nil {
+				jt.JudgedAt = j.JudgedAt.UTC()
+			}
+			judged = append(judged, jt)
 		}
 	}
 	_, problem := effectiveScanner(g.Scanner, r.Scanner)
 	var out *syncspec.Gate
+	var err error
 	if problem == "" {
-		var err error
 		out, err = syncspec.NewGate(g, syncspec.ScannerDefaults{URL: r.Scanner.URL, Version: r.Scanner.Version, Image: r.Scanner.Image},
 			cmp.Or(r.ClusterDomain, DefaultClusterDomain), activeExceptions(list.Items, t, m, time.Now()), judged, fingerprint)
 		if err != nil {
@@ -73,6 +78,11 @@ func (r *ArtifactMirrorReconciler) gate(ctx context.Context, t *mirrorv1alpha1.C
 		}
 		return nil, "", nil
 	}
+	if g.OnVulnerableTag == mirrorv1alpha1.OnVulnerableTagUntag && g.Action == mirrorv1alpha1.GateActionBlock {
+		if out.Untaggable, err = r.untaggable(ctx, t, m); err != nil {
+			return nil, "", err
+		}
+	}
 	s.Gate = out
 	sc := &sidecar{gate: out, scanner: g.Scanner}
 	// The in-chart token goes only to the in-chart server: an external
@@ -84,6 +94,51 @@ func (r *ArtifactMirrorReconciler) gate(ctx context.Context, t *mirrorv1alpha1.C
 		sc.token = &mirrorv1alpha1.TokenSecretKeyRef{Name: r.Scanner.TokenSecret, Key: defaultTokenKey}
 	}
 	return sc, "", nil
+}
+
+// untaggable returns the tags a re-scan of m may delete under Untag, by
+// the prune rules of threat model T13: only tags m selects and recorded
+// on the target (status.synced), and none that another mirror of the same
+// target repository selects, through any target on the same registry. A
+// mirror with tag patterns may select any tag, so it holds them all. With
+// Untag the action is Block, so the project is reserved for generated
+// mirrors, which select explicit tags only.
+func (r *ArtifactMirrorReconciler) untaggable(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) ([]string, error) {
+	var targets mirrorv1alpha1.ClusterMirrorTargetList
+	if err := r.List(ctx, &targets); err != nil {
+		return nil, err
+	}
+	var others []mirrorv1alpha1.ArtifactMirror
+	for _, o := range targets.Items {
+		if registryKey(o.Spec.Registry) != registryKey(t.Spec.Registry) {
+			continue
+		}
+		var list mirrorv1alpha1.ArtifactMirrorList
+		key := o.Name + "/" + string(m.Spec.Target.Project) + "/" + targetPath(m)
+		if err := r.List(ctx, &list, client.MatchingFields{indexTargetKey: key}); err != nil {
+			return nil, err
+		}
+		others = append(others, list.Items...)
+	}
+	held := map[string]bool{}
+	for _, o := range others {
+		if o.UID == m.UID || !o.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if p := tagPolicy(o.Spec.Tags); len(p.Include) > 0 || p.SemverRange != "" || p.KeepLatest > 0 {
+			return nil, nil
+		}
+		for _, t := range o.Spec.Tags.Tags {
+			held[t] = true
+		}
+	}
+	var out []string
+	for _, s := range m.Status.Synced {
+		if !held[s.Tag] && slices.Contains(m.Spec.Tags.Tags, s.Tag) {
+			out = append(out, s.Tag)
+		}
+	}
+	return out, nil
 }
 
 // activeExceptions returns the exceptions that apply to m at now, sorted by
@@ -128,6 +183,9 @@ const (
 	reasonVulnerabilitiesFound  = "VulnerabilitiesFound"
 	reasonVulnerabilityScanFail = "VulnerabilityScanFailed"
 	reasonVulnerabilityBlocked  = "VulnerabilityBlocked"
+	reasonVulnerableTagFound    = "VulnerableTagFound"
+	reasonTagUntagged           = "TagUntagged"
+	reasonImageVulnerable       = "MirroredImageVulnerable"
 )
 
 // gateConditions keeps the gate status of m in line with its rendering:
@@ -138,7 +196,7 @@ func gateConditions(m *mirrorv1alpha1.ArtifactMirror, gated bool, sc *sidecar, e
 	st := &m.Status
 	switch {
 	case !gated:
-		st.Findings, st.JavaScanned, st.Gate = nil, nil, nil
+		st.Findings, st.JavaScanned, st.Gate, st.Vulnerable, st.LastRescan = nil, nil, nil, nil, nil
 		meta.RemoveStatusCondition(&st.Conditions, ConditionVulnerabilitiesFound)
 		meta.RemoveStatusCondition(&st.Conditions, ConditionVulnerabilityGate)
 	case sc == nil:
@@ -154,44 +212,123 @@ func gateConditions(m *mirrorv1alpha1.ArtifactMirror, gated bool, sc *sidecar, e
 	}
 }
 
-// applyGate records the gate fields of a version 2 report. It is applied
-// again on every reconcile while the pod exists, so it must be idempotent.
-// Tags this run judged or reported replace their old entries; the others
+// applyGate records the gate fields of a version 2 report of a sync Job
+// that started at start. It is applied again on every reconcile while the
+// pod exists, so it must be idempotent. Tags this run judged or reported
+// replace their old entries, in findings and in vulnerable; the others
 // keep theirs, because a run with nothing to scan (gate "") skips tags
 // judged earlier. Judged pairs from another fingerprint are dropped. Only
 // a successful run with a complete synced list prunes tags that are no
 // longer selected; a pruned judged tag is only scanned again.
-func applyGate(m *mirrorv1alpha1.ArtifactMirror, rep *syncspec.Report, ok bool, isNew bool, ev *pending) {
+func applyGate(m *mirrorv1alpha1.ArtifactMirror, rep *syncspec.Report, ok bool, isNew bool, start time.Time, ev *pending) {
 	st := &m.Status
+	javaScanned := recordJava(st, rep)
+	keep := mergeJudged(st, rep, ok, start)
+
+	findings := make([]mirrorv1alpha1.VulnerabilityFinding, 0, len(rep.TagFindings)+len(st.Findings))
+	for _, f := range rep.TagFindings {
+		findings = append(findings, toFinding(f, javaScanned))
+	}
+	if isNew {
+		gateEvents(ev, st.Findings, findings)
+	}
+	for _, f := range st.Findings {
+		if keep(f.Tag) {
+			findings = append(findings, f)
+		}
+	}
+	st.Vulnerable = slices.DeleteFunc(st.Vulnerable, func(v mirrorv1alpha1.VulnerableTag) bool { return !keep(v.Tag) })
+	if len(st.Vulnerable) == 0 {
+		st.Vulnerable = nil
+	}
+	setFindings(m, findings, rep.Gate, javaScanned)
+}
+
+// applyRescan records the report of a re-scan Job that started at start.
+// The re-scan read every tag from the target, so its findings replace
+// status.vulnerable, and the tags it judged leave status.findings: their
+// sync-time entries are older than the re-scan. Its scan errors go to
+// status.findings like those of a sync. Idempotent like applyGate.
+func applyRescan(m *mirrorv1alpha1.ArtifactMirror, rep *syncspec.Report, ok bool, isNew bool, start time.Time, ev *pending) {
+	st := &m.Status
+	javaScanned := recordJava(st, rep)
+	keep := mergeJudged(st, rep, ok, start)
+
+	var vulnerable []mirrorv1alpha1.VulnerableTag
+	var findings []mirrorv1alpha1.VulnerabilityFinding
+	for _, f := range rep.TagFindings {
+		if f.Verdict == mirrorv1alpha1.VerdictScanError {
+			findings = append(findings, toFinding(f, javaScanned))
+			continue
+		}
+		vulnerable = append(vulnerable, mirrorv1alpha1.VulnerableTag{Tag: f.Tag, Digest: f.Digest, Severity: f.Severity,
+			Counts: f.Counts, TopIDs: f.TopIDs, Action: f.RescanAction, ScannedAt: metav1.NewTime(f.ScannedAt)})
+	}
+	if isNew {
+		gateEvents(ev, st.Findings, findings)
+		rescanEvents(ev, st.Vulnerable, vulnerable)
+	}
+	// A cut report lists only some findings; the rest keep their entries.
+	if rep.FindingsTruncated {
+		for _, v := range st.Vulnerable {
+			if keep(v.Tag) {
+				vulnerable = append(vulnerable, v)
+			}
+		}
+	}
+	slices.SortStableFunc(vulnerable, func(a, b mirrorv1alpha1.VulnerableTag) int {
+		return cmp.Or(cmp.Compare(severityRank(vulnerableFinding(b)), severityRank(vulnerableFinding(a))), strings.Compare(a.Tag, b.Tag))
+	})
+	st.Vulnerable = vulnerable[:min(len(vulnerable), maxFindings)]
+	if len(st.Vulnerable) == 0 {
+		st.Vulnerable = nil
+	}
+	for _, f := range st.Findings {
+		if keep(f.Tag) {
+			findings = append(findings, f)
+		}
+	}
+	setFindings(m, findings, rep.Gate, javaScanned)
+}
+
+// recordJava sets status.javaScanned from the report and returns it; true
+// when unknown.
+func recordJava(st *mirrorv1alpha1.ArtifactMirrorStatus, rep *syncspec.Report) bool {
 	if rep.JavaScanned != nil {
 		st.JavaScanned = new(*rep.JavaScanned)
 	}
-	javaScanned := st.JavaScanned == nil || *st.JavaScanned
+	return st.JavaScanned == nil || *st.JavaScanned
+}
+
+// mergeJudged stores the judged pairs of the run, stamped with start,
+// before the stored ones under the same fingerprint, and returns whether
+// an old entry of a tag is kept: the run did not judge or report it, and
+// it is still on the target unless the run failed or its list was cut.
+func mergeJudged(st *mirrorv1alpha1.ArtifactMirrorStatus, rep *syncspec.Report, ok bool, start time.Time) func(string) bool {
 	run := map[string]bool{}
 	for _, j := range rep.Judged {
 		run[j.Tag] = true
 	}
+	scanErr := map[string]bool{}
 	for _, f := range rep.TagFindings {
 		run[f.Tag] = true
+		scanErr[f.Tag] = f.Verdict == mirrorv1alpha1.VerdictScanError
 	}
 	present := map[string]string{}
 	for _, s := range rep.Synced {
 		present[s.Tag] = s.Digest
 	}
-	scanErr := map[string]bool{}
-	for _, f := range rep.TagFindings {
-		scanErr[f.Tag] = f.Verdict == mirrorv1alpha1.VerdictScanError
-	}
 	keep := func(tag string) bool { _, on := present[tag]; return !run[tag] && (!ok || rep.Truncated || on) }
 
-	// Judged pairs: this run first, then the stored ones under the same
-	// fingerprint. judged is the one report field fed back into later
-	// Jobs, so only pairs the run also reports on the target with the same
-	// digest, and not as a scan error, are kept (threat model T12, T34).
-	var judged []mirrorv1alpha1.SyncedTag
+	// judged is the one report field fed back into later Jobs, so only
+	// pairs the run also reports on the target with the same digest, and
+	// not as a scan error, are kept (threat model T12, T34). judgedAt is
+	// the controller's record of the Job start, never a report time.
+	var judged []mirrorv1alpha1.JudgedTag
+	at := metav1.NewTime(start)
 	for _, j := range rep.Judged {
 		if d, on := present[j.Tag]; on && d == j.Digest && !scanErr[j.Tag] {
-			judged = append(judged, mirrorv1alpha1.SyncedTag{Tag: j.Tag, Digest: j.Digest})
+			judged = append(judged, mirrorv1alpha1.JudgedTag{Tag: j.Tag, Digest: j.Digest, JudgedAt: at.DeepCopy()})
 		}
 	}
 	if old := st.Gate; old != nil && old.JudgedFingerprint == rep.JudgedFingerprint {
@@ -202,28 +339,41 @@ func applyGate(m *mirrorv1alpha1.ArtifactMirror, rep *syncspec.Report, ok bool, 
 		}
 	}
 	st.Gate = &mirrorv1alpha1.GateStatus{JudgedFingerprint: rep.JudgedFingerprint, Judged: judged[:min(len(judged), maxJudged)]}
+	return keep
+}
 
-	findings := make([]mirrorv1alpha1.VulnerabilityFinding, 0, len(rep.TagFindings)+len(st.Findings))
-	for _, f := range rep.TagFindings {
-		findings = append(findings, mirrorv1alpha1.VulnerabilityFinding{
-			Tag: f.Tag, Digest: f.Digest, Verdict: f.Verdict, Outcome: f.Outcome, PresentOnTarget: f.PresentOnTarget,
-			Severity: f.Severity, Counts: f.Counts, TopIDs: f.TopIDs, ScanError: f.ScanError,
-			JavaScanned: javaScanned, ScannedAt: metav1.NewTime(f.ScannedAt),
-		})
+func toFinding(f syncspec.TagFinding, javaScanned bool) mirrorv1alpha1.VulnerabilityFinding {
+	return mirrorv1alpha1.VulnerabilityFinding{
+		Tag: f.Tag, Digest: f.Digest, Verdict: f.Verdict, Outcome: f.Outcome, PresentOnTarget: f.PresentOnTarget,
+		Severity: f.Severity, Counts: f.Counts, TopIDs: f.TopIDs, ScanError: f.ScanError,
+		JavaScanned: javaScanned, ScannedAt: metav1.NewTime(f.ScannedAt),
 	}
-	if isNew {
-		gateEvents(ev, st.Findings, findings)
+}
+
+// vulnerableFinding views a re-scan entry as a finding for the conditions:
+// Blocked once the tag is gone from the target.
+func vulnerableFinding(v mirrorv1alpha1.VulnerableTag) mirrorv1alpha1.VulnerabilityFinding {
+	f := mirrorv1alpha1.VulnerabilityFinding{Tag: v.Tag, Digest: v.Digest, Verdict: mirrorv1alpha1.VerdictFindings,
+		Outcome: mirrorv1alpha1.OutcomeCopied, Severity: v.Severity, Counts: v.Counts, TopIDs: v.TopIDs, ScannedAt: v.ScannedAt}
+	if v.Action == mirrorv1alpha1.VulnerableUntagged {
+		f.Outcome = mirrorv1alpha1.OutcomeBlocked
 	}
-	for _, f := range st.Findings {
-		if keep(f.Tag) {
-			findings = append(findings, f)
-		}
-	}
-	// Newest scan first, then the most severe.
+	return f
+}
+
+// setFindings sorts findings newest scan first, then most severe, sets
+// the conditions from them and status.vulnerable before the cap, and
+// stores at most maxFindings.
+func setFindings(m *mirrorv1alpha1.ArtifactMirror, findings []mirrorv1alpha1.VulnerabilityFinding, gate string, javaScanned bool) {
+	st := &m.Status
 	slices.SortStableFunc(findings, func(a, b mirrorv1alpha1.VulnerabilityFinding) int {
 		return cmp.Or(b.ScannedAt.Compare(a.ScannedAt.Time), cmp.Compare(severityRank(b), severityRank(a)), strings.Compare(a.Tag, b.Tag))
 	})
-	setGateConditions(m, findings, rep.Gate, javaScanned)
+	all := slices.Clone(findings)
+	for _, v := range st.Vulnerable {
+		all = append(all, vulnerableFinding(v))
+	}
+	setGateConditions(m, all, gate, javaScanned)
 	st.Findings = findings[:min(len(findings), maxFindings)]
 	if len(st.Findings) == 0 {
 		st.Findings = nil
@@ -314,6 +464,42 @@ func gateEvents(ev *pending, old, run []mirrorv1alpha1.VulnerabilityFinding) {
 		ev.add(corev1.EventTypeWarning, reasonVulnerabilitiesFound, "Scan",
 			fmt.Sprintf("tag %s (%s): %s, %s", f.Tag, f.Digest, findingSummary(f), outcome))
 	}
+}
+
+// rescanEvents queues one Warning per tag, digest and action that is new
+// in this re-scan's findings, at most maxGateEvents: TagUntagged for a
+// deleted tag, VulnerableTagFound otherwise.
+func rescanEvents(ev *pending, old, run []mirrorv1alpha1.VulnerableTag) {
+	n := 0
+	for _, v := range run {
+		if slices.ContainsFunc(old, func(o mirrorv1alpha1.VulnerableTag) bool {
+			return o.Tag == v.Tag && o.Digest == v.Digest && o.Action == v.Action
+		}) {
+			continue
+		}
+		if n++; n > maxGateEvents {
+			return
+		}
+		reason := reasonVulnerableTagFound
+		if v.Action == mirrorv1alpha1.VulnerableUntagged {
+			reason = reasonTagUntagged
+		}
+		ev.add(corev1.EventTypeWarning, reason, "Rescan", fmt.Sprintf("re-scan: tag %s (%s): %s; %s",
+			v.Tag, v.Digest, findingSummary(vulnerableFinding(v)), untagText(v.Action)))
+	}
+}
+
+// untagText says what a re-scan did with a vulnerable tag.
+func untagText(a mirrorv1alpha1.VulnerableTagAction) string {
+	switch a {
+	case mirrorv1alpha1.VulnerableUntagged:
+		return "tag deleted from the target, the digest stays"
+	case mirrorv1alpha1.VulnerableUntagFailed:
+		return "untag failed, tag kept"
+	case mirrorv1alpha1.VulnerableUntagRefused:
+		return "tag kept: not recorded by this mirror, selected by another mirror or moved"
+	}
+	return "tag kept"
 }
 
 // findingSummary is "<n> <severity> (<top three IDs>)".

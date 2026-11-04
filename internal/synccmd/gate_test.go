@@ -41,6 +41,7 @@ import (
 )
 
 const (
+	actionField   = "action"
 	onScanError   = "onScanError"
 	block         = "Block"
 	actionCopied  = "copied"
@@ -85,7 +86,7 @@ func (e *env) gated(t *testing.T, source string, gate map[string]any, dbAge time
 		}()
 	}
 	g := map[string]any{
-		"action": "Report", "severity": "High", onScanError: "Report", "maxDBAge": "72h",
+		actionField: "Report", "severity": "High", onScanError: "Report", "maxDBAge": "72h",
 		"scanner": map[string]any{"url": srv.URL, "version": "0.76.1", "image": "trivy@sha256:" + strings.Repeat("a", 64), "timeout": "1s", "javaDB": "Disabled"},
 	}
 	maps.Copy(g, gate)
@@ -111,7 +112,7 @@ func TestRunGated(t *testing.T) {
 		reportReason string
 	}{
 		{"findings reported", nil, time.Hour, "0", true, syncspec.ExitOK, true, syncspec.GateOK, actionCopied, v1alpha1.VerdictFindings, ""},
-		{"findings blocked", map[string]any{"action": block}, time.Hour, "0", true, syncspec.ExitOK, false, syncspec.GateOK, actionBlocked, v1alpha1.VerdictFindings, ""},
+		{"findings blocked", map[string]any{actionField: block}, time.Hour, "0", true, syncspec.ExitOK, false, syncspec.GateOK, actionBlocked, v1alpha1.VerdictFindings, ""},
 		{"stale DB reported", nil, 100 * time.Hour, "0", true, syncspec.ExitOK, true, syncspec.GateDBStale, actionCopied, v1alpha1.VerdictScanError, syncspec.GateDBStale},
 		{"stale DB blocked", map[string]any{onScanError: block}, 100 * time.Hour, "0", true, syncspec.ExitConfig, false, syncspec.GateDBStale, actionBlocked, v1alpha1.VerdictScanError, syncspec.GateDBStale},
 		{"scanner down blocked", map[string]any{onScanError: block}, time.Hour, "0", false, syncspec.ExitSyncFailed, false, syncspec.GateScannerUnavailable, actionBlocked, v1alpha1.VerdictScanError, syncspec.GateScannerUnavailable},
@@ -248,7 +249,7 @@ func TestGateSummaryRoundTrip(t *testing.T) {
 					res = sync.Result{Selected: []string{v110}, Blocked: []sync.Artifact{a}}
 				}
 				r := summarize(res)
-				gateSummary(&r, res, strings.Repeat("f", 64))
+				gateSummary(&r, res, strings.Repeat("f", 64), false)
 				got, err := syncspec.ParseReport(string(encode(r)))
 				if err != nil {
 					t.Fatalf("%s/%q/%v: %v", v, reason, block, err)
@@ -300,7 +301,8 @@ func TestRunGatedScannerAddressRefused(t *testing.T) {
 	}
 }
 
-// Judged pairs hold only under the fingerprint they were produced under.
+// Judged pairs hold only under the fingerprint they were produced under
+// and, with a rescan interval, only while they are younger than it.
 func TestRunGatedJudgedFingerprint(t *testing.T) {
 	src, dst := newRegistry(t, false), newRegistry(t, true)
 	pushImages(t, src, v110)
@@ -314,18 +316,31 @@ func TestRunGatedJudgedFingerprint(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		fingerprint string
+		interval    string
+		judgedAgo   time.Duration
 		scanned     bool
 	}{
-		{"same policy", r.JudgedFingerprint, false},
-		{"other policy", strings.Repeat("0", 64), true},
-		{"none", "", true},
+		{"same policy", r.JudgedFingerprint, "", 0, false},
+		{"other policy", strings.Repeat("0", 64), "", 0, true},
+		{"none", "", "", 0, true},
+		{"within the rescan interval", r.JudgedFingerprint, "1h", time.Minute, false},
+		{"older than the rescan interval", r.JudgedFingerprint, "1h", 2 * time.Hour, true},
+		{"no judgedAt with a rescan interval", r.JudgedFingerprint, "1h", 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var spec map[string]any
 			b, _ := os.ReadFile(e.spec) //nolint:gosec // test temp dir
 			_ = json.Unmarshal(b, &spec)
 			g := spec["gate"].(map[string]any)
-			g["judged"], g["judgedFingerprint"] = r.Judged, tc.fingerprint
+			judged := []syncspec.JudgedTag{{Tag: r.Judged[0].Tag, Digest: r.Judged[0].Digest}}
+			if tc.judgedAgo > 0 {
+				judged[0].JudgedAt = time.Now().Add(-tc.judgedAgo)
+			}
+			g["judged"], g["judgedFingerprint"] = judged, tc.fingerprint
+			delete(g, "rescanInterval")
+			if tc.interval != "" {
+				g["rescanInterval"] = tc.interval
+			}
 			b, _ = json.Marshal(spec)
 			e.write(t, e.spec, string(b))
 			code, out, msg := e.run(t)
@@ -336,4 +351,64 @@ func TestRunGatedJudgedFingerprint(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A re-scan reads the tag from the target, never from the source, reports
+// it with action rescan and, under Untag, deletes the tag it may delete.
+func TestRunRescan(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		gate   map[string]any
+		action v1alpha1.VulnerableTagAction
+		gone   bool
+	}{
+		{"report", nil, v1alpha1.VulnerableKept, false},
+		{"untag", map[string]any{actionField: block, "onVulnerableTag": "Untag", "untaggable": []string{v110}}, v1alpha1.VulnerableUntagged, true},
+		{"untag refused", map[string]any{actionField: block, "onVulnerableTag": "Untag"}, v1alpha1.VulnerableUntagRefused, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, dst := newRegistry(t, false), newRegistry(t, false)
+			pushImages(t, dst, v110)
+			e := newEnv(t, src, dst, password)
+			e.gated(t, src.String(), tc.gate, time.Hour, critical, "0", true)
+			spec, err := os.ReadFile(e.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.write(t, e.spec, strings.Replace(string(spec), `"tags":{"keepLatest":2}`, `"tags":{"tags":["`+v110+`"]}`, 1))
+
+			code, out, msg := e.run(t, "--rescan")
+			if code != syncspec.ExitOK {
+				t.Fatalf("exit %d: %s\n%s", code, msg, out)
+			}
+			r, err := syncspec.ParseReport(msg)
+			if err != nil {
+				t.Fatalf("%v: %s", err, msg)
+			}
+			wantOutcome := v1alpha1.OutcomeCopied
+			if tc.gone {
+				wantOutcome = v1alpha1.OutcomeBlocked
+			}
+			if !r.Rescan || r.Copied != 0 || len(r.TagFindings) != 1 || len(r.Judged) != 1 || (len(r.Synced) == 0) != tc.gone {
+				t.Fatalf("report %s", msg)
+			}
+			if f := r.TagFindings[0]; f.Tag != v110 || f.RescanAction != tc.action || f.Outcome != wantOutcome || !f.PresentOnTarget {
+				t.Fatalf("tag finding %+v", f)
+			}
+			if lines := auditLines(t, out); len(lines) != 1 || lines[0].Action != "rescan" || lines[0].Untag != string(tc.action) || lines[0].Scan == nil {
+				t.Fatalf("audit %s", out)
+			}
+			if _, err := remote.Head(dst.Tag(v110)); (err != nil) != tc.gone {
+				t.Fatalf("target tag gone %v, want %v", err != nil, tc.gone)
+			}
+		})
+	}
+
+	t.Run("needs a gated spec", func(t *testing.T) {
+		src, dst := newRegistry(t, false), newRegistry(t, false)
+		e := newEnv(t, src, dst, password)
+		if code, _, msg := e.run(t, "--rescan"); code != syncspec.ExitConfig || !strings.Contains(msg, "--rescan needs a gated spec") {
+			t.Fatalf("exit %d: %s", code, msg)
+		}
+	})
 }

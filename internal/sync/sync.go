@@ -93,6 +93,8 @@ type Artifact struct {
 	// artifacts the gate did not copy because they are not only
 	// signatures, attestations or SBOMs.
 	SkippedReferrers []string
+	// Untag is what a re-scan did with a tag with findings.
+	Untag v1alpha1.VulnerableTagAction
 }
 
 // Result lists what happened to each selected tag. Overwritten mutated tags
@@ -106,7 +108,9 @@ type Result struct {
 	Copied, Skipped, Mutated, Failed []Artifact
 	// Blocked lists the tags the gate did not copy.
 	Blocked []Artifact
-	Errors  []string
+	// Untagged lists the tags a re-scan deleted from the target.
+	Untagged []Artifact
+	Errors   []string
 	// Gate is the scanner check of a gated run, syncspec.GateOK or a scan
 	// error reason; empty when nothing was scanned.
 	Gate string
@@ -164,7 +168,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 		}
 	}
 	var errs []error
-	if err := blockedError(&res); err != nil {
+	if err := blockedError(&res, res.Blocked); err != nil {
 		errs = append(errs, err)
 	}
 	if mutated {
@@ -179,7 +183,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 // stamp sets the finish time of tag in every list. A tag is processed
 // once, so its entries are the last ones appended.
 func stamp(res *Result, tag string, t time.Time) {
-	for _, as := range [][]Artifact{res.Copied, res.Skipped, res.Mutated, res.Failed, res.Blocked} {
+	for _, as := range [][]Artifact{res.Copied, res.Skipped, res.Mutated, res.Failed, res.Blocked, res.Untagged} {
 		if n := len(as); n > 0 && as[n-1].Tag == tag {
 			as[n-1].Finished = t
 		}
@@ -712,16 +716,16 @@ func (s *syncer) scanPresent(ctx context.Context, p *remote.Puller, repo name.Re
 	return sc, err
 }
 
-// blockedError reports tags blocked because they could not be judged, and
-// lists them in res.Errors. Tags blocked for findings are the gate working
-// and no error.
-func blockedError(res *Result) error {
+// blockedError reports the tags of as that could not be judged, and lists
+// them in res.Errors. Tags blocked for findings are the gate working and
+// no error.
+func blockedError(res *Result, as []Artifact) error {
 	var reasons []string
-	for _, a := range res.Blocked {
+	for _, a := range as {
 		if a.Scan.Verdict != vuln.ScanError {
 			continue
 		}
-		res.Errors = append(res.Errors, fmt.Sprintf("%s: blocked: scan error %s: %s", a.Tag, a.Scan.Reason, a.Scan.Detail))
+		res.Errors = append(res.Errors, fmt.Sprintf("%s: scan error %s: %s", a.Tag, a.Scan.Reason, a.Scan.Detail))
 		if !slices.Contains(reasons, a.Scan.Reason) {
 			reasons = append(reasons, a.Scan.Reason)
 		}

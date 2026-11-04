@@ -85,7 +85,11 @@ reads, for generated mirrors of a gated target only:
   `VulnerabilitiesFound` (copied anyway), `MirrorRefused` with
   `VulnerabilityBlocked` (blocked), `VulnerabilityScanFailed` (scan error,
   copied) or `MirrorRefused` with the scan error reason (blocked), with the
-  highest severity and the top three IDs.
+  highest severity and the top three IDs;
+- the mirror's `status.vulnerable` entry (re-scan) for each tag the pod
+  uses: Warning `MirroredImageVulnerable` with the highest severity, the
+  top three IDs and what the re-scan did with the tag (kept, untagged,
+  untag failed or refused).
 
 Pods using other tags get nothing. Each pod, source and tag keeps its own
 dedupe key, so an Event is recorded only when the verdict, outcome or
