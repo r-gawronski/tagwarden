@@ -4,6 +4,7 @@
 resources:
 - bases/mirror.tagwarden.dev_clustermirrortargets.yaml
 - bases/mirror.tagwarden.dev_artifactmirrors.yaml
+- bases/mirror.tagwarden.dev_vulnerabilityexceptions.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -46,6 +46,7 @@ values.
 | `templates/sync/serviceaccount.yaml` | hand |
 | `templates/trivy/*` | hand; rendered only with `trivy.enabled` |
 | `templates/mirror/resources.yaml` | hand |
+| `templates/vulnerability-exceptions/*` | hand; approver ClusterRole and the `approvedBy` admission policy |
 | `templates/crd/*`, `templates/rbac/*`, `templates/manager/*`, `templates/metrics/*` | generated on every `make helm` |
 
 `kubebuilder edit --plugins=helm/v2-alpha --force` overwrites the
@@ -81,8 +82,10 @@ server validates them against the Kubernetes and CRD schemas.
 | `manager.imagePullSecrets`, `.nodeSelector`, `.tolerations`, `.affinity` | empty | |
 | `manager.podSecurityContext`, `.securityContext`, `.resources` | hardened | runAsNonRoot, seccomp RuntimeDefault, read-only root FS, no privilege escalation, drop ALL, limits set |
 | `crd.enabled`, `crd.keep` | `true`, `true` | see below |
-| `rbac.helpers.enabled` | `false` | admin, editor and viewer ClusterRoles for the CRDs |
+| `rbac.helpers.enabled` | `false` | admin, editor and viewer ClusterRoles for the CRDs; `VulnerabilityException` gets a viewer only |
 | `trivy.enabled` | `false` | in-chart Trivy server for the vulnerability gate, see below |
+| `vulnerabilityExceptions.approvers` | `[]` | subjects bound to the `<release>-exception-approver` ClusterRole (write exceptions); the role is always rendered |
+| `vulnerabilityExceptions.approvedByPolicy.enabled` | `false` | ValidatingAdmissionPolicy: `spec.approvedBy` must equal the requesting user on create and update |
 | `targets` | `[]` | items `{name, spec}` render `ClusterMirrorTarget` |
 | `mirrors` | `[]` | items `{name, namespace, spec}` render `ArtifactMirror` |
 

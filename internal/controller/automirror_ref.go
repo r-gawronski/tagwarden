@@ -79,7 +79,10 @@ func parseImage(ref string, t *mirrorv1alpha1.ClusterMirrorTarget) (imageSource,
 	}
 	for _, a := range t.Spec.AllowedSources {
 		if registrySegment(a) == seg {
-			return imageSource{Registry: syncspec.CanonicalRegistry(string(a)), Repository: repo, Tag: s.Tag}, nil
+			// Same canonical form as a direct ref, so the generated name matches.
+			src := mirrorv1alpha1.Source{Registry: mirrorv1alpha1.RegistryHost(syncspec.CanonicalRegistry(string(a))), Repository: repo}
+			reg, repo, _ := strings.Cut(canonicalSource(src), "/")
+			return imageSource{Registry: reg, Repository: repo, Tag: s.Tag}, nil
 		}
 	}
 	return imageSource{}, errors.New("image points at the target registry, but its source registry is not in allowedSources")

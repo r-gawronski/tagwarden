@@ -35,6 +35,7 @@ rules:
   - mirror.tagwarden.dev
   resources:
   - artifactmirrors/finalizers
+  - vulnerabilityexceptions/status
   verbs:
   - update
 - apiGroups:
@@ -50,6 +51,7 @@ rules:
   - mirror.tagwarden.dev
   resources:
   - clustermirrortargets
+  - vulnerabilityexceptions
   verbs:
   - get
   - list

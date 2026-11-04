@@ -219,6 +219,117 @@ type SyncRequest struct {
 	Message string `json:"message,omitempty"`
 }
 
+// Severity is the severity of a vulnerability finding.
+// +kubebuilder:validation:Enum=Critical;High;Medium;Low;Unknown
+type Severity string
+
+// Severities.
+const (
+	SeverityCritical Severity = "Critical"
+	SeverityHigh     Severity = "High"
+	SeverityMedium   Severity = "Medium"
+	SeverityLow      Severity = "Low"
+	SeverityUnknown  Severity = "Unknown"
+)
+
+// FindingVerdict is the gate verdict of a tag listed in status.findings.
+// +kubebuilder:validation:Enum=Findings;ScanError
+type FindingVerdict string
+
+const (
+	// VerdictFindings means at least one finding at or above the severity
+	// threshold that no exception covers.
+	VerdictFindings FindingVerdict = "Findings"
+	// VerdictScanError means the gate could not judge the tag.
+	VerdictScanError FindingVerdict = "ScanError"
+)
+
+// FindingOutcome is what the gate did with a tag.
+// +kubebuilder:validation:Enum=Copied;Blocked
+type FindingOutcome string
+
+const (
+	// OutcomeCopied means the tag was copied to the target.
+	OutcomeCopied FindingOutcome = "Copied"
+	// OutcomeBlocked means the tag was not copied.
+	OutcomeBlocked FindingOutcome = "Blocked"
+)
+
+// SeverityCounts counts findings per severity.
+type SeverityCounts struct {
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Critical int32 `json:"critical,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	High int32 `json:"high,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Medium int32 `json:"medium,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Low int32 `json:"low,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Unknown int32 `json:"unknown,omitempty"`
+}
+
+// VulnerabilityFinding is the gate result of one tag with findings or a
+// scan error. Full detail is in the audit log.
+type VulnerabilityFinding struct {
+	// tag is the upstream tag.
+	// +kubebuilder:validation:MaxLength=128
+	// +required
+	Tag string `json:"tag"`
+
+	// digest is the index or manifest digest the tag resolved to.
+	// +kubebuilder:validation:MaxLength=71
+	// +required
+	Digest string `json:"digest"`
+
+	// verdict is Findings or ScanError.
+	// +required
+	Verdict FindingVerdict `json:"verdict"`
+
+	// outcome is Copied or Blocked.
+	// +required
+	Outcome FindingOutcome `json:"outcome"`
+
+	// presentOnTarget is true when the tag was already on the target, for
+	// example copied by a generated mirror of another namespace.
+	// +optional
+	PresentOnTarget bool `json:"presentOnTarget,omitempty"`
+
+	// severity is the highest severity among the findings.
+	// +optional
+	Severity Severity `json:"severity,omitempty"`
+
+	// counts are the findings per severity.
+	// +optional
+	Counts SeverityCounts `json:"counts,omitzero"`
+
+	// topIDs are up to five vulnerability IDs, highest severity first.
+	// +kubebuilder:validation:MaxItems=5
+	// +kubebuilder:validation:items:Pattern=`^[A-Z]+-[0-9A-Za-z-]{1,64}$`
+	// +listType=atomic
+	// +optional
+	TopIDs []string `json:"topIDs,omitempty"`
+
+	// scanError is the reason the tag could not be judged: DBStale,
+	// ScannerUnavailable, VersionMismatch or ScanFailed.
+	// +kubebuilder:validation:Enum=DBStale;ScannerUnavailable;VersionMismatch;ScanFailed
+	// +optional
+	ScanError string `json:"scanError,omitempty"`
+
+	// javaScanned is false when JAR files were not scanned.
+	// +required
+	JavaScanned bool `json:"javaScanned"`
+
+	// scannedAt is when the tag was scanned.
+	// +required
+	ScannedAt metav1.Time `json:"scannedAt"`
+}
+
 // ArtifactMirrorStatus defines the observed state of ArtifactMirror.
 type ArtifactMirrorStatus struct {
 	// lastSyncStartTime is when the last sync Job started, scheduled or
@@ -247,6 +358,19 @@ type ArtifactMirrorStatus struct {
 	// +listType=atomic
 	// +optional
 	Synced []SyncedTag `json:"synced,omitempty"`
+
+	// findings lists the tags of a generated mirror that the vulnerability
+	// gate found vulnerable or could not judge, at most 20.
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	// +optional
+	Findings []VulnerabilityFinding `json:"findings,omitempty"`
+
+	// javaScanned is false on generated mirrors of a gated target while
+	// scanner.javaDB is Disabled, so the JAR files that are not scanned
+	// stay visible. Absent on mirrors that are not gated.
+	// +optional
+	JavaScanned *bool `json:"javaScanned,omitempty"`
 
 	// observedGeneration is the spec generation the status refers to.
 	// +optional
