@@ -134,11 +134,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	all, err := s.list(ctx)
-	if err != nil {
-		return Result{}, err
-	}
-	selected, err := tags.Select(all, r.Policy)
+	selected, err := s.selectTags(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -224,6 +220,29 @@ func newSyncer(r Request) (*syncer, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// selectTags picks the tags to sync. A policy with only explicit tags
+// resolves each one directly and never lists the source, so the listing
+// limit cannot apply. A tag the source does not have is dropped, as when
+// selecting from a listing.
+func (s *syncer) selectTags(ctx context.Context) ([]string, error) {
+	p := s.req.Policy
+	if len(p.Include) > 0 || p.SemverRange != "" || p.KeepLatest > 0 {
+		all, err := s.list(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return tags.Select(all, p)
+	}
+	selected, err := tags.Select(p.Tags, p)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(selected, func(t string) bool {
+		_, err := resolve(ctx, s.src, s.req.Source.Tag(t))
+		return notFound(err)
+	}), nil
 }
 
 // list pages through the source tags and stops with an error past MaxTags,
