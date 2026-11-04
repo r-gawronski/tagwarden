@@ -20,11 +20,35 @@ go.work
 !vendor/**/zz_generated.*
 
 # editor and IDE paraphernalia
-.idea
-.vscode
+.idea/
+.vscode/
 *.swp
 *.swo
 *~
+.fleet/
+*.code-workspace
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Local environment, credentials and scratch output
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.dockerconfigjson
+/tmp/
+/dist/*.tgz
+*.log
 
 # Kubeconfig might contain secrets
 *.kubeconfig
