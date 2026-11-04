@@ -1,0 +1,53 @@
+name: E2E Gate Tests
+
+# Vulnerability gate e2e: downloads the scanner DB (about 1.6 GiB) and pulls
+# images from the internet. Runs on pull requests with the `e2e-gate` label,
+# nightly and on demand. Uses pull_request, never pull_request_target.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - LICENSE
+      - .github/CODEOWNERS
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-e2e-gate:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'e2e-gate') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'e2e-gate'))
+    # Job level, so a run that skips the job does not cancel a running one.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      # Per job: the build cache differs per job, a shared key keeps the smallest.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            bin
+          key: go-${{ runner.os }}-${{ github.job }}-${{ hashFiles('go.sum', 'go.mod', 'Makefile') }}
+          restore-keys: go-${{ runner.os }}-${{ github.job }}-
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.1.4
+      - run: make test-e2e-gate
