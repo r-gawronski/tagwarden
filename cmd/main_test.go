@@ -35,11 +35,28 @@ func TestValidateTrivy(t *testing.T) {
 		{name: "bad version", image: img, version: "latest", url: "http://x:4954"},
 		{name: "no scheme", image: img, version: ver, url: "x:4954"},
 		{name: "ftp", image: img, version: ver, url: "ftp://x"},
+		{name: "fully qualified", image: img, version: ver,
+			url: "http://tagwarden-trivy.tagwarden-system.svc.cluster.local.:4954", ok: true},
+		{name: "userinfo", image: img, version: ver, url: "http://user@x:4954"},
+		{name: "query", image: img, version: ver, url: "http://x:4954?a=b"},
+		{name: "empty query", image: img, version: ver, url: "http://x:4954?"},
+		{name: "fragment", image: img, version: ver, url: "http://x:4954#f"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := validateTrivy(tc.image, tc.version, tc.url); (err == nil) != tc.ok {
 				t.Errorf("err = %v, want ok = %v", err, tc.ok)
 			}
 		})
+	}
+}
+
+func TestValidateClusterDomain(t *testing.T) {
+	for d, ok := range map[string]bool{
+		"cluster.local": true, "corp.example": true, "local": true,
+		"": false, "cluster.local.": false, "Cluster.Local": false, "a b": false, "-x.local": false,
+	} {
+		if err := validateClusterDomain(d); (err == nil) != ok {
+			t.Errorf("validateClusterDomain(%q) = %v, want ok %v", d, err, ok)
+		}
 	}
 }

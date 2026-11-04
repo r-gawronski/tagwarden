@@ -510,3 +510,38 @@ func ParseReport(msg string) (Report, error) {
 	}
 	return r, nil
 }
+
+var clusterServiceName = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc)(\.cluster\.local)?$`)
+
+// ScannerURL returns the Trivy server URL that the controller probes and
+// gated Jobs use, with the host as a fully qualified name (trailing dot),
+// so resolv.conf search domains are never tried first: with ndots 5,
+// <svc>.<ns>.svc would otherwise resolve as <svc>.<ns>.svc.svc.<domain>
+// in a tenant namespace named svc. A cluster Service name
+// (<svc>.<ns>.svc, optionally with .cluster.local or .<clusterDomain>)
+// becomes <svc>.<ns>.svc.<clusterDomain>. and inCluster is true. IP
+// addresses are left as they are.
+func ScannerURL(raw, clusterDomain string) (string, bool, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false, err
+	}
+	host := strings.TrimSuffix(lowerASCII(u.Hostname()), ".")
+	if host == "" {
+		return "", false, errors.New("scanner URL has no host")
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return u.String(), false, nil
+	}
+	domain := strings.Trim(lowerASCII(clusterDomain), ".")
+	inCluster := false
+	if m := clusterServiceName.FindStringSubmatch(strings.TrimSuffix(host, "."+domain)); m != nil {
+		host, inCluster = m[1]+"."+domain, true
+	}
+	host += "."
+	if p := u.Port(); p != "" {
+		host += ":" + p
+	}
+	u.Host = host
+	return u.String(), inCluster, nil
+}

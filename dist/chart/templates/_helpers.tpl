@@ -123,6 +123,6 @@ the image tag.
 {{- if .Values.trivy.enabled }}
 - --trivy-image={{ include "tagwarden.trivyImage" . }}
 - --trivy-version={{ .Values.trivy.image.tag }}
-- --trivy-url=http://{{ include "tagwarden.trivyName" . }}.{{ .Release.Namespace }}.svc:4954
+- --trivy-url=http://{{ include "tagwarden.trivyName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.:4954
 {{- end }}
 {{- end }}
