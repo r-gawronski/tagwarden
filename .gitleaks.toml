@@ -3,6 +3,6 @@
 [extend]
 useDefault = true
 
-[[allowlists]]
+[allowlist]
 description = "Published AWS SigV4 test vectors, not secrets"
-paths = ['''^internal/synccmd/aws_test\.go$''']
+paths = ['''internal/synccmd/aws_test\.go''']
