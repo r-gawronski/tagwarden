@@ -47,7 +47,8 @@ const (
 // syncStatus records the result of the most recent finished Job of m. The
 // termination message is untrusted: it only fills in status and is never
 // used to decide what a mirror may do (threat model T12).
-func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, ev *pending) error {
+// For a gated mirror it also records the gate fields of the report.
+func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, gated bool, ev *pending) error {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(r.Namespace),
 		client.MatchingLabels{LabelMirror: mirrorHash(m.Namespace, m.Name)}); err != nil {
@@ -69,7 +70,7 @@ func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1al
 		return nil
 	}
 
-	cond := applyResult(m, job, done, term)
+	cond, rep := applyResult(m, job, done, term)
 	m.Status.LastSyncTime = &done.LastTransitionTime
 	meta.SetStatusCondition(&m.Status.Conditions, cond)
 	if isNew {
@@ -78,6 +79,9 @@ func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1al
 			eventType = corev1.EventTypeNormal
 		}
 		ev.add(eventType, cond.Reason, "Sync", cond.Message)
+	}
+	if gated && rep != nil && rep.V == syncspec.ReportVersionGate {
+		applyGate(m, rep, term.ExitCode == syncspec.ExitOK, isNew, ev)
 	}
 	return nil
 }
@@ -103,9 +107,9 @@ func latestFinished(jobs []batchv1.Job, m *mirrorv1alpha1.ArtifactMirror) (*batc
 }
 
 // applyResult sets synced and lastSuccessfulSyncTime from the result of a
-// finished Job and returns its Synced condition. term is nil when the
-// sync container left no result.
-func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batchv1.JobCondition, term *corev1.ContainerStateTerminated) metav1.Condition {
+// finished Job and returns its Synced condition and the parsed report, or
+// nil. term is nil when the sync container left no result.
+func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batchv1.JobCondition, term *corev1.ContainerStateTerminated) (metav1.Condition, *syncspec.Report) {
 	cond := metav1.Condition{Type: ConditionSynced, Status: metav1.ConditionFalse, ObservedGeneration: m.Generation}
 	var rep syncspec.Report
 	repErr := fmt.Errorf("no sync container result: %s", done.Reason)
@@ -126,6 +130,11 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 	case term.ExitCode == syncspec.ExitOK:
 		cond.Status, cond.Reason = metav1.ConditionTrue, ReasonSynced
 		m.Status.LastSuccessfulSyncTime = &done.LastTransitionTime
+	case term.ExitCode == syncspec.ExitConfig && (rep.Gate == syncspec.GateDBStale || rep.Gate == syncspec.GateVersionMismatch):
+		// A gated Job blocked by a stale DB or a scanner version mismatch
+		// exits 3 so it is not retried; the platform has to act, not the
+		// mirror's owner.
+		cond.Reason = rep.Gate
 	case term.ExitCode == syncspec.ExitConfig:
 		cond.Reason = ReasonConfigRejected
 	default:
@@ -144,8 +153,9 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 			cond.Reason = ReasonTruncated
 		}
 		cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + summary(rep)
+		return cond, &rep
 	}
-	return cond
+	return cond, nil
 }
 
 // finished returns the Complete or Failed condition of a finished Job.

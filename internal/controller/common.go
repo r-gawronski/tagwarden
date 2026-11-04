@@ -73,8 +73,11 @@ const (
 	ReasonClear              = "Clear"
 	ReasonDBStale            = "DBStale"
 	ReasonScannerUnavailable = "ScannerUnavailable"
-	ReasonVersionMismatch    = "VersionMismatch"
-	ReasonScanFailed         = "ScanFailed"
+	// ReasonNotConfigured: the gate is enabled but has no scanner URL, or
+	// no client image and version.
+	ReasonNotConfigured   = "NotConfigured"
+	ReasonVersionMismatch = "VersionMismatch"
+	ReasonScanFailed      = "ScanFailed"
 
 	// VulnerabilityException.
 	ReasonActive         = "Active"

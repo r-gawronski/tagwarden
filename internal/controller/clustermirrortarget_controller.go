@@ -83,6 +83,9 @@ type probeResult struct {
 func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var t mirrorv1alpha1.ClusterMirrorTarget
 	if err := r.Get(ctx, req.NamespacedName, &t); err != nil {
+		if apierrors.IsNotFound(err) {
+			gateUnscanned.DeleteLabelValues(req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	cond := metav1.Condition{
@@ -125,7 +128,13 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 			changed = meta.SetStatusCondition(&t.Status.Conditions, c) || changed
 		}
 		res.RequeueAfter = scannerProbeInterval
+		if sc.Reason == ReasonNotConfigured {
+			gateUnscanned.WithLabelValues(t.Name).Set(1)
+		} else {
+			gateUnscanned.DeleteLabelValues(t.Name)
+		}
 	} else {
+		gateUnscanned.DeleteLabelValues(t.Name)
 		changed = meta.RemoveStatusCondition(&t.Status.Conditions, ConditionScannerReady) || changed
 		changed = meta.RemoveStatusCondition(&t.Status.Conditions, ConditionVulnerabilityDBReady) || changed
 	}
@@ -159,8 +168,13 @@ func (r *ClusterMirrorTargetReconciler) scanner(ctx context.Context, g *mirrorv1
 	}
 	now := time.Now()
 	c, problem := effectiveScanner(g.Scanner, r.Scanner)
+	if problem != "" {
+		sc, db := scannerConditions(c, problem, nil, nil, maxAge, now)
+		sc.Reason = ReasonNotConfigured
+		return sc, db, nil
+	}
 	var ca []byte
-	if problem == "" && g.Scanner != nil && g.Scanner.CABundleSecretRef != nil {
+	if g.Scanner != nil && g.Scanner.CABundleSecretRef != nil {
 		ref := g.Scanner.CABundleSecretRef
 		s, _, msg, err := r.secret(ctx, ref.Name)
 		switch {

@@ -75,9 +75,21 @@ rewrites to the target project, so teams keep upstream image names.
 ## Vulnerability gate (#21)
 
 The gate applies to generated mirrors, because they take the normal sync
-path. A gate result such as a `VulnerabilityBlocked` reason on `Ready` or
-`Synced` reaches the pod as `MirrorRefused` or `SyncFailed` with that
-reason and message, without changes to this controller.
+path. Gate outcomes leave `Ready` and `Synced` True, so the relay also
+reads, for generated mirrors of a gated target only:
+
+- the target's `ScannerReady=False`: one Warning per pod and source,
+  `VulnerabilityScanFailed` under `onScanError: Report`, `MirrorRefused`
+  under `Block`;
+- the mirror's `status.findings` entry for each tag the pod uses: Warning
+  `VulnerabilitiesFound` (copied anyway), `MirrorRefused` with
+  `VulnerabilityBlocked` (blocked), `VulnerabilityScanFailed` (scan error,
+  copied) or `MirrorRefused` with the scan error reason (blocked), with the
+  highest severity and the top three IDs.
+
+Pods using other tags get nothing. Each pod, source and tag keeps its own
+dedupe key, so an Event is recorded only when the verdict, outcome or
+digest changes, and the key is cleared when the finding goes away.
 
 ## Not done
 

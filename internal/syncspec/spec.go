@@ -540,6 +540,9 @@ type TagFinding struct {
 // MaxReportIDs caps TagFinding.TopIDs.
 const MaxReportIDs = 3
 
+// maxReportClockSkew is how far in the future a report time may be.
+const maxReportClockSkew = 5 * time.Minute
+
 var (
 	tagPattern    = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`)
 	digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -652,6 +655,11 @@ func (f TagFinding) validate() error {
 	}
 	if len(f.TopIDs) > MaxReportIDs || slices.ContainsFunc(f.TopIDs, func(id string) bool { return !VulnID(id) }) {
 		return errors.New("topIDs")
+	}
+	// Status requires scannedAt; a zero time would make every status update
+	// of the mirror fail.
+	if f.ScannedAt.IsZero() || f.ScannedAt.After(time.Now().Add(maxReportClockSkew)) {
+		return errors.New("scannedAt")
 	}
 	if f.DBUpdatedAt != "" {
 		if _, err := time.Parse(time.RFC3339, f.DBUpdatedAt); err != nil {
