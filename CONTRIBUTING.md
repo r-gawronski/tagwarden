@@ -59,8 +59,9 @@ change recompiles the manager (about 3 minutes).
 
 ## CI
 
-Changes that touch only Markdown, `docs/`, `LICENSE` or
-`.github/CODEOWNERS` skip CI, CodeQL and e2e. DCO still runs.
+Every pull request runs all required checks, whatever it touches. On pushes
+to `main`, changes that touch only Markdown, `docs/`, `LICENSE` or
+`.github/CODEOWNERS` skip CI, CodeQL and e2e.
 
 On pull requests the e2e workflow runs only when the pull request has the
 `e2e` label: when the label is added and on every push after that. Without
