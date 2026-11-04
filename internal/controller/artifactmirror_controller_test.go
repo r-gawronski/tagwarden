@@ -656,6 +656,59 @@ var _ = Describe("ArtifactMirror Controller", func() {
 	})
 })
 
+// finishSyncJob creates a finished Job of m and its pod with the given sync
+// container result, the way the Job controller and kubelet would. A
+// foreign pod has no owner reference.
+func finishSyncJob(m *mirrorv1alpha1.ArtifactMirror, name string, at time.Time, exitCode int32, message string, foreignPod bool) {
+	labels, annotations := mirrorMeta(m)
+	podSpec := corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever,
+		Containers: []corev1.Container{{Name: syncContainer, Image: syncImage}}}
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: operatorNamespace,
+			Labels: labels, Annotations: annotations},
+		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: podSpec}},
+	}
+	ExpectWithOffset(1, k8sClient.Create(ctx, job)).To(Succeed())
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-pod", Namespace: operatorNamespace,
+			Labels: map[string]string{batchv1.JobNameLabel: job.Name}, Annotations: annotations,
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name,
+				UID: job.UID, Controller: new(true)}}},
+		Spec: podSpec,
+	}
+	if foreignPod {
+		pod.OwnerReferences = nil
+	}
+	ExpectWithOffset(1, k8sClient.Create(ctx, pod)).To(Succeed())
+	pod.Status.Phase = corev1.PodFailed
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: syncContainer, Image: syncImage, ImageID: syncImage,
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+			ExitCode: exitCode, Message: message, StartedAt: metav1.NewTime(at.Add(-time.Second)), FinishedAt: metav1.NewTime(at),
+		}}}}
+	if exitCode == 0 {
+		pod.Status.Phase = corev1.PodSucceeded
+	}
+	ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+	now := metav1.NewTime(at)
+	job.Status.StartTime = &metav1.Time{Time: at.Add(-time.Second)}
+	if exitCode == 0 {
+		job.Status.Succeeded = 1
+		job.Status.CompletionTime = &now
+		job.Status.Conditions = []batchv1.JobCondition{
+			{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue, LastTransitionTime: now},
+			{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: now},
+		}
+	} else {
+		job.Status.Failed = 1
+		job.Status.Conditions = []batchv1.JobCondition{
+			{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: "BackoffLimitExceeded"},
+			{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: "BackoffLimitExceeded"},
+		}
+	}
+	ExpectWithOffset(1, k8sClient.Status().Update(ctx, job)).To(Succeed())
+}
+
 var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 	var m *mirrorv1alpha1.ArtifactMirror
 	var jobs int
@@ -668,58 +721,10 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 		Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
 	})
 
-	// finishJob creates a finished Job and its pod with the given sync
-	// container result, the way the Job controller and kubelet would.
 	finishJob := func(exitCode int32, message string, foreignPod ...bool) time.Time {
 		jobs++
 		at := start.Add(time.Duration(jobs) * time.Minute)
-		labels, annotations := mirrorMeta(m)
-		podSpec := corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever,
-			Containers: []corev1.Container{{Name: syncContainer, Image: syncImage}}}
-		job := &batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%d", objectName(m), jobs), Namespace: operatorNamespace,
-				Labels: labels, Annotations: annotations},
-			Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: podSpec}},
-		}
-		Expect(k8sClient.Create(ctx, job)).To(Succeed())
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-pod", Namespace: operatorNamespace,
-				Labels: map[string]string{batchv1.JobNameLabel: job.Name}, Annotations: annotations,
-				OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name,
-					UID: job.UID, Controller: new(true)}}},
-			Spec: podSpec,
-		}
-		if len(foreignPod) > 0 {
-			pod.OwnerReferences = nil
-		}
-		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
-		pod.Status.Phase = corev1.PodFailed
-		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: syncContainer, Image: syncImage, ImageID: syncImage,
-			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-				ExitCode: exitCode, Message: message, StartedAt: metav1.NewTime(at.Add(-time.Second)), FinishedAt: metav1.NewTime(at),
-			}}}}
-		if exitCode == 0 {
-			pod.Status.Phase = corev1.PodSucceeded
-		}
-		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
-
-		now := metav1.NewTime(at)
-		job.Status.StartTime = &metav1.Time{Time: at.Add(-time.Second)}
-		if exitCode == 0 {
-			job.Status.Succeeded = 1
-			job.Status.CompletionTime = &now
-			job.Status.Conditions = []batchv1.JobCondition{
-				{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue, LastTransitionTime: now},
-				{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: now},
-			}
-		} else {
-			job.Status.Failed = 1
-			job.Status.Conditions = []batchv1.JobCondition{
-				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: "BackoffLimitExceeded"},
-				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: "BackoffLimitExceeded"},
-			}
-		}
-		Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+		finishSyncJob(m, fmt.Sprintf("%s-%d", objectName(m), jobs), at, exitCode, message, len(foreignPod) > 0)
 		return at
 	}
 
