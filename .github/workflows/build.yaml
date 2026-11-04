@@ -1,6 +1,7 @@
 # Builds the operator image and the chart. Pull requests build and scan only.
 # Pushes to main publish the image; v* tags publish the image and the chart,
-# both signed keylessly, with an SPDX SBOM attestation per image platform. See docs/design/release.md.
+# both signed keylessly, with an SPDX SBOM attestation per image platform.
+# A tag also gets a GitHub Release. See docs/design/release.md.
 name: Build
 
 on:
@@ -152,12 +153,17 @@ jobs:
           IMAGE: ${{ steps.meta.outputs.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
           DIGESTS: ${{ steps.platforms.outputs.digests }}
+          VERSION: ${{ steps.meta.outputs.version }}
           SYFT: ${{ steps.syft.outputs.cmd }}
         run: |
           cosign sign --yes --recursive "$IMAGE@$DIGEST"
+          index=$(docker buildx imagetools inspect --raw "$IMAGE@$DIGEST")
+          mkdir -p release
           for d in $DIGESTS; do
-            "$SYFT" scan "registry:$IMAGE@$d" -o spdx-json=sbom.spdx.json
-            cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$IMAGE@$d"
+            arch=$(jq -r --arg d "$d" '.manifests[] | select(.digest == $d) | .platform.architecture' <<<"$index")
+            sbom="release/tagwarden_${VERSION}_linux_${arch}.spdx.json"
+            "$SYFT" scan "registry:$IMAGE@$d" -o "spdx-json=$sbom"
+            cosign attest --yes --type spdxjson --predicate "$sbom" "$IMAGE@$d"
           done
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         if: github.ref_type == 'tag'
@@ -201,3 +207,60 @@ jobs:
             cosign verify "${check[@]}" "$CHART_REF" >/dev/null
           fi
           echo "Verified $IMAGE@$DIGEST $DIGESTS $CHART_REF"
+      - name: Collect release assets
+        if: github.ref_type == 'tag'
+        env:
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          CHART_REF: ${{ steps.chart.outputs.ref }}
+        run: |
+          cp "bin/chart/tagwarden-$VERSION.tgz" release/
+          cat > release/notes.md <<EOF
+          ## Artifacts
+
+          - Image: \`$IMAGE:$VERSION\` (\`$IMAGE@$DIGEST\`)
+          - Chart: \`oci://${CHART_REF%@*}:$VERSION\` (\`$CHART_REF\`)
+
+          Verify the signatures (keyless, cosign):
+
+          \`\`\`sh
+          cosign verify $IMAGE@$DIGEST \\
+            --certificate-identity-regexp '^https://github\\.com/$REPO/\\.github/workflows/build\\.yaml@refs/tags/v.+\$' \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          \`\`\`
+
+          The SPDX SBOMs of each platform image are attached. See docs/design/release.md for the chart and the attestations.
+
+          EOF
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.ref_type == 'tag'
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          pre=()
+          [[ "$TAG" == *-* ]] && pre=(--prerelease)
+          gh release create "$TAG" --verify-tag --title "$TAG" "${pre[@]}" \
+            --notes-file release/notes.md --generate-notes \
+            release/*.tgz release/*.spdx.json

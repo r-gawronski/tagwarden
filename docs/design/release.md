@@ -27,7 +27,7 @@ definition for `make docker-build` and the e2e tests.
 |---------|--------|
 | Pull request | Both platforms built, not pushed. Trivy scans the `linux/amd64` image and fails on fixed CRITICAL or HIGH findings. The release chart is packaged and linted with version `0.0.0-ci.<shortsha>`. |
 | Push to `main` | Image `ghcr.io/<owner>/tagwarden:main-<shortsha>`, scanned per platform, signed, with an SBOM attestation per platform. |
-| Tag `v<semver>` | Image `ghcr.io/<owner>/tagwarden:<version>` as for `main`, and chart `oci://ghcr.io/<owner>/charts/tagwarden:<version>`, signed. |
+| Tag `v<semver>` | Image `ghcr.io/<owner>/tagwarden:<version>` as for `main`, and chart `oci://ghcr.io/<owner>/charts/tagwarden:<version>`, signed. Then a GitHub Release for the tag (see below). |
 
 `<owner>` is the lowercased repository owner and `<version>` is the tag
 without the leading `v`. The job fails for a tag that is not strict
@@ -39,12 +39,27 @@ after the build, scan and chart jobs pass. After the push, Trivy scans each
 platform image of the pushed index (CRITICAL and HIGH, fixed only). A finding
 stops the job before anything is signed.
 
-GHCR packages of a private repository are private by default. Pulling them
-needs a token with `read:packages` until the packages are made public.
+GHCR packages start private. After the first push, the maintainer makes the
+image and chart packages public once.
 
-Tag protection is missing while the repository is private. When it goes
-public, add a tag ruleset for `v*` that limits who can create, move or delete
-release tags.
+The `release tags` ruleset limits who can create, update or delete `v*` tags
+to repository admins.
+
+## GitHub Release
+
+For a `v*` tag, the `release` job runs after `publish` succeeds, that is
+after the scan, signing and verification. It is the only job with
+`contents: write`. It runs
+`gh release create <tag> --verify-tag --generate-notes`, with `--prerelease`
+when the version has a pre-release suffix (`v0.1.0-rc.1`).
+
+Attached files: the packaged chart `tagwarden-<version>.tgz` and one SPDX SBOM
+per platform, `tagwarden_<version>_linux_<arch>.spdx.json`. `publish` hands
+them over as a workflow artifact. The notes start with the image and chart
+references with digests and a `cosign verify` example, followed by the
+generated changelog. `.github/release.yml` groups the changelog by label
+(security, enhancement, bug, documentation, ci/dependencies/test) and skips
+PRs labelled `skip-changelog`.
 
 ## Signatures and SBOM
 
@@ -57,7 +72,7 @@ platform digest. The workflow verifies every signature and attestation
 against its exact identity (`build.yaml@<ref>`) before it ends.
 
 Keyless signing writes the repository name, workflow path and ref to the
-public Rekor transparency log, even while the repository is private.
+public Rekor transparency log.
 
 Verify a release:
 
