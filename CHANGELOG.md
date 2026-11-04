@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.2] - 2026-11-04
+
+### Highlights
+
+A sync that selects no tags is now a warning (`NoTagsSelected`) instead of a silent success. Release notes come from this changelog.
+
+### Fixed
+
+- Report an empty tag selection loudly (#81)
+
+### Documentation
+
+- Add CHANGELOG and use it for release notes (#82)
+
 ## [0.1.0-rc.1] - 2026-11-04
 
 ### Highlights
