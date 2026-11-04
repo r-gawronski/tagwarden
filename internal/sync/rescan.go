@@ -69,10 +69,15 @@ func Rescan(ctx context.Context, r Request) (Result, error) {
 	if s.gate.root != nil {
 		_ = s.gate.root.Close()
 	}
-	if len(res.Failed) > 0 {
-		return res, fmt.Errorf("rescan: %d of %d tags failed", len(res.Failed), len(selected))
+	// A tag that could not be scanned is not judged: the run fails.
+	var errs []error
+	if err := blockedError(&res, res.Skipped); err != nil {
+		errs = append(errs, err)
 	}
-	return res, nil
+	if len(res.Failed) > 0 {
+		errs = append(errs, fmt.Errorf("rescan: %d of %d tags failed", len(res.Failed), len(selected)))
+	}
+	return res, errors.Join(errs...)
 }
 
 func (s *syncer) rescanTag(ctx context.Context, tag string, res *Result) error {

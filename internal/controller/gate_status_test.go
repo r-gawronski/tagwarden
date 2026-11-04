@@ -282,7 +282,7 @@ func TestApplyResultGateExitCodes(t *testing.T) {
 		{`{"v":1,"synced":[]}`, ReasonConfigRejected},
 	} {
 		m := &mirrorv1alpha1.ArtifactMirror{}
-		cond, rep := applyResult(m, job, done, &corev1.ContainerStateTerminated{ExitCode: syncspec.ExitConfig, Message: tc.msg})
+		cond, rep := applyResult(m, job, done, &corev1.ContainerStateTerminated{ExitCode: syncspec.ExitConfig, Message: tc.msg}, false)
 		if cond.Reason != tc.reason || rep == nil {
 			t.Errorf("%s: reason %s, report %v; want %s", tc.msg, cond.Reason, rep, tc.reason)
 		}
@@ -467,7 +467,7 @@ func TestApplyResultUntrustedGateReport(t *testing.T) {
 		`{"v":3,"synced":[]}`,
 	} {
 		m := &mirrorv1alpha1.ArtifactMirror{}
-		cond, rep := applyResult(m, job, done, &corev1.ContainerStateTerminated{ExitCode: 0, Message: msg})
+		cond, rep := applyResult(m, job, done, &corev1.ContainerStateTerminated{ExitCode: 0, Message: msg}, false)
 		if cond.Reason != ReasonCrashed || rep != nil {
 			t.Errorf("%s: reason %s, report %v", msg, cond.Reason, rep)
 		}

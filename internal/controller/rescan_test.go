@@ -81,6 +81,8 @@ func TestUntaggable(t *testing.T) {
 	elsewhere.Spec.Registry = "other.example.internal"
 	deleting := peer("deleting", tg.Name, mirrorv1alpha1.TagSelector{Tags: []string{v310}})
 	deleting.DeletionTimestamp, deleting.Finalizers = &metav1.Time{Time: time.Now()}, []string{Finalizer}
+	deletingOther := peer("deleting-other", "same-registry", mirrorv1alpha1.TagSelector{Tags: []string{tag39}})
+	deletingOther.DeletionTimestamp, deletingOther.Finalizers = deleting.DeletionTimestamp, deleting.Finalizers
 
 	untaggable := func(objs ...client.Object) []string {
 		t.Helper()
@@ -95,7 +97,7 @@ func TestUntaggable(t *testing.T) {
 		}
 		return got
 	}
-	if got := untaggable(deleting); !slices.Equal(got, []string{v310, tag39}) {
+	if got := untaggable(deleting, deletingOther); !slices.Equal(got, []string{v310, tag39}) {
 		t.Errorf("alone: %v", got)
 	}
 	// Another namespace on the same target, and one through another

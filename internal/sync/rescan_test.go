@@ -18,9 +18,12 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/tags"
@@ -111,5 +114,42 @@ func TestRescanRefusesPatternsAndUngated(t *testing.T) {
 	if _, err := Rescan(context.Background(), Request{Source: src.repo, Target: dst.repo,
 		Policy: tags.Policy{Tags: []string{v100}}}); err == nil {
 		t.Fatal("ungated rescan accepted")
+	}
+}
+
+func TestRescanRefusesMovedTag(t *testing.T) {
+	src, dst := newRegistry(t, regOpts{}), newRegistry(t, regOpts{})
+	d := push(t, dst.repo, v100, image(t))
+	var moved v1.Hash
+	e := newGate(t, vuln.Policy{Action: vuln.Block}, func(string) (string, string) {
+		// A sync moves the tag after the scan read it.
+		if moved.Hex == "" {
+			moved = push(t, dst.repo, v100, image(t))
+		}
+		return critical, "0"
+	})
+	e.gate.Untag, e.gate.Untaggable = true, map[string]bool{v100: true}
+	res, err := Rescan(context.Background(), Request{Source: src.repo, Target: dst.repo, Gate: e.gate,
+		Policy: tags.Policy{Tags: []string{v100}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := headDigest(t, dst.repo.Tag(v100)); !ok || got != moved.String() || got == d.String() {
+		t.Fatalf("tag %q on target %v, want the moved digest %s", got, ok, moved)
+	}
+	if len(res.Untagged) != 0 || len(res.Skipped) != 1 || res.Skipped[0].Untag != v1alpha1.VulnerableUntagRefused {
+		t.Fatalf("result %+v", res)
+	}
+}
+
+func TestRescanFailsOnScanError(t *testing.T) {
+	src, dst := newRegistry(t, regOpts{}), newRegistry(t, regOpts{})
+	push(t, dst.repo, v100, image(t))
+	e := newGate(t, vuln.Policy{Action: vuln.Block}, always("not json", "0"))
+	res, err := Rescan(context.Background(), Request{Source: src.repo, Target: dst.repo, Gate: e.gate,
+		Policy: tags.Policy{Tags: []string{v100}}})
+	var sb *ScanBlockedError
+	if !errors.As(err, &sb) || len(res.Errors) != 1 {
+		t.Fatalf("err %v, result %+v", err, res)
 	}
 }

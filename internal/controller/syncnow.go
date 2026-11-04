@@ -178,12 +178,12 @@ func jobFrom(cj *batchv1.CronJob, name, trigger string) *batchv1.Job {
 }
 
 // trackSyncStart moves status.lastSyncStartTime to the latest start of a
-// sync Job of m. Jobs that have not started yet do not count; a request
+// sync Job of m; re-scans do not count. Jobs that have not started yet do not count; a request
 // sets the time when it creates its Job.
 func trackSyncStart(m *mirrorv1alpha1.ArtifactMirror, jobs []batchv1.Job) {
 	for i := range jobs {
 		s := jobs[i].Status.StartTime
-		if s != nil && ownedBy(&jobs[i], m) && (m.Status.LastSyncStartTime == nil || m.Status.LastSyncStartTime.Before(s)) {
+		if s != nil && ownedBy(&jobs[i], m) && jobs[i].Annotations[AnnotationTrigger] != TriggerRescan && (m.Status.LastSyncStartTime == nil || m.Status.LastSyncStartTime.Before(s)) {
 			m.Status.LastSyncStartTime = s.DeepCopy()
 		}
 	}

@@ -64,7 +64,7 @@ func nextRescan(m *mirrorv1alpha1.ArtifactMirror, base time.Time, interval time.
 
 // rescan starts a re-scan Job of a gated mirror with rescanInterval when
 // its next slot after status.lastRescan (or, before the first re-scan,
-// after the last successful sync) has come. Like a sync-now request it
+// after the last successful sync, or the last sync that left tags) has come. Like a sync-now request it
 // waits while a Job of the mirror runs; in addition at most
 // maxRescansPerTarget re-scans of the target run at once. The Job comes
 // from the CronJob template with the fixed argument --rescan.
@@ -78,6 +78,10 @@ func (r *ArtifactMirrorReconciler) rescan(ctx context.Context, t *mirrorv1alpha1
 	base := m.Status.LastRescan
 	if base == nil {
 		base = m.Status.LastSuccessfulSyncTime
+	}
+	if base == nil && len(m.Status.Synced) > 0 {
+		// A partial sync left tags on the target.
+		base = m.Status.LastSyncTime
 	}
 	if base == nil {
 		// Nothing is on the target yet; the first sync judges every tag.

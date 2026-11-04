@@ -168,7 +168,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 		}
 	}
 	var errs []error
-	if err := blockedError(&res); err != nil {
+	if err := blockedError(&res, res.Blocked); err != nil {
 		errs = append(errs, err)
 	}
 	if mutated {
@@ -716,16 +716,16 @@ func (s *syncer) scanPresent(ctx context.Context, p *remote.Puller, repo name.Re
 	return sc, err
 }
 
-// blockedError reports tags blocked because they could not be judged, and
-// lists them in res.Errors. Tags blocked for findings are the gate working
-// and no error.
-func blockedError(res *Result) error {
+// blockedError reports the tags of as that could not be judged, and lists
+// them in res.Errors. Tags blocked for findings are the gate working and
+// no error.
+func blockedError(res *Result, as []Artifact) error {
 	var reasons []string
-	for _, a := range res.Blocked {
+	for _, a := range as {
 		if a.Scan.Verdict != vuln.ScanError {
 			continue
 		}
-		res.Errors = append(res.Errors, fmt.Sprintf("%s: blocked: scan error %s: %s", a.Tag, a.Scan.Reason, a.Scan.Detail))
+		res.Errors = append(res.Errors, fmt.Sprintf("%s: scan error %s: %s", a.Tag, a.Scan.Reason, a.Scan.Detail))
 		if !slices.Contains(reasons, a.Scan.Reason) {
 			reasons = append(reasons, a.Scan.Reason)
 		}
