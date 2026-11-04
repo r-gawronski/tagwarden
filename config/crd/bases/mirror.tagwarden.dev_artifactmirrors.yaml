@@ -283,6 +283,117 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              findings:
+                description: |-
+                  findings lists the tags of a generated mirror that the vulnerability
+                  gate found vulnerable or could not judge, at most 20.
+                items:
+                  description: |-
+                    VulnerabilityFinding is the gate result of one tag with findings or a
+                    scan error. Full detail is in the audit log.
+                  properties:
+                    counts:
+                      description: counts are the findings per severity.
+                      properties:
+                        critical:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        high:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        low:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        medium:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        unknown:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                      type: object
+                    digest:
+                      description: digest is the index or manifest digest the tag
+                        resolved to.
+                      maxLength: 71
+                      type: string
+                    javaScanned:
+                      description: javaScanned is false when JAR files were not scanned.
+                      type: boolean
+                    outcome:
+                      description: outcome is Copied or Blocked.
+                      enum:
+                      - Copied
+                      - Blocked
+                      type: string
+                    presentOnTarget:
+                      description: |-
+                        presentOnTarget is true when the tag was already on the target, for
+                        example copied by a generated mirror of another namespace.
+                      type: boolean
+                    scanError:
+                      description: |-
+                        scanError is the reason the tag could not be judged: DBStale,
+                        ScannerUnavailable, VersionMismatch or ScanFailed.
+                      enum:
+                      - DBStale
+                      - ScannerUnavailable
+                      - VersionMismatch
+                      - ScanFailed
+                      type: string
+                    scannedAt:
+                      description: scannedAt is when the tag was scanned.
+                      format: date-time
+                      type: string
+                    severity:
+                      description: severity is the highest severity among the findings.
+                      enum:
+                      - Critical
+                      - High
+                      - Medium
+                      - Low
+                      - Unknown
+                      type: string
+                    tag:
+                      description: tag is the upstream tag.
+                      maxLength: 128
+                      type: string
+                    topIDs:
+                      description: topIDs are up to five vulnerability IDs, highest
+                        severity first.
+                      items:
+                        pattern: ^[A-Z]+-[0-9A-Za-z-]{1,64}$
+                        type: string
+                      maxItems: 5
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    verdict:
+                      description: verdict is Findings or ScanError.
+                      enum:
+                      - Findings
+                      - ScanError
+                      type: string
+                  required:
+                  - digest
+                  - javaScanned
+                  - outcome
+                  - scannedAt
+                  - tag
+                  - verdict
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
+              javaScanned:
+                description: |-
+                  javaScanned is false on generated mirrors of a gated target while
+                  scanner.javaDB is Disabled, so the JAR files that are not scanned
+                  stay visible. Absent on mirrors that are not gated.
+                type: boolean
               lastSuccessfulSyncTime:
                 description: lastSuccessfulSyncTime is when the last successful sync
                   finished.

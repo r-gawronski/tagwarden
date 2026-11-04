@@ -192,6 +192,11 @@ var _ = BeforeSuite(func() {
 		APIReader: mgr.GetAPIReader(),
 		Recorder:  recorder,
 	}).SetupWithManager(mgr)).To(Succeed())
+	Expect((&VulnerabilityExceptionReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: recorder,
+	}).SetupWithManager(mgr)).To(Succeed())
 	go func() {
 		defer GinkgoRecover()
 		Expect(mgr.Start(ctx)).To(Succeed())

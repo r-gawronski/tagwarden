@@ -132,6 +132,289 @@ spec:
                         @daily
                       rule: self.matches('^(@(yearly|annually|monthly|weekly|daily|midnight|hourly)|[0-9A-Za-z*/,?-]+(
                         +[0-9A-Za-z*/,?-]+){4})$')
+                  vulnerabilityGate:
+                    description: |-
+                      vulnerabilityGate scans the images of generated mirrors with a Trivy
+                      server and acts on known vulnerabilities. User-defined mirrors are
+                      never scanned.
+                    properties:
+                      action:
+                        default: Report
+                        description: |-
+                          action is what happens to a tag with findings: Report copies it and
+                          records the findings, Block does not copy it.
+                        enum:
+                        - Report
+                        - Block
+                        type: string
+                      enabled:
+                        description: |-
+                          enabled turns the gate on. With action or onScanError Block,
+                          autoMirror.project is reserved for generated mirrors: a user-defined
+                          mirror there gets Ready=False with reason ProjectReservedForAutoMirror.
+                        type: boolean
+                      ignoreUnfixed:
+                        description: ignoreUnfixed does not count findings without
+                          a fixed version.
+                        type: boolean
+                      includeUnknown:
+                        description: |-
+                          includeUnknown counts findings without a vendor severity as if they
+                          were at the severity threshold. They are always reported.
+                        type: boolean
+                      maxDBAge:
+                        default: 72h
+                        description: |-
+                          maxDBAge is the oldest server vulnerability DB a scan may use. An
+                          older DB is a scan error. At least 1h.
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be at least 1h
+                          rule: duration(self) >= duration('1h')
+                      maxExceptionDuration:
+                        default: 2160h
+                        description: |-
+                          maxExceptionDuration caps how far after its creation a
+                          VulnerabilityException for this target may expire. Longer ones are
+                          ignored. Between 1h and 2160h (90 days).
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be between 1h and 2160h
+                          rule: duration(self) >= duration('1h') && duration(self)
+                            <= duration('2160h')
+                      onScanError:
+                        default: Report
+                        description: |-
+                          onScanError is what happens to a tag the gate could not judge:
+                          Report copies it and records the error, Block does not copy it.
+                        enum:
+                        - Report
+                        - Block
+                        type: string
+                      onVulnerableTag:
+                        default: Report
+                        description: |-
+                          onVulnerableTag is what a re-scan does with a mirrored tag that has
+                          findings. Untag needs action Block.
+                        enum:
+                        - Report
+                        - Untag
+                        type: string
+                      rescanInterval:
+                        description: |-
+                          rescanInterval re-scans mirrored tags from the target registry this
+                          often. No re-scan when unset. At least 1h.
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be at least 1h
+                          rule: duration(self) >= duration('1h')
+                      scanner:
+                        description: |-
+                          scanner configures the Trivy server and the client sidecar. All
+                          fields are optional with the server the chart deploys.
+                        properties:
+                          caBundleSecretRef:
+                            description: |-
+                              caBundleSecretRef holds the CA of an https server. It is mounted
+                              only in the scanner sidecar and read by the controller.
+                            properties:
+                              key:
+                                default: ca.crt
+                                description: key in the Secret that holds the PEM
+                                  data.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                              name:
+                                description: name of the Secret.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          image:
+                            description: |-
+                              image is the Trivy client image, pinned by digest, for example
+                              registry.example.internal/platform/ghcr.io/aquasecurity/trivy@sha256:<digest>.
+                              Defaults to the chart's Trivy image. Set it together with version.
+                            maxLength: 512
+                            type: string
+                            x-kubernetes-validations:
+                            - message: 'must be pinned by digest: <repository>@sha256:<64
+                                hex>'
+                              rule: self.matches(r'^[^@\s]+@sha256:[0-9a-f]{64}$')
+                          javaDB:
+                            default: Disabled
+                            description: |-
+                              javaDB selects how JAR files are scanned. Disabled skips them and
+                              reports javaScanned: false; PerJob pulls the Java DB in each Job.
+                            enum:
+                            - Disabled
+                            - PerJob
+                            type: string
+                          javaDBRepository:
+                            description: |-
+                              javaDBRepository is the Java DB in spec.registry with its tag, for
+                              example registry.example.internal/platform/ghcr.io/aquasecurity/trivy-java-db:1.
+                              Required with javaDB PerJob.
+                            maxLength: 512
+                            type: string
+                            x-kubernetes-validations:
+                            - message: must be <registry>/<repository>:<tag>
+                              rule: self.matches(r'^[^/@\s]+(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)+:[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$')
+                          resources:
+                            description: |-
+                              resources of the scanner sidecar. Defaults to requests 100m and
+                              256Mi, limits 2 CPUs and 2Gi.
+                            properties:
+                              claims:
+                                description: |-
+                                  Claims lists the names of resources, defined in spec.resourceClaims,
+                                  that are used by this container.
+
+                                  This field depends on the
+                                  DynamicResourceAllocation feature gate.
+
+                                  This field is immutable. It can only be set for containers.
+                                items:
+                                  description: ResourceClaim references one entry
+                                    in PodSpec.ResourceClaims.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name must match the name of one entry in pod.spec.resourceClaims of
+                                        the Pod where this field is used. It makes that resource available
+                                        inside a container.
+                                      type: string
+                                    request:
+                                      description: |-
+                                        Request is the name chosen for a request in the referenced claim.
+                                        If empty, everything from the claim is made available, otherwise
+                                        only the result of this request.
+                                      type: string
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - name
+                                x-kubernetes-list-type: map
+                              limits:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Limits describes the maximum amount of compute resources allowed.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                              requests:
+                                additionalProperties:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                description: |-
+                                  Requests describes the minimum amount of compute resources required.
+                                  If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                                  otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                                  More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                                type: object
+                            type: object
+                          storage:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            default: 20Gi
+                            description: |-
+                              storage is the size limit of the emptyDir that holds the artifact
+                              being scanned.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                            x-kubernetes-validations:
+                            - message: must be positive
+                              rule: quantity(string(self)).isGreaterThan(quantity('0'))
+                          timeout:
+                            default: 10m
+                            description: timeout of one manifest scan. Between 1m
+                              and 1h.
+                            type: string
+                            x-kubernetes-validations:
+                            - message: must be between 1m and 1h
+                              rule: duration(self) >= duration('1m') && duration(self)
+                                <= duration('1h')
+                          tokenSecretRef:
+                            description: |-
+                              tokenSecretRef holds the server token, sent in the Trivy-Token
+                              header. Defaults to the token Secret the chart creates. Only the
+                              scanner sidecar gets it.
+                            properties:
+                              key:
+                                default: token
+                                description: key in the Secret that holds the token.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                              name:
+                                description: name of the Secret.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          url:
+                            description: |-
+                              url of the Trivy server. Defaults to the server the chart deploys.
+                              It must be https unless the host is <service>.<namespace>.svc or
+                              <service>.<namespace>.svc.cluster.local, with an optional port and
+                              no path.
+                            maxLength: 512
+                            type: string
+                            x-kubernetes-validations:
+                            - message: must be an http or https URL
+                              rule: isURL(self) && (self.startsWith('https://') ||
+                                self.startsWith('http://'))
+                            - message: must not contain credentials, a query or a
+                                fragment
+                              rule: '!self.contains(''@'') && !self.contains(''?'')
+                                && !self.contains(''#'')'
+                            - message: must be https unless the host is <service>.<namespace>.svc
+                                or <service>.<namespace>.svc.cluster.local
+                              rule: self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?/?$')
+                          version:
+                            description: |-
+                              version is the Trivy version of image, for example 0.76.1. The
+                              server must have the same major and minor version.
+                            maxLength: 32
+                            pattern: ^[0-9]+\.[0-9]+\.[0-9]+$
+                            type: string
+                        type: object
+                        x-kubernetes-validations:
+                        - message: set image and version together
+                          rule: has(self.image) == has(self.version)
+                        - message: javaDB PerJob needs javaDBRepository
+                          rule: '!has(self.javaDB) || self.javaDB != ''PerJob'' ||
+                            has(self.javaDBRepository)'
+                      severity:
+                        default: Critical
+                        description: severity is the lowest severity that counts against
+                          a tag.
+                        enum:
+                        - Critical
+                        - High
+                        - Medium
+                        - Low
+                        type: string
+                    type: object
+                    x-kubernetes-validations:
+                    - message: onVulnerableTag Untag needs action Block
+                      rule: '!has(self.onVulnerableTag) || self.onVulnerableTag !=
+                        ''Untag'' || (has(self.action) && self.action == ''Block'')'
                 required:
                 - project
                 type: object
@@ -641,6 +924,12 @@ spec:
                 node pulls through a path rewrite stay bound to one source
               rule: '!has(self.autoMirror) || self.projects.all(p, p.name != self.autoMirror.project
                 || !has(p.allowRepositoryOverride) || !p.allowRepositoryOverride)'
+            - message: autoMirror.vulnerabilityGate.scanner.javaDBRepository must
+                be in spec.registry
+              rule: '!has(self.autoMirror) || !has(self.autoMirror.vulnerabilityGate)
+                || !has(self.autoMirror.vulnerabilityGate.scanner) || !has(self.autoMirror.vulnerabilityGate.scanner.javaDBRepository)
+                || self.autoMirror.vulnerabilityGate.scanner.javaDBRepository.startsWith(self.registry
+                + ''/'')'
             - message: set exactly one of credentialsSecretRef or auth
               rule: has(self.credentialsSecretRef) != has(self.auth)
             - message: auth.azureWorkloadIdentity needs an Azure Container Registry
