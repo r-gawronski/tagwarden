@@ -120,20 +120,14 @@ var (
 		"sha256:02bb6f428431fbc2809c5d1b41eab5a68350194fb508869a33cb1af4444c9b11"}
 	vulnerableCVE = "CVE-2022-48174"
 
-	// cleanImage has no HIGH or CRITICAL finding in the same DB.
-	cleanImage = gateImage{"registry.k8s.io", "pause", "3.10",
-		"sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a"}
+	// cleanImage has no finding of any severity on linux/amd64 and
+	// linux/arm64 in the same DB (no OS packages, one static binary).
+	// registry.k8s.io/pause does not do: its Windows children carry old Go
+	// binaries with CRITICAL findings. gcr.io/distroless/static is clean but
+	// has too many tags for the sync engine's tag listing limit.
+	cleanImage = gateImage{"docker.io", "library/hello-world", "linux",
+		"sha256:5e22040d441e5fb3aed38368acbe8486b575d7018df38dbdfbc7311fbb2ef3a9"}
 )
-
-// pendingUntilGateMerged skips a spec whose assertions depend on the exact
-// behaviour of the rendering (#57) and status (#58) pull requests, until the
-// branch is rebased on main. Set E2E_GATE_ASSERT=1 to run them anyway.
-// ponytail: delete this helper and its calls after the rebase.
-func pendingUntilGateMerged() {
-	if os.Getenv("E2E_GATE_ASSERT") != "1" {
-		Skip("depends on the gate rendering and status PRs (#57, #58); set E2E_GATE_ASSERT=1 to run")
-	}
-}
 
 // kindNodes returns the container names of the nodes of the kind cluster.
 func kindNodes() []string {
@@ -181,7 +175,7 @@ func gateHelm(trivyOn bool, extra ...string) {
 		"--set", "trivy.db.caBundleSecretRef.key=ca.crt",
 		"--set-json", "trivy.networkPolicy.registryEgress="+string(egress),
 		"--set", "trivy.persistence.size=5Gi",
-		"--wait", "--timeout", "10m")
+		"--force-conflicts", "--wait", "--timeout", "10m")
 	args = append(args, extra...)
 	_, err = utils.Run(exec.Command("helm", args...))
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "helm upgrade for the gate failed")
@@ -308,7 +302,7 @@ func newTenant(prefix string) string {
 // The pod is named "app".
 func applyAnnotatedPod(ns string, img gateImage) {
 	container := map[string]any{"name": "app", "image": img.ref()}
-	if img.registry == "docker.io" {
+	if img.repository == "library/alpine" {
 		container["command"] = []string{"sleep", "3600"}
 	}
 	b, err := json.Marshal(map[string]any{

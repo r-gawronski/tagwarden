@@ -41,8 +41,7 @@ import (
 )
 
 // Scenarios of step 8 of docs/design/vulnerability-gate.md. Run with
-// make test-e2e-gate. Specs that call pendingUntilGateMerged() assert the
-// behaviour of the rendering (#57) and status (#58) pull requests.
+// make test-e2e-gate.
 var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate"), func() {
 	var (
 		ca      *testCA
@@ -182,8 +181,6 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 	// ---- Verdicts ----
 
 	Describe("verdicts", func() {
-		BeforeEach(pendingUntilGateMerged)
-
 		It("mirrors a vulnerable image under Report and tells the pod", func() {
 			ns, pod, m := run("gate-report", vulnerableImage)
 			Expect(meta.IsStatusConditionTrue(m.Status.Conditions, "Synced")).To(BeTrue())
@@ -275,8 +272,6 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 	// ---- Scanner outage, stale DB ----
 
 	Describe("scanner failures", func() {
-		BeforeEach(pendingUntilGateMerged)
-
 		It("reports a stopped server on the target while a user mirror keeps syncing", func() {
 			_, err := utils.Run(exec.Command("kubectl", "scale", "statefulset", trivyServer, "-n", namespace, "--replicas=0"))
 			Expect(err).NotTo(HaveOccurred())
@@ -357,28 +352,49 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 				g.Expect(c.Reason).To(Equal("NotConfigured"))
 			}).Should(Succeed())
 
-			By("flagging the generated mirror and warning the pod, even under Report")
+			By("flagging the generated mirror and warning, even under Report")
 			ns, pod, m := run("gate-noscanner", vulnerableImage)
 			gate := condition(m.Status.Conditions, "VulnerabilityGate")
 			Expect(gate).NotTo(BeNil())
 			Expect(gate.Status).To(Equal(metav1.ConditionFalse))
+			Expect(gate.Reason).To(Equal("NotConfigured"))
+			expectOnTarget(vulnerableImage, true) // copied unscanned, loudly
 			Eventually(func(g Gomega) {
-				evs := podEvents(ns, pod)
-				g.Expect(evs["VulnerabilityScanFailed"]).NotTo(BeEmpty())
-				g.Expect(evs["VulnerabilityScanFailed"][0].Type).To(Equal(corev1.EventTypeWarning))
+				out, err := utils.Run(exec.Command("kubectl", "get", "events", "-n", ns, "-o", "json",
+					"--field-selector", "involvedObject.kind=ArtifactMirror,type=Warning"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(ContainSubstring("NotConfigured"))
 			}).Should(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(podEvents(ns, pod)).To(HaveKey("VulnerabilityScanFailed"))
+			}).Should(Succeed())
+
+			By("refusing to render a CronJob under Block")
+			setGate(map[string]any{"action": "Block", "onScanError": "Block"})
+			ns2 := newTenant("gate-noscanner-block")
+			applyAnnotatedPod(ns2, cleanImage)
+			Eventually(func(g Gomega) {
+				c := condition(generated(g, ns2, cleanImage).Status.Conditions, "Ready")
+				g.Expect(c).NotTo(BeNil())
+				g.Expect(c.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(c.Reason).To(Equal("ScannerUnavailable"))
+			}).Should(Succeed())
+			_, err := utils.Run(exec.Command("kubectl", "get", "cronjob",
+				cronJobName(ns2, cleanImage.generatedMirror()), "-n", namespace))
+			Expect(err).To(MatchError(ContainSubstring("NotFound")))
+			// Not asserted: the gauge tagwarden_vulnerability_gate_unscanned{target}
+			// is 1 here. Reading it needs the authenticated metrics endpoint (see
+			// the Manager spec) and is left for a follow-up.
 		})
 	})
 
 	// ---- Cases the step 6 and 7 author asked to verify ----
 
 	Describe("sidecar", func() {
-		BeforeEach(pendingUntilGateMerged)
-
 		// sidecarOf returns the scanner container of the CronJob of a
 		// generated mirror: a native sidecar, an init container with
 		// restartPolicy Always.
-		sidecarOf := func(ns string, img gateImage) corev1.Container {
+		sidecarOf := func(ns string, img gateImage) (corev1.Container, corev1.PodSpec) {
 			GinkgoHelper()
 			var cj batchv1.CronJob
 			Eventually(func(g Gomega) {
@@ -389,11 +405,11 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 			}).Should(Succeed())
 			for _, c := range cj.Spec.JobTemplate.Spec.Template.Spec.InitContainers {
 				if c.Name == "scanner" {
-					return c
+					return c, cj.Spec.JobTemplate.Spec.Template.Spec
 				}
 			}
 			Fail("the CronJob has no scanner sidecar")
-			return corev1.Container{}
+			return corev1.Container{}, corev1.PodSpec{}
 		}
 
 		It("starts as 65532 with a read-only root and takes the report template from the environment", func() {
@@ -402,14 +418,15 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 			applyAnnotatedPod(ns, cleanImage)
 
 			By("checking the rendered container")
-			sc := sidecarOf(ns, cleanImage)
+			sc, podSpec := sidecarOf(ns, cleanImage)
 			Expect(sc.Image).To(HaveSuffix("@" + trivyDigest))
 			Expect(sc.SecurityContext).NotTo(BeNil())
 			Expect(sc.SecurityContext.ReadOnlyRootFilesystem).To(HaveValue(BeTrue()))
 			Expect(sc.SecurityContext.AllowPrivilegeEscalation).To(HaveValue(BeFalse()))
 			Expect(sc.SecurityContext.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
-			Expect(sc.SecurityContext.RunAsUser).To(HaveValue(BeEquivalentTo(65532)),
-				"the Trivy image has no USER, so the sidecar must set the user itself")
+			// The Trivy image has no USER: the user comes from the pod.
+			Expect(podSpec.SecurityContext.RunAsUser).To(HaveValue(BeEquivalentTo(65532)))
+			Expect(podSpec.SecurityContext.RunAsNonRoot).To(HaveValue(BeTrue()))
 			Expect(sc.Command).To(Equal([]string{"/bin/sh", "-c", syncspec.SidecarScript}))
 			var tmpl string
 			for _, e := range sc.Env {

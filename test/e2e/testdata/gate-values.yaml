@@ -36,7 +36,7 @@ targets:
       sourceCABundles:
         - registry: source.example.internal:5000
           secretRef: {name: e2e-ca}
-      allowedSources: [docker.io, registry.k8s.io, source.example.internal:5000]
+      allowedSources: [docker.io, source.example.internal:5000]
       projects:
         - name: auto
           namespaceSelector:
