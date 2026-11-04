@@ -43,6 +43,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 
+	"github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
 	"github.com/r-gawronski/tagwarden/internal/tags"
 	"github.com/r-gawronski/tagwarden/internal/vuln"
@@ -177,7 +178,8 @@ func TestGateReportCopiesScannedBytes(t *testing.T) {
 	src, dst := newRegistry(t, regOpts{referrers: true}), newRegistry(t, regOpts{referrers: true})
 	img := image(t)
 	d := push(t, src.repo, v100, img)
-	ref := pushReferrer(t, src.repo, v1.Descriptor{MediaType: types.DockerManifestSchema2, Digest: d, Size: must(img.Size())})
+	sig := signature(t, &v1.Descriptor{MediaType: types.DockerManifestSchema2, Digest: d, Size: must(img.Size())})
+	ref := push(t, src.repo, "sig", sig)
 	e := newGate(t, vuln.Policy{Action: vuln.Report}, always(critical, "0"))
 
 	res, err := Run(context.Background(), gatedRequest(src, dst, e.gate))
@@ -262,13 +264,13 @@ func TestGateException(t *testing.T) {
 func TestGateMultiArch(t *testing.T) {
 	src, dst := newRegistry(t, regOpts{}), newRegistry(t, regOpts{})
 	attestation := map[string]string{"vnd.docker.reference.type": "attestation-manifest"}
-	amd64, arm64, att := image(t), image(t), image(t)
+	amd64, arm64, att := image(t), image(t), attestationImage(t)
 	idx := mutate.IndexMediaType(empty.Index, types.OCIImageIndex)
 	idx = mutate.AppendManifests(idx,
 		// A publisher-controlled annotation never skips a real platform.
 		mutate.IndexAddendum{Add: amd64, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "amd64"}, Annotations: attestation}},
 		mutate.IndexAddendum{Add: arm64, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "arm64"}}},
-		mutate.IndexAddendum{Add: att, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "unknown", Architecture: "unknown"}, Annotations: attestation}},
+		mutate.IndexAddendum{Add: att, Descriptor: v1.Descriptor{Platform: unknownPlatform, Annotations: attestation}},
 	)
 	d := push(t, src.repo, v100, idx)
 	armHex := digestOf(t, arm64).Hex
@@ -304,6 +306,49 @@ func TestGateMultiArch(t *testing.T) {
 		if _, ok := headDigest(t, dst.repo.Digest(digestOf(t, c).String())); !ok {
 			t.Fatal("child missing on target")
 		}
+	}
+}
+
+var unknownPlatform = &v1.Platform{OS: "unknown", Architecture: "unknown"}
+
+// attestationImage is a buildkit-style attestation manifest: in-toto layers only.
+func attestationImage(t *testing.T) v1.Image {
+	t.Helper()
+	return must(mutate.AppendLayers(empty.Image, static.NewLayer([]byte(`{"_type":"https://in-toto.io/Statement/v1"}`), "application/vnd.in-toto+json")))
+}
+
+// The platform label is publisher-controlled: an image labelled
+// unknown/unknown is scanned, a nested index labelled so cannot be judged,
+// and an index of attestations only is never a pass.
+func TestGateUnknownPlatformLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		add     func(t *testing.T) mutate.Appendable
+		scanned bool
+		verdict vuln.Verdict
+	}{
+		{"real image", func(t *testing.T) mutate.Appendable { return image(t) }, true, vuln.FindingsFound},
+		{"nested index", func(t *testing.T) mutate.Appendable { return index(t, "linux/amd64") }, false, vuln.ScanError},
+		{"attestations only", func(t *testing.T) mutate.Appendable { return attestationImage(t) }, false, vuln.ScanError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, dst := newRegistry(t, regOpts{}), newRegistry(t, regOpts{})
+			child := tc.add(t)
+			idx := mutate.AppendManifests(mutate.IndexMediaType(empty.Index, types.OCIImageIndex),
+				mutate.IndexAddendum{Add: child, Descriptor: v1.Descriptor{Platform: unknownPlatform}})
+			push(t, src.repo, v100, idx)
+			e := newGate(t, vuln.Policy{Action: vuln.Block, OnScanError: vuln.Block}, always(critical, "0"))
+
+			res, _ := Run(context.Background(), gatedRequest(src, dst, e.gate))
+			got := e.sidecar.requests()
+			if (len(got) == 1 && got[0] == digestOf(t, child).Hex) != tc.scanned || len(res.Blocked) != 1 {
+				t.Fatalf("scanned %v, result %+v", got, res)
+			}
+			sc := res.Blocked[0].Scan
+			if sc.Verdict != tc.verdict || (tc.verdict == vuln.ScanError && (sc.Reason != syncspec.GateScanFailed || sc.Detail == "")) {
+				t.Fatalf("scan %+v", sc)
+			}
+		})
 	}
 }
 
@@ -413,7 +458,7 @@ func TestGatePresentOnTarget(t *testing.T) {
 		t.Fatalf("result %+v", res)
 	}
 
-	e.gate.Recorded = map[string]string{v100: d.String()}
+	e.gate.Judged = map[string]string{v100: d.String()}
 	before := len(e.sidecar.requests())
 	res, err = Run(context.Background(), gatedRequest(src, dst, e.gate))
 	if err != nil || res.Skipped[0].Scan != nil || len(e.sidecar.requests()) != before || res.Gate != "" {
@@ -577,4 +622,116 @@ func TestGateCredentialsNotInScanDir(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// signature is a cosign simple signing artifact for subject.
+func signature(t *testing.T, subject *v1.Descriptor) v1.Image {
+	t.Helper()
+	img := must(mutate.AppendLayers(empty.Image, static.NewLayer([]byte(`{"critical":{}}`), "application/vnd.dev.cosign.simplesigning.v1+json")))
+	if subject != nil {
+		img = mutate.Subject(img, *subject).(v1.Image)
+	}
+	return img
+}
+
+func TestGateReferrers(t *testing.T) {
+	src, dst := newRegistry(t, regOpts{referrers: true}), newRegistry(t, regOpts{referrers: true})
+	img := image(t)
+	d := push(t, src.repo, v100, img)
+	subject := &v1.Descriptor{MediaType: types.DockerManifestSchema2, Digest: d, Size: must(img.Size())}
+	// A runnable image as referrer and as cosign .sig tag would bypass the scan.
+	runnable := pushReferrer(t, src.repo, *subject)
+	sig := signature(t, subject)
+	push(t, src.repo, "unused", sig)
+	sigTag := push(t, src.repo, fallbackTag(d)+".sig", image(t))
+
+	e := newGate(t, vuln.Policy{Action: vuln.Report}, always(clean, "0"))
+	res, err := Run(context.Background(), gatedRequest(src, dst, e.gate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := res.Copied[0]
+	if _, ok := headDigest(t, dst.repo.Digest(digestOf(t, sig).String())); !ok {
+		t.Fatal("signature referrer not copied")
+	}
+	for _, h := range []v1.Hash{runnable, sigTag} {
+		if _, ok := headDigest(t, dst.repo.Digest(h.String())); ok || !slices.Contains(a.SkippedReferrers, h.String()) {
+			t.Fatalf("%s copied or not reported: %v", h, a.SkippedReferrers)
+		}
+	}
+
+	t.Run("blocked tag on the target gets no referrers", func(t *testing.T) {
+		dst := newRegistry(t, regOpts{referrers: true})
+		push(t, dst.repo, v100, img)
+		e := newGate(t, vuln.Policy{Action: vuln.Block}, always(critical, "0"))
+		res, err := Run(context.Background(), gatedRequest(src, dst, e.gate))
+		if err != nil || !res.Skipped[0].Scan.Block {
+			t.Fatalf("err %v, result %+v", err, res)
+		}
+		if _, ok := headDigest(t, dst.repo.Digest(digestOf(t, sig).String())); ok {
+			t.Fatal("referrer of a blocked tag copied")
+		}
+	})
+}
+
+func TestGateIgnoredMutationScansTarget(t *testing.T) {
+	src, dst := newRegistry(t, regOpts{}), newRegistry(t, regOpts{})
+	push(t, src.repo, v100, image(t))
+	kept := push(t, dst.repo, v100, image(t))
+	e := newGate(t, vuln.Policy{Action: vuln.Block}, always(critical, "0"))
+	req := gatedRequest(src, dst, e.gate)
+	req.OnTagMutation = v1alpha1.OnTagMutationIgnore
+
+	res, err := Run(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := res.Skipped[0]
+	if a.Digest != kept.String() || a.Scan == nil || !a.Scan.PresentOnTarget || a.Scan.Verdict != vuln.FindingsFound ||
+		!slices.Equal(e.sidecar.requests(), []string{kept.Hex}) {
+		t.Fatalf("artifact %+v, scanned %v", a, e.sidecar.requests())
+	}
+	e.gate.Judged = map[string]string{v100: kept.String()}
+	if res, err = Run(context.Background(), req); err != nil || res.Skipped[0].Scan != nil {
+		t.Fatalf("judged digest scanned again: %v %+v", err, res)
+	}
+}
+
+func TestGateJavaDBIntegrity(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		trailer int  // bytes after the tar end marker, inside the gzip stream
+		corrupt bool // a gzip MTIME byte flipped when served: valid gzip, wrong digest
+	}{
+		{"trailing data", maxJavaDBTrailing + 1, false},
+		{"corrupted blob", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, dst := newRegistry(t, regOpts{}), newRegistry(t, regOpts{})
+			push(t, src.repo, v100, image(t))
+			raw := append(tarball(t, reg(jdb, 10), reg(meta, 2)), bytes.Repeat([]byte{0}, tc.trailer)...)
+			var gz bytes.Buffer
+			w := gzip.NewWriter(&gz)
+			_, _ = w.Write(raw)
+			_ = w.Close()
+			layer := static.NewLayer(gz.Bytes(), javaDBMediaType)
+			ref := must(name.NewTag(dst.repo.Registry.Name() + "/platform/trivy-java-db:1"))
+			push(t, ref.Context(), "1", must(mutate.AppendLayers(empty.Image, layer)))
+			if tc.corrupt {
+				dst.mu.Lock()
+				dst.flipBlob = map[string]int{must(layer.Digest()).String(): 4}
+				dst.mu.Unlock()
+			}
+			e := newGate(t, vuln.Policy{OnScanError: vuln.Block}, always(clean, "0"))
+			e.gate.JavaDB = &ref
+
+			res, err := Run(context.Background(), gatedRequest(src, dst, e.gate))
+			if err == nil || res.JavaScanned || res.Gate != syncspec.GateScannerUnavailable {
+				t.Fatalf("err %v, result %+v", err, res)
+			}
+			if _, err := os.Stat(filepath.Join(e.gate.ScanDir, syncspec.JavaDBDir)); !os.IsNotExist(err) {
+				t.Fatalf("java DB left behind: %v", err)
+			}
+		})
+	}
 }

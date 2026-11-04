@@ -18,6 +18,7 @@ package sync
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,7 +43,7 @@ import (
 )
 
 // Gate turns on the vulnerability gate for a run: every tag that would be
-// copied, and every tag on the target without a recorded verdict, is
+// copied, and every tag on the target without a judged verdict, is
 // written to an OCI layout, scanned by the sidecar and judged before
 // anything is pushed.
 type Gate struct {
@@ -51,8 +52,8 @@ type Gate struct {
 	// Namespace and Repository identify the mirror for exceptions;
 	// Repository is the canonical source repository.
 	Namespace, Repository string
-	// Recorded maps tags to the digest this mirror has a verdict for.
-	Recorded map[string]string
+	// Judged maps tags to the digest this mirror has a final verdict for.
+	Judged map[string]string
 	// LayoutDir and ScanDir are syncspec.LayoutDir and syncspec.ScanDir.
 	LayoutDir, ScanDir string
 	// ServerURL is the Trivy server; Client reads its /version.
@@ -154,7 +155,7 @@ func (g *gateState) check(ctx context.Context, s *syncer) (string, string) {
 	}
 	if g.JavaDB != nil {
 		if err := g.fetchJavaDB(ctx, s); err != nil {
-			return syncspec.GateScannerUnavailable, "java DB: " + short(err)
+			return syncspec.GateScannerUnavailable, "java DB unavailable"
 		}
 		g.javaScanned = true
 	}
@@ -188,7 +189,7 @@ func (g *gateState) checkServer(ctx context.Context) (string, string) {
 		return syncspec.GateScannerUnavailable, "server /version: invalid response"
 	}
 	if !sameMinor(v.Version, g.Version) {
-		return syncspec.GateVersionMismatch, fmt.Sprintf("server version %.32q, want %s.x", v.Version, minor(g.Version))
+		return syncspec.GateVersionMismatch, fmt.Sprintf("server version mismatch, want %s.x", minor(g.Version))
 	}
 	if v.VulnerabilityDB == nil || v.VulnerabilityDB.UpdatedAt.IsZero() {
 		return syncspec.GateDBStale, "server has no vulnerability DB"
@@ -219,7 +220,7 @@ func (g *gateState) checkSidecar(ctx context.Context) (string, string) {
 		return syncspec.GateScannerUnavailable, "scanner sidecar: invalid version"
 	}
 	if !sameMinor(v.Version, g.Version) {
-		return syncspec.GateVersionMismatch, fmt.Sprintf("client version %.32q, want %s.x", v.Version, minor(g.Version))
+		return syncspec.GateVersionMismatch, fmt.Sprintf("client version mismatch, want %s.x", minor(g.Version))
 	}
 	return syncspec.GateOK, ""
 }
@@ -262,31 +263,61 @@ func (g *gateState) fetchJavaDB(ctx context.Context, s *syncer) error {
 	if err := g.root.MkdirAll(syncspec.JavaDBDir, 0o755); err != nil {
 		return err
 	}
+	if err := g.extractJavaDB(l); err != nil {
+		_ = g.root.RemoveAll(syncspec.JavaDBDir)
+		return err
+	}
+	return nil
+}
+
+func (g *gateState) extractJavaDB(l v1.Layer) error {
 	dir, err := g.root.OpenRoot(syncspec.JavaDBDir)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = dir.Close() }()
-	rc, err := l.Uncompressed()
+	rc, err := l.Compressed()
 	if err != nil {
 		return err
 	}
-	err = extractTar(rc, dir, javaDBFiles, maxJavaDBFiles, maxJavaDBBytes)
-	// Closing checks the layer digest, read to the end.
+	err = extractJavaDB(rc, dir)
 	if cerr := rc.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
-		_ = g.root.RemoveAll(syncspec.JavaDBDir)
-	}
 	return err
+}
+
+// maxJavaDBTrailing caps what may follow the tar end marker, which is
+// padding in a valid tarball.
+const maxJavaDBTrailing = 1 << 20
+
+// extractJavaDB gunzips and extracts the Java DB, then reads the stream to
+// its end: the registry blob reader checks the layer size and digest only
+// at the end of the compressed stream, and a multistream gzip reader
+// reaches it. Data after the tar end marker beyond the padding cap fails.
+func extractJavaDB(compressed io.Reader, dir *os.Root) error {
+	zr, err := gzip.NewReader(compressed)
+	if err != nil {
+		return err
+	}
+	if err := extractTar(zr, dir, javaDBFiles, maxJavaDBFiles, maxJavaDBBytes); err != nil {
+		return err
+	}
+	n, err := io.Copy(io.Discard, io.LimitReader(zr, maxJavaDBTrailing+1))
+	if err != nil {
+		return err
+	}
+	if n > maxJavaDBTrailing {
+		return errors.New("data after the tar archive")
+	}
+	return zr.Close()
 }
 
 // child is one manifest of an artifact to scan.
 type child struct {
 	platform string
 	digest   v1.Hash
-	skip     bool   // unknown/unknown, never scanned
+	skip     bool   // an attestation manifest, never scanned
 	unusable string // why it cannot be scanned
 }
 
@@ -317,7 +348,7 @@ func (s *syncer) scan(ctx context.Context, desc *remote.Descriptor, present bool
 	case err != nil:
 		return nil, nil, fmt.Errorf("write layout: %w", err)
 	}
-	var in []vuln.PlatformInput
+	in := []vuln.PlatformInput{}
 	for _, c := range children {
 		if c.skip {
 			continue
@@ -333,6 +364,11 @@ func (s *syncer) scan(ctx context.Context, desc *remote.Descriptor, present bool
 			sc.Detail = detail
 		}
 		in = append(in, pi)
+	}
+	if len(in) == 0 {
+		// Only attestations: nothing to judge is never a pass.
+		sc.Detail = "no image manifests"
+		in = append(in, vuln.PlatformInput{Digest: desc.Digest.String(), ScanError: syncspec.GateScanFailed})
 	}
 	judge(in)
 	return sc, t, nil
@@ -368,6 +404,11 @@ func writeLayout(dir string, desc *remote.Descriptor) (remote.Taggable, []child,
 		if cf, err := img.ConfigFile(); err == nil && cf.Platform() != nil {
 			c.platform = cf.Platform().String()
 		}
+		mf, err := img.Manifest()
+		if err != nil {
+			return nil, nil, err
+		}
+		c.skip = vuln.SkipManifest(layerTypes(mf))
 		li, err := p.Image(desc.Digest)
 		return li, []child{c}, err
 	}
@@ -384,7 +425,6 @@ func writeLayout(dir string, desc *remote.Descriptor) (remote.Taggable, []child,
 		c := child{digest: m.Digest}
 		if m.Platform != nil {
 			c.platform = m.Platform.String()
-			c.skip = vuln.SkipPlatform(m.Platform.OS, m.Platform.Architecture)
 		}
 		switch {
 		case m.MediaType.IsImage():
@@ -392,10 +432,15 @@ func writeLayout(dir string, desc *remote.Descriptor) (remote.Taggable, []child,
 			if err != nil {
 				return nil, nil, err
 			}
-			err = p.WriteImage(img)
+			if err := p.WriteImage(img); err != nil {
+				return nil, nil, err
+			}
+			// The verified manifest decides, not the publisher's platform label.
+			mf, err := img.Manifest()
 			if err != nil {
 				return nil, nil, err
 			}
+			c.skip = vuln.SkipManifest(layerTypes(mf))
 		case m.MediaType.IsIndex():
 			ci, err := idx.ImageIndex(m.Digest)
 			if err != nil {

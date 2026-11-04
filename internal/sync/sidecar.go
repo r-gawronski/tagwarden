@@ -83,7 +83,7 @@ func (g *gateState) scanManifest(ctx context.Context, d v1.Hash) ([]vuln.Finding
 		return nil, syncspec.GateScanFailed, "invalid scanner exit file"
 	}
 	if code := strings.TrimSpace(string(exit)); code != "0" {
-		return nil, syncspec.GateScanFailed, fmt.Sprintf("scanner exit %.8q", code)
+		return nil, syncspec.GateScanFailed, "scanner exited with an error"
 	}
 	rf, err := openRegular(g.root, out+".json")
 	if err != nil {

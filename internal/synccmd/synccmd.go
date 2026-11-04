@@ -440,6 +440,8 @@ type auditLine struct {
 	Error          string `json:"error,omitempty"`
 	// Scan is set for a tag the gate scanned.
 	Scan *auditScan `json:"scan,omitempty"`
+	// SkippedReferrers are referrers the gate did not copy.
+	SkippedReferrers []string `json:"skippedReferrers,omitempty"`
 }
 
 // audit writes one JSON line per selected tag, newest first.
@@ -481,6 +483,8 @@ func audit(w io.Writer, spec syncspec.Spec, res sync.Result) {
 			Referrers: e.a.Referrers,
 			Error:     errs[tag],
 			Scan:      newAuditScan(spec.Gate, e.a.Scan),
+
+			SkippedReferrers: e.a.SkippedReferrers,
 		}
 		switch {
 		case e.a.UpstreamDigest != "":
@@ -554,20 +558,32 @@ func encode(r report) []byte {
 	withRest := func(k int) []string { return append(slices.Clip(head), rest[:k]...) }
 
 	r.Errors = head
+	judged := r.Judged
+	r.Judged = nil
 	// Gate findings go before synced tags: pod Events depend on them.
+	// Each truncation flag is set before the cut is measured, so the flag
+	// itself always fits.
 	if findings := r.TagFindings; len(findings) > 0 {
 		r.Synced = []syncedTag{}
-		n := largest(len(findings), func(k int) bool { r.TagFindings = findings[:k]; return fits(r) })
-		r.TagFindings, r.FindingsTruncated = findings[:n], n < len(findings)
+		if !fits(r) {
+			r.FindingsTruncated = true
+			r.TagFindings = findings[:largest(len(findings), func(k int) bool { r.TagFindings = findings[:k]; return fits(r) })]
+		}
 		r.Synced = synced
 	}
 	if !fits(r) {
 		r.Truncated = true
 		r.Synced = synced[:largest(len(synced), func(k int) bool { r.Synced = synced[:k]; return fits(r) })]
 	}
-	n := largest(len(rest), func(k int) bool { r.Errors = withRest(k); return fits(r) })
-	r.Errors = withRest(n)
-	r.ErrorsTruncated = r.ErrorsTruncated || n < len(rest)
+	// Judged tags that do not fit are only scanned again next run.
+	if r.Judged = judged; !fits(r) {
+		r.JudgedTruncated = true
+		r.Judged = judged[:largest(len(judged), func(k int) bool { r.Judged = judged[:k]; return fits(r) })]
+	}
+	if r.Errors = withRest(len(rest)); !fits(r) {
+		r.ErrorsTruncated = true
+		r.Errors = withRest(largest(len(rest), func(k int) bool { r.Errors = withRest(k); return fits(r) }))
+	}
 	return marshal(r)
 }
 

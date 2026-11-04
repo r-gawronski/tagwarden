@@ -117,11 +117,35 @@ type Result struct {
 	JavaScanned bool
 }
 
-// SkipPlatform reports whether an index child is not an image to scan:
-// unknown/unknown. The attestation annotation is publisher-controlled and
-// never skips a child.
-func SkipPlatform(os, arch string) bool {
-	return os == "unknown" && arch == "unknown"
+// Layer media types of attestations: in-toto statements and DSSE envelopes.
+var attestationLayers = []string{
+	"application/vnd.in-toto+json",
+	"application/vnd.dsse.envelope.v1+json",
+}
+
+// supplyChainLayers are attestation, signature and SBOM layer media types.
+var supplyChainLayers = append(slices.Clone(attestationLayers),
+	"application/vnd.dev.cosign.simplesigning.v1+json",
+	"application/vnd.dev.sigstore.bundle.v0.3+json",
+	"application/spdx+json",
+	"text/spdx",
+	"application/vnd.cyclonedx+json",
+	"application/vnd.cyclonedx+xml",
+)
+
+// SkipManifest reports whether an image manifest with these layer media
+// types is an attestation, not an image to scan: it has layers and all of
+// them are in-toto or DSSE. The platform (unknown/unknown) and the
+// attestation annotation are publisher-controlled and never decide.
+func SkipManifest(layers []string) bool { return onlyOf(layers, attestationLayers) }
+
+// SupplyChainArtifact reports whether a referrer or cosign tag-scheme
+// manifest with these layer media types holds only signatures,
+// attestations or SBOMs, so the gate may copy it without a scan.
+func SupplyChainArtifact(layers []string) bool { return onlyOf(layers, supplyChainLayers) }
+
+func onlyOf(layers, allowed []string) bool {
+	return len(layers) > 0 && !slices.ContainsFunc(layers, func(l string) bool { return !slices.Contains(allowed, l) })
 }
 
 // Evaluate judges a tag from the scan outcomes of its image manifests. The

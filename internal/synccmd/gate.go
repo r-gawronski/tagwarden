@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -32,30 +33,33 @@ import (
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
-// newGate builds the gate of a run. The Trivy server is an internal
-// address set by the platform team, so its client goes direct, never
-// through the proxy, and follows no redirects. The source checks (T16)
-// guard the source path only.
+// newGate builds the gate of a run. The Trivy server is set by the
+// platform team; its client goes direct, never through the proxy, follows
+// no redirects and dials only addresses scannerDialCheck accepts, like the
+// controller's probe.
 func newGate(spec syncspec.Spec, p options) (*sync.Gate, error) {
 	g := spec.Gate
 	ca, err := readOptional(p.scannerCA)
 	if err != nil {
 		return nil, err
 	}
-	t, err := registry.NewTransport(registry.Options{CAPEM: ca, NoEnvProxy: true, Window: p.window})
+	t, err := registry.NewTransport(registry.Options{
+		CAPEM: ca, NoEnvProxy: true, Window: p.window,
+		CheckDial: p.scannerDialCheck(g.Scanner.InCluster, spec.DeniedPrefixes),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("scanner transport: %w", err)
 	}
-	recorded := map[string]string{}
-	for _, r := range g.Recorded {
-		recorded[r.Tag] = r.Digest
+	judged := map[string]string{}
+	for _, r := range g.Judged {
+		judged[r.Tag] = r.Digest
 	}
 	out := &sync.Gate{
 		Policy:     g.Policy(),
 		Exceptions: g.VulnExceptions(),
 		Namespace:  spec.Mirror.Namespace,
 		Repository: syncspec.CanonicalRegistry(spec.SourceRepo.RegistryStr()) + "/" + spec.SourceRepo.RepositoryStr(),
-		Recorded:   recorded,
+		Judged:     judged,
 		LayoutDir:  p.layoutDir,
 		ScanDir:    p.scanDir,
 		ServerURL:  g.Scanner.URL,
@@ -75,6 +79,16 @@ func newGate(spec syncspec.Spec, p options) (*sync.Gate, error) {
 		out.JavaDB = &tag
 	}
 	return out, nil
+}
+
+// scannerDialCheck refuses loopback, link-local and metadata addresses for
+// the scanner, and the denied CIDRs (the pod and service CIDRs) unless the
+// URL is a normalised cluster Service name. Only tests set allowLoopback.
+func (o options) scannerDialCheck(inCluster bool, denied []netip.Prefix) func(netip.Addr) error {
+	if inCluster {
+		denied = nil
+	}
+	return func(a netip.Addr) error { return o.checkAddrs([]netip.Addr{a}, denied) }
 }
 
 // notRetryable maps a run whose only problem is tags blocked by a stale DB
@@ -112,6 +126,9 @@ func gateSummary(r *report, res sync.Result) {
 			continue
 		}
 		sc := a.Scan
+		if sc.Verdict != vuln.ScanError {
+			r.Judged = append(r.Judged, syncedTag{Tag: tag, Digest: a.Digest})
+		}
 		switch sc.Verdict {
 		case vuln.FindingsFound:
 			r.Findings++
@@ -135,7 +152,7 @@ func gateSummary(r *report, res sync.Result) {
 			ScannedAt: sc.ScannedAt.UTC().Truncate(time.Second),
 		}
 		if sc.Verdict == vuln.ScanError {
-			f.Verdict, f.ScanError = v1alpha1.VerdictScanError, sc.Reason
+			f.Verdict, f.ScanError = v1alpha1.VerdictScanError, reportReason(sc.Reason)
 		}
 		if sc.Block {
 			f.Outcome = v1alpha1.OutcomeBlocked
@@ -151,6 +168,16 @@ func gateSummary(r *report, res sync.Result) {
 		}
 		r.TagFindings = append(r.TagFindings, f)
 	}
+}
+
+// reportReason keeps the report within the reasons ParseReport accepts;
+// any other reason, such as vuln's NoPlatforms, is a failed scan.
+func reportReason(r string) string {
+	switch r {
+	case syncspec.GateDBStale, syncspec.GateScannerUnavailable, syncspec.GateVersionMismatch:
+		return r
+	}
+	return syncspec.GateScanFailed
 }
 
 func count(n int) int32 { return int32(min(n, 1<<31-1)) } //nolint:gosec // capped

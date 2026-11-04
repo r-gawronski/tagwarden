@@ -508,6 +508,12 @@ type Report struct {
 	// newest first. FindingsTruncated means it was cut to fit.
 	TagFindings       []TagFinding `json:"tagFindings,omitempty"`
 	FindingsTruncated bool         `json:"findingsTruncated,omitempty"`
+	// Judged lists the tags this run gave a final verdict (passed,
+	// accepted or findings), never scan errors. The controller keeps them
+	// in a status field of their own and passes them back in Gate.Judged.
+	// JudgedTruncated means it was cut; the cut tags are scanned again.
+	Judged          []SyncedTag `json:"judged,omitempty"`
+	JudgedTruncated bool        `json:"judgedTruncated,omitempty"`
 }
 
 // TagFinding is the gate result of one tag with findings or a scan error.
@@ -559,7 +565,12 @@ func ParseReport(msg string) (Report, error) {
 			return Report{}, errors.New("report: invalid synced entry")
 		}
 	}
-	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0) {
+	for _, s := range r.Judged {
+		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
+			return Report{}, errors.New("report: invalid judged entry")
+		}
+	}
+	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0) {
 		return Report{}, errors.New("report: gate fields in version 1")
 	}
 	switch r.Gate {

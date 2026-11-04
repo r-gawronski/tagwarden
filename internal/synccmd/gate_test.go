@@ -23,6 +23,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,7 +35,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/sync"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
+	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
 const (
@@ -43,6 +46,8 @@ const (
 	actionCopied  = "copied"
 	actionBlocked = "blocked"
 )
+
+const clean = `[]`
 
 const critical = `[{"id":"CVE-2026-0001","pkg":"openssl","ver":"3.0.0","fix":"3.0.1","sev":"CRITICAL","status":"fixed"},
 {"id":"RHSA-2026:0002","pkg":"glibc","ver":"2.0","fix":"","sev":"HIGH","status":"affected"}]`
@@ -222,5 +227,74 @@ func TestEncodeReportKeepsFindings(t *testing.T) {
 	}
 	if !got.FindingsTruncated || !got.Truncated || len(got.TagFindings) == 0 || len(got.Synced) == 200 || got.V != syncspec.ReportVersionGate {
 		t.Fatalf("%d bytes: findings %d, synced %d", len(b), len(got.TagFindings), len(got.Synced))
+	}
+}
+
+// Every verdict and reason the sync engine can produce encodes to a report
+// that ParseReport accepts, so a gated run never loses its report, and only
+// final verdicts are judged.
+func TestGateSummaryRoundTrip(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("d", 64)
+	reasons := []string{"", syncspec.GateDBStale, syncspec.GateScannerUnavailable, syncspec.GateVersionMismatch, syncspec.GateScanFailed, "NoPlatforms", "Whatever"}
+	for _, v := range []vuln.Verdict{vuln.Passed, vuln.Accepted, vuln.FindingsFound, vuln.ScanError} {
+		for _, reason := range reasons {
+			for _, block := range []bool{false, true} {
+				sc := &sync.Scan{Result: vuln.Result{Verdict: v, Reason: reason, Block: block, Highest: vuln.Critical,
+					Counts: map[vuln.Severity]int{vuln.Critical: 1}, TopIDs: []string{"CVE-2026-1", "RHSA-2026:1"}}, ScannedAt: time.Now()}
+				a := sync.Artifact{Tag: v110, Digest: digest, Scan: sc}
+				res := sync.Result{Selected: []string{v110}, Copied: []sync.Artifact{a}}
+				if block {
+					res = sync.Result{Selected: []string{v110}, Blocked: []sync.Artifact{a}}
+				}
+				r := summarize(res)
+				gateSummary(&r, res)
+				got, err := syncspec.ParseReport(string(encode(r)))
+				if err != nil {
+					t.Fatalf("%s/%q/%v: %v", v, reason, block, err)
+				}
+				if (len(got.Judged) == 1) != (v != vuln.ScanError) {
+					t.Fatalf("%s/%q/%v: judged %v", v, reason, block, got.Judged)
+				}
+			}
+		}
+	}
+}
+
+func TestScannerDialCheck(t *testing.T) {
+	denied := []netip.Prefix{netip.MustParsePrefix("10.96.0.0/12")}
+	svc := netip.MustParseAddr("10.96.0.10")
+	var o options
+	for _, a := range []string{"127.0.0.1", "169.254.169.254", "fd00:ec2::254", "0.0.0.0"} {
+		for _, inCluster := range []bool{false, true} {
+			if o.scannerDialCheck(inCluster, denied)(netip.MustParseAddr(a)) == nil {
+				t.Errorf("%s allowed (inCluster %v)", a, inCluster)
+			}
+		}
+	}
+	if o.scannerDialCheck(false, denied)(svc) == nil {
+		t.Error("service CIDR allowed for an external scanner")
+	}
+	if err := o.scannerDialCheck(true, denied)(svc); err != nil {
+		t.Errorf("in-cluster scanner refused: %v", err)
+	}
+}
+
+// The Job never dials a metadata address for the scanner.
+func TestRunGatedScannerAddressRefused(t *testing.T) {
+	src, dst := newRegistry(t, false), newRegistry(t, true)
+	pushImages(t, src, v110)
+	e := newEnv(t, src, dst, password)
+	e.gated(t, src.String(), map[string]any{onScanError: block}, time.Hour, clean, "0", true)
+	var spec map[string]any
+	b, _ := os.ReadFile(e.spec) //nolint:gosec // test temp dir
+	_ = json.Unmarshal(b, &spec)
+	spec["gate"].(map[string]any)["scanner"].(map[string]any)["url"] = "http://169.254.169.254:80"
+	b, _ = json.Marshal(spec)
+	e.write(t, e.spec, string(b))
+
+	code, out, msg := e.run(t)
+	r, err := syncspec.ParseReport(msg)
+	if code != syncspec.ExitSyncFailed || err != nil || r.Gate != syncspec.GateScannerUnavailable {
+		t.Fatalf("exit %d, %v: %s\n%s", code, err, msg, out)
 	}
 }

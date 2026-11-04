@@ -124,15 +124,24 @@ type Gate struct {
 	Scanner        GateScanner                `json:"scanner"`
 	// Exceptions are the active VulnerabilityExceptions for this mirror.
 	Exceptions []GateException `json:"exceptions,omitempty"`
-	// Recorded lists the (tag, digest) pairs this mirror already has a
-	// verdict for (status.synced). A tag on the target without a recorded
-	// verdict is scanned once, so every namespace hears about it.
-	Recorded []SyncedTag `json:"recorded,omitempty"`
+	// Judged lists the (tag, digest) pairs this mirror has a final verdict
+	// for (passed, accepted or findings) from earlier gated runs, as the
+	// Jobs reported them in Report.Judged. A tag on the target that is not
+	// judged is scanned, so tags copied before the gate or during a scan
+	// error are reported too. Never derive it from status.synced: a tag on
+	// the target is not a tag that was judged.
+	Judged []SyncedTag `json:"judged,omitempty"`
 }
 
 // GateScanner is the Trivy server and client of the gate.
 type GateScanner struct {
+	// URL is normalised by ScannerURL: a cluster Service host is
+	// <svc>.<ns>.svc.<clusterDomain>. with a trailing dot.
 	URL string `json:"url"`
+	// InCluster means URL is a cluster Service name, so the pod and service
+	// CIDRs may be dialled for it. Loopback, link-local and metadata
+	// addresses are always refused.
+	InCluster bool `json:"inCluster,omitempty"`
 	// Version is the client version, pinned with Image. The server must
 	// have the same major.minor.
 	Version string `json:"version"`
@@ -168,9 +177,11 @@ const (
 )
 
 // NewGate maps a target's gate, the manager defaults, the exceptions that
-// apply to the mirror and the recorded pairs onto the spec. It is the only
-// place that reads the API gate types for the Job.
-func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, excs []v1alpha1.VulnerabilityException, recorded []SyncedTag) *Gate {
+// apply to the mirror and the judged pairs onto the spec. It is the only
+// place that reads the API gate types for the Job. The scanner URL is
+// normalised with ScannerURL for clusterDomain, so the Job and the sidecar
+// use the same host as the controller's probe.
+func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, clusterDomain string, excs []v1alpha1.VulnerabilityException, judged []SyncedTag) (*Gate, error) {
 	out := &Gate{
 		Action: v1alpha1.GateActionReport, Severity: v1alpha1.SeverityThresholdCritical,
 		IgnoreUnfixed: g.IgnoreUnfixed, IncludeUnknown: g.IncludeUnknown,
@@ -181,7 +192,7 @@ func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, excs []v1alpha1.V
 			Timeout: metav1.Duration{Duration: DefaultScannerTimeout},
 			JavaDB:  v1alpha1.JavaDBDisabled,
 		},
-		Recorded: recorded,
+		Judged: judged,
 	}
 	if g.Action != "" {
 		out.Action = g.Action
@@ -210,13 +221,18 @@ func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, excs []v1alpha1.V
 		}
 		out.Scanner.JavaDBRepository = s.JavaDBRepository
 	}
+	u, inCluster, err := ScannerURL(out.Scanner.URL, clusterDomain)
+	if err != nil {
+		return nil, fmt.Errorf("scanner url: %w", err)
+	}
+	out.Scanner.URL, out.Scanner.InCluster = u, inCluster
 	for _, e := range excs {
 		out.Exceptions = append(out.Exceptions, GateException{
 			Name: e.Name, Namespaces: e.Spec.Namespaces, Repository: e.Spec.Repository,
 			Digests: e.Spec.Digests, Vulnerabilities: e.Spec.Vulnerabilities, Expires: e.Spec.Expires,
 		})
 	}
-	return out
+	return out, nil
 }
 
 // Policy maps the gate onto the verdict policy.
@@ -274,9 +290,9 @@ func (g *Gate) validate(target name.Repository) error {
 			}
 		}
 	}
-	for _, r := range g.Recorded {
+	for _, r := range g.Judged {
 		if !tagPattern.MatchString(r.Tag) || !digestPattern.MatchString(r.Digest) {
-			return errors.New("recorded: invalid entry")
+			return errors.New("judged: invalid entry")
 		}
 	}
 	return nil

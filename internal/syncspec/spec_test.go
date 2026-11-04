@@ -220,9 +220,9 @@ func TestParseReportV2(t *testing.T) {
 		return `{"v":2,"findings":1,"blocked":1,"gate":"ok","javaScanned":false,"tagFindings":[{"tag":"v1","digest":"` + digest +
 			`","verdict":"Findings","outcome":"Blocked","severity":"Critical","counts":{"critical":1},"topIDs":["CVE-2026-1"],"scannedAt":"2026-11-03T10:00:00Z"` + extra + `}],"synced":[]}`
 	}
-	r, err := ParseReport(entry(`,"dbUpdatedAt":"2026-11-03T09:00:00Z"`))
+	r, err := ParseReport(strings.Replace(entry(`,"dbUpdatedAt":"2026-11-03T09:00:00Z"`), `"synced":[]`, `"synced":[],"judged":[{"tag":"v1","digest":"`+digest+`"}]`, 1))
 	if err != nil || r.Findings != 1 || r.Blocked != 1 || r.JavaScanned == nil || *r.JavaScanned || len(r.TagFindings) != 1 ||
-		r.TagFindings[0].Outcome != v1alpha1.OutcomeBlocked || r.TagFindings[0].Counts.Critical != 1 {
+		r.TagFindings[0].Outcome != v1alpha1.OutcomeBlocked || r.TagFindings[0].Counts.Critical != 1 || len(r.Judged) != 1 {
 		t.Fatalf("report %+v, err %v", r, err)
 	}
 	if _, err := ParseReport(`{"v":2,"synced":[]}`); err != nil {
@@ -230,6 +230,8 @@ func TestParseReportV2(t *testing.T) {
 	}
 	bad := map[string]string{
 		"gate fields in v1": `{"v":1,"findings":1}`,
+		"judged in v1":      `{"v":1,"judged":[{"tag":"v1","digest":"` + digest + `"}]}`,
+		"bad judged":        `{"v":2,"judged":[{"tag":"v1","digest":"sha256:1"}]}`,
 		"negative count":    `{"v":2,"scanErrors":-1}`,
 		"unknown gate":      `{"v":2,"gate":"fine"}`,
 		"bad id":            strings.Replace(entry(""), "CVE-2026-1", "cve; rm", 1),
@@ -257,11 +259,15 @@ func TestNewGate(t *testing.T) {
 			Vulnerabilities: []string{"CVE-2026-1"}, Expires: expires},
 	}}
 	d := ScannerDefaults{URL: "http://tagwarden-trivy.tagwarden-system.svc:4954", Version: "0.76.1", Image: "trivy@sha256:" + strings.Repeat("a", 64)}
-	g := NewGate(&v1alpha1.VulnerabilityGate{Enabled: true}, d, excs, []SyncedTag{{Tag: "v1", Digest: "sha256:" + strings.Repeat("b", 64)}})
+	g, err := NewGate(&v1alpha1.VulnerabilityGate{Enabled: true}, d, "cluster.local", excs, []SyncedTag{{Tag: "v1", Digest: "sha256:" + strings.Repeat("b", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := g.Policy()
 	if p.Action != vuln.Report || p.Severity != vuln.Critical || p.OnScanError != vuln.Report ||
 		g.MaxDBAge.Duration != DefaultMaxDBAge || g.Scanner.Timeout.Duration != DefaultScannerTimeout ||
-		g.Scanner.JavaDB != v1alpha1.JavaDBDisabled || g.Scanner.URL != d.URL || g.Scanner.Version != d.Version {
+		g.Scanner.JavaDB != v1alpha1.JavaDBDisabled || g.Scanner.Version != d.Version || len(g.Judged) != 1 ||
+		g.Scanner.URL != "http://tagwarden-trivy.tagwarden-system.svc.cluster.local.:4954" || !g.Scanner.InCluster {
 		t.Fatalf("defaults %+v %+v", g, p)
 	}
 	ve := g.VulnExceptions()
@@ -269,15 +275,18 @@ func TestNewGate(t *testing.T) {
 		t.Fatalf("exceptions %+v", ve)
 	}
 
-	g = NewGate(&v1alpha1.VulnerabilityGate{
+	g, err = NewGate(&v1alpha1.VulnerabilityGate{
 		Action: v1alpha1.GateActionBlock, Severity: v1alpha1.SeverityThresholdHigh, OnScanError: v1alpha1.GateActionBlock,
 		IgnoreUnfixed: true, IncludeUnknown: true, MaxDBAge: &metav1.Duration{Duration: time.Hour},
 		Scanner: &v1alpha1.ScannerSpec{URL: "https://trivy.example.internal", Image: "x@sha256:" + strings.Repeat("c", 64), Version: "0.77.0",
 			Timeout: &metav1.Duration{Duration: time.Minute}, JavaDB: v1alpha1.JavaDBPerJob, JavaDBRepository: "registry.example.internal/platform/trivy-java-db:1"},
-	}, d, nil, nil)
+	}, d, "cluster.local", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p = g.Policy()
 	if p.Action != vuln.Block || p.Severity != vuln.High || p.OnScanError != vuln.Block || !p.IgnoreUnfixed || !p.IncludeUnknown ||
-		g.Scanner.URL != "https://trivy.example.internal" || g.Scanner.Version != "0.77.0" || g.Scanner.JavaDB != v1alpha1.JavaDBPerJob {
+		g.Scanner.URL != "https://trivy.example.internal." || g.Scanner.InCluster || g.Scanner.Version != "0.77.0" || g.Scanner.JavaDB != v1alpha1.JavaDBPerJob {
 		t.Fatalf("overrides %+v %+v", g, p)
 	}
 }
@@ -303,6 +312,10 @@ func TestDecodeGate(t *testing.T) {
 	s, err := Decode(strings.NewReader(base(gate(func(map[string]any) {}))))
 	if err != nil || s.Gate == nil || s.Gate.Policy().Action != vuln.Block {
 		t.Fatalf("spec %+v, err %v", s.Gate, err)
+	}
+	// NewGate writes fully qualified hosts with a trailing dot.
+	if _, err := Decode(strings.NewReader(base(gate(scanner("url", "http://tagwarden-trivy.tagwarden-system.svc.cluster.local.:4954"))))); err != nil {
+		t.Fatalf("trailing dot: %v", err)
 	}
 	if _, err := Decode(strings.NewReader(base(gate(func(g map[string]any) {
 		scanner("javaDB", "PerJob")(g)
@@ -332,7 +345,7 @@ func TestDecodeGate(t *testing.T) {
 		"exception no names": func(g map[string]any) {
 			g["exceptions"] = []any{map[string]any{"name": "x", "repository": "r", "expires": "2027-01-01T00:00:00Z"}}
 		},
-		"recorded":      func(g map[string]any) { g["recorded"] = []any{map[string]any{"tag": "v1", "digest": "sha256:1"}} },
+		"judged":        func(g map[string]any) { g["judged"] = []any{map[string]any{"tag": "v1", "digest": "sha256:1"}} },
 		"unknown field": func(g map[string]any) { g["token"] = "s3cret" },
 	} {
 		if _, err := Decode(strings.NewReader(base(gate(mod)))); err == nil {

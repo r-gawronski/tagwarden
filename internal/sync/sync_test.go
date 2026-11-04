@@ -64,6 +64,8 @@ type testRegistry struct {
 	mu         stdsync.Mutex
 	// puts lists the paths of manifest PUT requests.
 	puts []string
+	// flipBlob maps a blob digest to a byte offset inverted on GET.
+	flipBlob map[string]int
 }
 
 func (r *testRegistry) manifestPuts() []string {
@@ -104,6 +106,19 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 			r.mu.Lock()
 			r.puts = append(r.puts, req.URL.Path)
 			r.mu.Unlock()
+		}
+		r.mu.Lock()
+		off, corrupt := r.flipBlob[req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]]
+		r.mu.Unlock()
+		if corrupt && req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/blobs/") {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			body := rec.Body.Bytes()
+			body[off] ^= 0xff
+			maps.Copy(w.Header(), rec.Header())
+			w.WriteHeader(rec.Code)
+			_, _ = w.Write(body)
+			return
 		}
 		if o.noHeadDigest && req.Method == http.MethodHead {
 			rec := httptest.NewRecorder()
