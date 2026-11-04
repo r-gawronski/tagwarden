@@ -157,6 +157,14 @@ func (r *AutoMirrorReconciler) report(pod *corev1.Pod, key, state, typ, reason, 
 	}
 }
 
+// clear drops the reported state of key, so the next report records an
+// Event again.
+func (r *AutoMirrorReconciler) clear(pod *corev1.Pod, key string) {
+	r.mu.Lock()
+	delete(r.states[client.ObjectKeyFromObject(pod)], key)
+	r.mu.Unlock()
+}
+
 func (r *AutoMirrorReconciler) forget(k types.NamespacedName) {
 	r.mu.Lock()
 	delete(r.states, k)
@@ -395,6 +403,7 @@ func (r *AutoMirrorReconciler) ensure(ctx context.Context, pod *corev1.Pod, t *m
 	}
 
 	r.relay(pod, state, &cur, want)
+	r.relayGate(pod, t, state, &cur, want)
 	return nil
 }
 
@@ -430,6 +439,53 @@ func (r *AutoMirrorReconciler) relay(pod *corev1.Pod, state string, cur *mirrorv
 	}
 	r.report(pod, state, "requested", corev1.EventTypeNormal, reasonMirrorRequested,
 		fmt.Sprintf("Mirror of %s tags %v requested as ArtifactMirror %s", state, want, cur.Name))
+}
+
+// relayGate reports gate outcomes on the pod: the target's ScannerReady
+// once per source, and for each tag the pod uses, its entry in the
+// generated mirror's status.findings. Ready and Synced stay True for gate
+// outcomes, so relay does not see them. Pods using other tags get nothing;
+// accepted findings are not in status.findings. Each key records an Event
+// only when its state changes, and is cleared when the outcome goes away.
+func (r *AutoMirrorReconciler) relayGate(pod *corev1.Pod, t *mirrorv1alpha1.ClusterMirrorTarget, state string, cur *mirrorv1alpha1.ArtifactMirror, want []string) {
+	g := gateOf(t)
+	if g == nil || meta.IsStatusConditionFalse(cur.Status.Conditions, ConditionReady) {
+		return
+	}
+	see := fmt.Sprintf("see ArtifactMirror %s/%s", cur.Namespace, cur.Name)
+	scannerKey := state + "#scanner"
+	if c := meta.FindStatusCondition(t.Status.Conditions, ConditionScannerReady); c != nil && c.Status == metav1.ConditionFalse {
+		reason, what := reasonVulnerabilityScanFail, "images are mirrored without scan"
+		if g.OnScanError == mirrorv1alpha1.GateActionBlock {
+			reason, what = reasonMirrorRefused, "images are not mirrored"
+		}
+		r.report(pod, scannerKey, c.Reason+c.Message, corev1.EventTypeWarning, reason,
+			fmt.Sprintf("%s: scanner of ClusterMirrorTarget %s: %s; %s", c.Reason, t.Name, c.Message, what))
+	} else {
+		r.clear(pod, scannerKey)
+	}
+	for _, tag := range want {
+		key := state + "#gate:" + tag
+		i := slices.IndexFunc(cur.Status.Findings, func(f mirrorv1alpha1.VulnerabilityFinding) bool { return f.Tag == tag })
+		if i < 0 {
+			r.clear(pod, key)
+			continue
+		}
+		f := cur.Status.Findings[i]
+		image := state + ":" + tag
+		var reason, msg string
+		switch blocked := f.Outcome == mirrorv1alpha1.OutcomeBlocked; {
+		case f.Verdict == mirrorv1alpha1.VerdictScanError && blocked:
+			reason, msg = reasonMirrorRefused, fmt.Sprintf("%s: %s could not be scanned and is not mirrored; %s", f.ScanError, image, see)
+		case f.Verdict == mirrorv1alpha1.VerdictScanError:
+			reason, msg = reasonVulnerabilityScanFail, fmt.Sprintf("%s: %s mirrored without scan; %s", f.ScanError, image, see)
+		case blocked:
+			reason, msg = reasonMirrorRefused, fmt.Sprintf("%s: %s has %s; %s", reasonVulnerabilityBlocked, image, findingSummary(f), see)
+		default:
+			reason, msg = reasonVulnerabilitiesFound, fmt.Sprintf("%s has %s, mirrored anyway; %s", image, findingSummary(f), see)
+		}
+		r.report(pod, key, string(f.Verdict)+"/"+string(f.Outcome)+"/"+f.Digest, corev1.EventTypeWarning, reason, capMessage(msg))
+	}
 }
 
 // projectRefusal returns a message when the project of autoMirror does not
@@ -516,6 +572,9 @@ func (r *AutoMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				fmt.Fprintf(&out, "%s=%s/%s/%s;", t, c.Status, c.Reason, c.Message)
 			}
 		}
+		for _, f := range m.Status.Findings {
+			fmt.Fprintf(&out, "%s=%s/%s/%s;", f.Tag, f.Verdict, f.Outcome, f.Digest)
+		}
 		return out.String()
 	}
 	isGenerated := func(o client.Object) bool { return o.GetLabels()[mirrorv1alpha1.LabelGenerated] == trueValue }
@@ -528,12 +587,20 @@ func (r *AutoMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		DeleteFunc:  func(e ctrlevent.DeleteEvent) bool { return isGenerated(e.Object) },
 		GenericFunc: func(ctrlevent.GenericEvent) bool { return false },
 	}
-	// Targets matter when the spec or their readiness changes.
+	// Targets matter when the spec, their readiness or their scanner
+	// state changes.
+	scannerState := func(t *mirrorv1alpha1.ClusterMirrorTarget) string {
+		if c := meta.FindStatusCondition(t.Status.Conditions, ConditionScannerReady); c != nil {
+			return string(c.Status) + c.Reason + c.Message
+		}
+		return ""
+	}
 	targetPred := predicate.Funcs{
 		UpdateFunc: func(e ctrlevent.UpdateEvent) bool {
 			o, n := e.ObjectOld.(*mirrorv1alpha1.ClusterMirrorTarget), e.ObjectNew.(*mirrorv1alpha1.ClusterMirrorTarget)
 			return o.Generation != n.Generation ||
-				meta.IsStatusConditionTrue(o.Status.Conditions, ConditionReady) != meta.IsStatusConditionTrue(n.Status.Conditions, ConditionReady)
+				meta.IsStatusConditionTrue(o.Status.Conditions, ConditionReady) != meta.IsStatusConditionTrue(n.Status.Conditions, ConditionReady) ||
+				scannerState(o) != scannerState(n)
 		},
 		GenericFunc: func(ctrlevent.GenericEvent) bool { return false },
 	}
