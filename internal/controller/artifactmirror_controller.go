@@ -237,6 +237,8 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	if msg != "" {
 		return notReady(ReasonScannerUnavailable, msg)
 	}
+	gated := gateOf(&t) != nil && isGenerated(&t, m)
+	gateConditions(m, gated, sc)
 	spec, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return ctrl.Result{}, err
@@ -295,7 +297,7 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		ev.add(corev1.EventTypeNormal, "Created", "Reconcile", fmt.Sprintf("Created CronJob %s/%s", key.Namespace, key.Name))
 	}
 	r.setReady(m, metav1.ConditionTrue, ReasonReady, fmt.Sprintf("CronJob %s/%s mirrors to %s", key.Namespace, key.Name, targetRepo(&t, m)))
-	if err := r.syncStatus(ctx, m, ev); err != nil {
+	if err := r.syncStatus(ctx, m, gated, ev); err != nil {
 		return ctrl.Result{}, err
 	}
 	return r.syncNow(ctx, &t, m, cj, ev)
