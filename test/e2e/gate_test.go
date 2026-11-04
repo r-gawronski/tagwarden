@@ -453,10 +453,8 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 			awaitGatedRun(ns, cleanImage)
 		})
 
-		It("leaves the Job stuck, not failed, when the sidecar image cannot be pulled", func() {
-			// Open question of the step 6 author: a pod stuck in ErrImagePull
-			// (the Job never finishes, the mirror stays unsynced) or a scan
-			// error. This spec records what happens; adjust it to the decision.
+		It("deletes the Job and reports ScannerUnavailable when the sidecar image cannot be pulled", func() {
+			// The e2e chart values set --scanner-start-timeout to 60s.
 			missing := trivyRepository + "@sha256:" + strings.Repeat("0", 64)
 			setGate(map[string]any{"scanner": map[string]any{"image": missing, "version": trivyVersion}})
 			ns := newTenant("gate-nopull")
@@ -472,10 +470,29 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 					}
 				}
 				g.Expect(waiting).To(ContainElement(BeElementOf("ErrImagePull", "ImagePullBackOff")))
-			}, 5*time.Minute).Should(Succeed())
+			}, 2*time.Minute).Should(Succeed())
+			By("reporting once the grace period has passed")
+			mirror := cleanImage.generatedMirror()
+			notStarted := `^scanner sidecar did not start \((ErrImagePull|ImagePullBackOff)\); sync Job deleted, nothing copied$`
+			Eventually(func() *metav1.Condition {
+				return meta.FindStatusCondition(getMirror(Default, ns, mirror).Status.Conditions, "VulnerabilityGate")
+			}, 3*time.Minute).Should(And(HaveField("Status", metav1.ConditionFalse), HaveField("Reason", "ScannerUnavailable"),
+				HaveField("Message", MatchRegexp(notStarted))))
+			Eventually(func(g Gomega) {
+				evs := objectEvents(ns, "ArtifactMirror", mirror)["ScannerUnavailable"]
+				g.Expect(evs).NotTo(BeEmpty())
+				g.Expect(evs[0].Message).To(ContainSubstring("scanner sidecar did not start"))
+			}).Should(Succeed())
+			Eventually(func(g Gomega) {
+				// An earlier scanner probe may have left its own Event of this reason.
+				evs := podEvents(ns, "app")["VulnerabilityScanFailed"]
+				msgs := make([]string, 0, len(evs))
+				for _, e := range evs {
+					msgs = append(msgs, e.Message)
+				}
+				g.Expect(msgs).To(ContainElement(ContainSubstring("scanner sidecar did not start")))
+			}).Should(Succeed())
 			Expect(targetTags(dstHost, cleanImage.targetPath(), dstOpts)).To(BeEmpty())
-			m := getMirror(Default, ns, cleanImage.generatedMirror())
-			Expect(m.Status.Findings).To(BeEmpty(), "a stuck pod is not a scan error")
 		})
 
 		DescribeTable("handles a missing token Secret as ScanFailed",
@@ -489,7 +506,7 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 				Expect(f.ScanError).To(Equal("ScanFailed"))
 				expectOnTarget(cleanImage, wantCopied)
 				if wantCopied {
-					expectEvent(ns, pod, "VulnerabilityScanFailed", corev1.EventTypeWarning, "ScanFailed")
+					expectEvent(ns, "app", "VulnerabilityScanFailed", corev1.EventTypeWarning, "ScanFailed")
 				} else {
 					expectEvent(ns, pod, "MirrorRefused", corev1.EventTypeWarning, "ScanFailed")
 				}

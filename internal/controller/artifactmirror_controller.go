@@ -95,6 +95,9 @@ type ArtifactMirrorReconciler struct {
 	// ClusterDomain qualifies cluster Service names of scanners. Defaults
 	// to cluster.local.
 	ClusterDomain string
+	// ScannerStartTimeout is how long a scanner sidecar may fail to start
+	// before its Job is deleted. Defaults to DefaultScannerStartTimeout.
+	ScannerStartTimeout time.Duration
 
 	// trackingMismatch holds the tracking id last reported per mirror.
 	trackingMismatch sync.Map
@@ -300,7 +303,24 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	if err := r.syncStatus(ctx, m, gated, ev); err != nil {
 		return ctrl.Result{}, err
 	}
-	return r.syncNow(ctx, &t, m, cj, ev)
+	return r.syncRequestAndWatch(ctx, &t, m, cj, sc != nil, ev)
+}
+
+// syncRequestAndWatch handles a sync request and, for a gated mirror,
+// checks that the scanner sidecars start.
+func (r *ArtifactMirrorReconciler) syncRequestAndWatch(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, cj *batchv1.CronJob, scanning bool, ev *pending) (ctrl.Result, error) {
+	var wait time.Duration
+	if scanning {
+		var err error
+		if wait, err = r.scannerStart(ctx, t, m, ev); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	res, err := r.syncNow(ctx, t, m, cj, ev)
+	if wait > 0 && (res.RequeueAfter == 0 || wait < res.RequeueAfter) {
+		res.RequeueAfter = wait
+	}
+	return res, err
 }
 
 // reportTrackingMismatch queues a Warning Event when the tracking id of a

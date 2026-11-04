@@ -29,6 +29,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -138,6 +139,7 @@ func main() {
 	var trivyImage, trivyVersion, trivyURL, trivyTokenSecret string
 	var operatorNamespace, syncImage, deniedCIDRs, clusterDomain string
 	var argoTracking, argoInstanceLabel string
+	var scannerStartTimeout time.Duration
 	flag.StringVar(&operatorNamespace, "operator-namespace", os.Getenv("POD_NAMESPACE"),
 		"The namespace that holds sync CronJobs, Jobs and target Secrets. Defaults to $POD_NAMESPACE.")
 	flag.StringVar(&syncImage, "sync-image", os.Getenv("SYNC_IMAGE"),
@@ -153,6 +155,9 @@ func main() {
 	flag.StringVar(&trivyURL, "trivy-url", "", "URL of the in-chart Trivy server. Set by the chart.")
 	flag.StringVar(&trivyTokenSecret, "trivy-token-secret", "",
 		"Secret in the operator namespace with the token of the in-chart Trivy server (key token). Set by the chart.")
+	flag.DurationVar(&scannerStartTimeout, "scanner-start-timeout", controller.DefaultScannerStartTimeout,
+		"How long the scanner sidecar of a gated sync Job may fail to start (pull error, crash loop) "+
+			"before the Job is deleted and the failure reported.")
 	flag.StringVar(&clusterDomain, "cluster-domain", controller.DefaultClusterDomain,
 		"DNS domain of the cluster. Scanner Service names are dialed as <svc>.<ns>.svc.<domain>.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -333,6 +338,7 @@ func main() {
 		ArgoCDInstanceLabel: argoInstanceLabel,
 		Scanner:             scanner,
 		ClusterDomain:       clusterDomain,
+		ScannerStartTimeout: scannerStartTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "artifactmirror")
 		os.Exit(1)

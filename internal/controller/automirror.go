@@ -464,6 +464,18 @@ func (r *AutoMirrorReconciler) relayGate(pod *corev1.Pod, t *mirrorv1alpha1.Clus
 	} else {
 		r.clear(pod, scannerKey)
 	}
+	startKey := state + "#start"
+	if c := meta.FindStatusCondition(cur.Status.Conditions, ConditionVulnerabilityGate); c != nil && c.Status == metav1.ConditionFalse &&
+		c.Reason == ReasonScannerUnavailable && strings.HasPrefix(c.Message, scannerStartPrefix) {
+		reason := reasonVulnerabilityScanFail
+		if g.OnScanError == mirrorv1alpha1.GateActionBlock {
+			reason = reasonMirrorRefused
+		}
+		r.report(pod, startKey, c.Message, corev1.EventTypeWarning, reason,
+			fmt.Sprintf("%s: %s; %s", c.Reason, c.Message, see))
+	} else {
+		r.clear(pod, startKey)
+	}
 	for _, tag := range want {
 		key := state + "#gate:" + tag
 		i := slices.IndexFunc(cur.Status.Findings, func(f mirrorv1alpha1.VulnerabilityFinding) bool { return f.Tag == tag })
@@ -567,7 +579,7 @@ func (r *AutoMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// The conditions that become pod Events, as one comparable string.
 	relayed := func(m *mirrorv1alpha1.ArtifactMirror) string {
 		var out strings.Builder
-		for _, t := range []string{ConditionReady, ConditionSynced} {
+		for _, t := range []string{ConditionReady, ConditionSynced, ConditionVulnerabilityGate} {
 			if c := meta.FindStatusCondition(m.Status.Conditions, t); c != nil {
 				fmt.Fprintf(&out, "%s=%s/%s/%s;", t, c.Status, c.Reason, c.Message)
 			}

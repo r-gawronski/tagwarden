@@ -191,6 +191,7 @@ var _ = BeforeSuite(func() {
 		ArgoCDTracking:      ArgoCDTrackingInherit,
 		ArgoCDInstanceLabel: "app.kubernetes.io/instance",
 		Scanner:             suiteScanner,
+		ScannerStartTimeout: 2 * time.Second,
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&AutoMirrorReconciler{
 		Client:    mgr.GetClient(),

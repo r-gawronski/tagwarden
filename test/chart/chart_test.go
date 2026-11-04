@@ -127,6 +127,9 @@ func TestValues(t *testing.T) {
 		{name: "trivy tmp 1Gi", ok: true, args: []string{"-f", "trivy-values.yaml", "--set", "trivy.tmp.sizeLimit=1Gi"}},
 		{name: "trivy two replicas", args: []string{"-f", "trivy-values.yaml", "--set", "trivy.replicas=2"}},
 		{name: "trivy without db repository", args: []string{"-f", "trivy-values.yaml", "--set", "trivy.db.repository="}},
+		{name: "trivy scanner start timeout", ok: true, args: []string{"-f", "trivy-values.yaml", "--set", "trivy.scannerStartTimeout=90s"},
+			want: "- --scanner-start-timeout=90s\n"},
+		{name: "bad trivy scanner start timeout", args: []string{"-f", "trivy-values.yaml", "--set", "trivy.scannerStartTimeout=soon"}},
 		{name: "unknown trivy key", args: []string{"--set", "trivy.bogus=1"}},
 		{name: "unknown pod key", args: []string{"--set", "manager.pod.extra=1"}},
 	} {
@@ -180,6 +183,7 @@ func TestTrivyEnabled(t *testing.T) {
 		"- --trivy-version=0.76.1\n",
 		"- --trivy-url=http://tagwarden-trivy.tagwarden-system.svc.cluster.local.:4954\n",
 		"- --trivy-token-secret=tagwarden-trivy-token\n",
+		"- --scanner-start-timeout=5m\n",
 		"- --listen=0.0.0.0:4954\n",
 		"runAsUser: 65532\n",
 		"readOnlyRootFilesystem: true\n",
