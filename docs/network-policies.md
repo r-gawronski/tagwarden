@@ -74,3 +74,38 @@ Job retries connections that fail at dial time (for example
 `proxyconnect tcp: ... connection refused`) and temporary DNS errors. If a
 sync still fails with such an error, check that the policy allows DNS and
 the proxy or registry address and port.
+
+## Gated sync pods
+
+Generated mirrors of a target with the [vulnerability
+gate](install.md#enable-the-vulnerability-gate) also carry
+`tagwarden.dev/scanner: trivy`. Their sidecar and sync container call the
+Trivy Service on TCP 4954 (the chart's Service is `<release>-trivy`; DNS is
+already allowed above). Policies add up, so a separate policy for the label
+is enough:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sync-egress-trivy
+  namespace: tagwarden-system
+spec:
+  podSelector:
+    matchLabels:
+      tagwarden.dev/scanner: trivy
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: trivy
+    ports: [{port: 4954, protocol: TCP}]
+```
+
+The selector matches the pods of the chart's Trivy server. For an
+external server use an `ipBlock` instead. The chart's own Trivy policy
+(with `networkPolicy.enabled`) allows ingress to the server only from pods with that label and from the manager, and its
+egress only to DNS and `trivy.networkPolicy.registryEgress`. If the server
+is unreachable, the run reports `ScannerUnavailable` after a short retry
+window.

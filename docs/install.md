@@ -575,6 +575,267 @@ GKE does not need to be enabled on the cluster or node pool.
 - Real-cloud tests are manual; CI uses fakes for STS, IAM Credentials and
   the registry.
 
+## Enable the vulnerability gate
+
+The gate scans the images that auto-mirror copies, with a Trivy server in
+client/server mode. It is off by default and never applies to
+`ArtifactMirror` objects you wrote yourself. Design:
+[vulnerability-gate.md](design/vulnerability-gate.md).
+
+### 1. Mirror the Trivy image and the databases
+
+The server and the sync pods pull from your registry, never the internet.
+Mirror these with ordinary user-defined mirrors on a platform-owned target:
+
+- the Trivy image (pin it by digest),
+- `ghcr.io/aquasecurity/trivy-db` tag `2`,
+- `ghcr.io/aquasecurity/trivy-java-db` tag `1`, only if you set
+  `javaDB: PerJob` (about 1 GB).
+
+The database tags move several times a day, so the target needs
+`policy.onTagMutation: Overwrite` and must hold only these feeds. Only the
+platform team may push to its project: whoever can push the database decides
+what counts as vulnerable.
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata:
+  name: scanner-feeds
+spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [ghcr.io]
+  projects:
+    - name: platform
+      namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: tagwarden-system}
+  policy: {onTagMutation: Overwrite}
+  limits: {minSyncInterval: 1h, maxArtifactSize: 2Gi}
+---
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: trivy-db, namespace: tagwarden-system}
+spec:
+  targetRef: scanner-feeds
+  schedule: "0 */6 * * *"
+  source: {registry: ghcr.io, repository: aquasecurity/trivy-db}
+  target: {project: platform}
+  tags: {tags: ["2"]}
+```
+
+Give the server a pull-only account for the project (a
+`kubernetes.io/dockerconfigjson` Secret in the operator namespace).
+
+### 2. Turn on the Trivy server
+
+```yaml
+# values.yaml
+networkPolicy:
+  enabled: true
+clusterDomain: cluster.local        # your cluster's DNS domain
+trivy:
+  enabled: true
+  image:
+    repository: registry.example.internal/platform/ghcr.io/aquasecurity/trivy
+    tag: "0.76.1"                   # the Trivy version; the gate checks it
+    digest: sha256:<64 hex>         # required
+  imagePullSecrets: [{name: registry-pull}]
+  db:
+    repository: registry.example.internal/platform/ghcr.io/aquasecurity/trivy-db:2
+    credentialsSecretRef: {name: trivy-db-pull}
+    caBundleSecretRef: {name: registry-ca, key: ca.crt}
+  networkPolicy:
+    registryEgress: [{cidr: 10.0.0.0/24, port: 443}]
+  token:
+    existingSecret: trivy-token     # Secret with a "token" key, see below
+vulnerabilityExceptions:
+  approvers:
+    - {kind: Group, name: security-team, apiGroup: rbac.authorization.k8s.io}
+```
+
+- The chart renders a single-replica StatefulSet with a PVC
+  (`trivy.persistence`), a Service on port 4954 and a token Secret. It
+  passes `--trivy-image`, `--trivy-version`, `--trivy-url`,
+  `--trivy-token-secret` and `--scanner-start-timeout` (value
+  `trivy.scannerStartTimeout`, default `5m`) to the manager. The flags are
+  all empty or all set. The manager refuses an image that is not pinned by
+  digest.
+- The chart generates the token if `trivy.token.existingSecret` is empty
+  and keeps it on upgrades. Under Argo CD or `helm template` the lookup
+  returns nothing and the token would rotate on every render, so GitOps
+  installs create the Secret themselves and set `existingSecret`.
+- Service names are dialed as `<service>.<namespace>.svc.<clusterDomain>.`,
+  with a trailing dot, so `resolv.conf` search domains never apply. Set
+  `clusterDomain` (manager flag `--cluster-domain`) when yours is not
+  `cluster.local`.
+- Client and server must share major.minor. Update the server and
+  `trivy.image.tag` together, as a deliberate step; never use a floating
+  tag.
+- The in-chart server speaks plain HTTP. The token and the NetworkPolicy
+  guard it. If you need encryption on the pod network, use a service mesh
+  with mTLS, or an external https server.
+
+To use an external server instead, leave `trivy.enabled: false` and set
+`vulnerabilityGate.scanner` on the target (`url`, `caBundleSecretRef`,
+`tokenSecretRef`, `image` and `version` together). The URL must be https
+unless it is a cluster Service name. A target with its own `url` gets no
+token unless it names one in `tokenSecretRef`.
+
+### 3. Enable the gate on a target
+
+```yaml
+spec:
+  autoMirror:
+    enabled: true
+    project: shared
+    vulnerabilityGate:
+      enabled: true
+      action: Report            # Report | Block
+      severity: Critical        # Critical | High | Medium | Low
+      ignoreUnfixed: false
+      includeUnknown: false     # count findings without a vendor severity
+      maxDBAge: 72h             # at least 1h
+      onScanError: Report       # Report | Block
+      rescanInterval: 24h       # unset: no re-scan; at least 1h
+      onVulnerableTag: Report   # Report | Untag (Untag needs action: Block)
+      maxExceptionDuration: 2160h
+      scanner:
+        javaDB: Disabled        # Disabled (default) | PerJob
+```
+
+- `action` decides what happens to a tag with findings. `onScanError`
+  decides what happens to a tag the gate could not judge. A database older
+  than `maxDBAge` is a scan error. With `Report` the image is copied and
+  the finding or error is recorded. With `Block` it is not copied.
+- With `action` or `onScanError` set to `Block`, `autoMirror.project` is
+  reserved for generated mirrors. A hand-written mirror there gets
+  `Ready=False` with reason `ProjectReservedForAutoMirror`. The check spans
+  every target on the same registry.
+- `javaDB: Disabled` skips JAR, WAR, EAR and PAR files. Their findings are
+  missing, and `status.javaScanned` and the audit line say
+  `javaScanned: false`. `PerJob` needs `scanner.javaDBRepository` (a
+  mirrored Java DB in the target registry) and downloads about 1 GB, with
+  about 2.5 GiB of ephemeral disk, in every sync Job that has something to
+  scan.
+- Only generated Jobs of a gated target get the scanner sidecar. Other
+  Jobs and mirrors are unchanged.
+
+### 4. NetworkPolicy
+
+Gated sync pods carry the label `tagwarden.dev/scanner: trivy`. With
+`networkPolicy.enabled` the chart's Trivy policy allows ingress on 4954
+only from pods with that label and from the manager. Its egress allows DNS
+and the `trivy.networkPolicy.registryEgress` ranges (the registry holding
+the database). If you restrict sync pod egress yourself, allow gated pods
+to reach the Trivy Service too: see
+[network-policies.md](network-policies.md#gated-sync-pods).
+
+Without an enforcing CNI any pod can call the server with a stolen token.
+
+### 5. Exceptions
+
+The chart always renders the `<release>-exception-approver` ClusterRole
+(create, update and delete `VulnerabilityException`). The RBAC helper roles
+never grant it. Bind it to the security team with
+`vulnerabilityExceptions.approvers`. Tenants get no write access.
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: VulnerabilityException
+metadata: {name: web-nginx-cve-2026-12345}
+spec:
+  targetRef: default
+  namespaces: [team-web]
+  repository: docker.io/library/nginx
+  vulnerabilities: [CVE-2026-12345]   # and/or digests: [sha256:...]
+  expires: "2026-12-01T00:00:00Z"
+  approvedBy: alice@example.internal
+  reason: Not reachable, fix scheduled with the next base image.
+```
+
+Set `digests`, `vulnerabilities` or both. An exception for a whole
+repository is rejected. `approvedBy` is a claim. Set
+`vulnerabilityExceptions.approvedByPolicy.enabled: true` to render a
+ValidatingAdmissionPolicy that requires it to equal the requesting user.
+GitOps tools then need `approvedBy` set to their own ServiceAccount user.
+An exception that expires later than `maxExceptionDuration` after its
+creation is ignored (`Active=False`, reason `TooLong`). The object also
+reports `Expired` and `TargetNotFound`, each with a Warning Event
+(`ExceptionExpired`, `ExceptionTooLong`, `TargetNotFound`).
+
+### 6. Re-scan
+
+With `rescanInterval` set, the controller starts a re-scan Job per
+generated mirror at spread slots, at most two per target at once. The Job
+reads the target registry, never upstream, and scans each selected tag
+again. Findings go to `status.vulnerable`. `onVulnerableTag: Untag` (with
+`action: Block`) deletes the target tag, never the digest, and only tags
+no other mirror of the same path selects. A tag another mirror holds is
+reported as `UntagRefused`. The target credentials need delete rights for
+Untag.
+
+### 7. Harbor
+
+- Harbor refuses tag DELETE on `/v2`, so Untag reports `UntagFailed` and
+  the tag stays, as under `Report`. A digest-scoped delete is tracked in
+  issue #71.
+- Use Harbor's own scanning as a second layer. It also covers
+  hand-written mirrors and images mirrored under `Report`: scan on push, a
+  daily "scan all" on the mirror projects, "prevent vulnerable images from
+  running" with the same threshold as the gate's `severity`, and Harbor's
+  Trivy adapter pointed at the same mirrored database repository.
+
+### See the results
+
+```sh
+kubectl get clustermirrortarget default -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}{"\n"}{end}'
+kubectl -n team-web get artifactmirror <auto-...> -o yaml   # status.findings, status.vulnerable
+kubectl -n team-web get events --field-selector involvedObject.kind=Pod
+```
+
+- Target conditions: `ScannerReady` (False with `ScannerUnavailable`,
+  `VersionMismatch` or `NotConfigured`) and `VulnerabilityDBReady` (False
+  with `DBStale`). The target's `Ready` and hand-written mirrors are not
+  affected.
+- Generated mirror: condition `VulnerabilitiesFound` (reason `Reported`,
+  `Blocked` or `Clear`), condition `VulnerabilityGate` (False when tags
+  could not be judged; reasons `DBStale`, `ScannerUnavailable`,
+  `VersionMismatch`, `ScanFailed`), condition `Rescanned` (reason
+  `Rescanned` or `RescanFailed`), `status.findings`, `status.vulnerable`,
+  `status.lastRescan` and `status.javaScanned`. `Ready` and `Synced` stay
+  True when the sync worked.
+- Events on the mirror: `VulnerabilitiesFound`, `VulnerabilityScanFailed`,
+  `VulnerableTagFound`, `TagUntagged`. On the pod: `VulnerabilitiesFound`
+  (Report), `MirrorRefused` with `VulnerabilityBlocked` or `ScanFailed`
+  (Block), `VulnerabilityScanFailed` and `MirroredImageVulnerable`
+  (re-scan). On an exception: `ExceptionExpired`, `ExceptionTooLong`, `TargetNotFound`.
+- Metrics: `tagwarden_vulnerability_gate_unscanned{target}` and
+  `tagwarden_scanner_start_failures_total{target,reason}`. Alert on both.
+- The audit line of each artifact carries the verdict, scanner version and
+  database time.
+
+### When the scanner is not configured
+
+A gate that is enabled but cannot scan fails loudly, not silently. When the
+target has no scanner URL or no client image and version (neither on the
+target nor from the chart):
+
+- the target gets `ScannerReady=False` with reason `NotConfigured` and a
+  Warning Event;
+- `tagwarden_vulnerability_gate_unscanned{target="<name>"}` is 1;
+- under `onScanError: Report`, each generated mirror gets
+  `VulnerabilityGate=False` (`NotConfigured`), its Jobs run without a
+  sidecar and the images are copied unscanned. Under `Block` the mirror
+  gets `Ready=False` (`ScannerUnavailable`) and no CronJob, so nothing is
+  copied;
+- pods using those images get `VulnerabilityScanFailed` (Report) or
+  `MirrorRefused` (Block).
+
+If the scanner sidecar cannot start (image pull error, crash loop), the Job
+is deleted after `trivy.scannerStartTimeout`, nothing is copied, and
+`tagwarden_scanner_start_failures_total` increases.
+
 ## Tenant limits
 
 `ClusterMirrorTarget.spec.limits` caps schedules, mirrors per namespace,
@@ -614,4 +875,5 @@ kubectl delete cronjobs,configmaps -l tagwarden.dev/mirror -n <old namespace>
 ## Next steps
 
 - Restrict sync pod egress: [network-policies.md](network-policies.md).
+- Scan auto-mirrored images: [Enable the vulnerability gate](#enable-the-vulnerability-gate).
 - Read what the operator trusts and why: [threat-model.md](threat-model.md).
