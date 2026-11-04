@@ -17,8 +17,15 @@ limitations under the License.
 package syncspec
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
 const valid = `{
@@ -193,7 +200,7 @@ func TestParseReport(t *testing.T) {
 		"garbage":      `not json`,
 		"too large":    `{"v":1,"errors":["` + strings.Repeat("x", MaxReportSize) + `"]}`,
 		"no version":   `{"copied":1}`,
-		"new version":  `{"v":2}`,
+		"new version":  `{"v":3}`,
 		"negative":     `{"v":1,"failed":-1}`,
 		"bad tag":      `{"v":1,"synced":[{"tag":"../x","digest":"` + digest + `"}]}`,
 		"bad digest":   `{"v":1,"synced":[{"tag":"v1","digest":"sha256:abc"}]}`,
@@ -202,6 +209,133 @@ func TestParseReport(t *testing.T) {
 	}
 	for name, msg := range bad {
 		if _, err := ParseReport(msg); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}
+
+func TestParseReportV2(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	entry := func(extra string) string {
+		return `{"v":2,"findings":1,"blocked":1,"gate":"ok","javaScanned":false,"tagFindings":[{"tag":"v1","digest":"` + digest +
+			`","verdict":"Findings","outcome":"Blocked","severity":"Critical","counts":{"critical":1},"topIDs":["CVE-2026-1"],"scannedAt":"2026-11-03T10:00:00Z"` + extra + `}],"synced":[]}`
+	}
+	r, err := ParseReport(entry(`,"dbUpdatedAt":"2026-11-03T09:00:00Z"`))
+	if err != nil || r.Findings != 1 || r.Blocked != 1 || r.JavaScanned == nil || *r.JavaScanned || len(r.TagFindings) != 1 ||
+		r.TagFindings[0].Outcome != v1alpha1.OutcomeBlocked || r.TagFindings[0].Counts.Critical != 1 {
+		t.Fatalf("report %+v, err %v", r, err)
+	}
+	if _, err := ParseReport(`{"v":2,"synced":[]}`); err != nil {
+		t.Fatalf("minimal v2: %v", err)
+	}
+	bad := map[string]string{
+		"gate fields in v1": `{"v":1,"findings":1}`,
+		"negative count":    `{"v":2,"scanErrors":-1}`,
+		"unknown gate":      `{"v":2,"gate":"fine"}`,
+		"bad id":            strings.Replace(entry(""), "CVE-2026-1", "cve; rm", 1),
+		"too many ids":      strings.Replace(entry(""), `"CVE-2026-1"`, `"CVE-1","CVE-2","CVE-3","CVE-4"`, 1),
+		"bad severity":      strings.Replace(entry(""), `"Critical"`, `"Severe"`, 1),
+		"bad outcome":       strings.Replace(entry(""), `"Blocked"`, `"Deleted"`, 1),
+		"negative severity": strings.Replace(entry(""), `"critical":1`, `"critical":-1`, 1),
+		"error w/o reason":  strings.Replace(entry(""), `"Findings"`, `"ScanError"`, 1),
+		"unknown reason":    entry(`,"scanError":"Oops"`),
+		"bad db time":       entry(`,"dbUpdatedAt":"yesterday"`),
+		"bad tag":           strings.Replace(entry(""), `"tag":"v1"`, `"tag":"../x"`, 1),
+	}
+	for name, msg := range bad {
+		if _, err := ParseReport(msg); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}
+
+func TestNewGate(t *testing.T) {
+	expires := metav1.NewTime(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
+	excs := []v1alpha1.VulnerabilityException{{
+		ObjectMeta: metav1.ObjectMeta{Name: "accept"},
+		Spec: v1alpha1.VulnerabilityExceptionSpec{Namespaces: []string{"team-a"}, Repository: "docker.io/library/nginx",
+			Vulnerabilities: []string{"CVE-2026-1"}, Expires: expires},
+	}}
+	d := ScannerDefaults{URL: "http://tagwarden-trivy.tagwarden-system.svc:4954", Version: "0.76.1", Image: "trivy@sha256:" + strings.Repeat("a", 64)}
+	g := NewGate(&v1alpha1.VulnerabilityGate{Enabled: true}, d, excs, []SyncedTag{{Tag: "v1", Digest: "sha256:" + strings.Repeat("b", 64)}})
+	p := g.Policy()
+	if p.Action != vuln.Report || p.Severity != vuln.Critical || p.OnScanError != vuln.Report ||
+		g.MaxDBAge.Duration != DefaultMaxDBAge || g.Scanner.Timeout.Duration != DefaultScannerTimeout ||
+		g.Scanner.JavaDB != v1alpha1.JavaDBDisabled || g.Scanner.URL != d.URL || g.Scanner.Version != d.Version {
+		t.Fatalf("defaults %+v %+v", g, p)
+	}
+	ve := g.VulnExceptions()
+	if len(ve) != 1 || ve[0].Name != "accept" || !ve[0].Expires.Equal(expires.Time) || ve[0].Vulnerabilities[0] != "CVE-2026-1" {
+		t.Fatalf("exceptions %+v", ve)
+	}
+
+	g = NewGate(&v1alpha1.VulnerabilityGate{
+		Action: v1alpha1.GateActionBlock, Severity: v1alpha1.SeverityThresholdHigh, OnScanError: v1alpha1.GateActionBlock,
+		IgnoreUnfixed: true, IncludeUnknown: true, MaxDBAge: &metav1.Duration{Duration: time.Hour},
+		Scanner: &v1alpha1.ScannerSpec{URL: "https://trivy.example.internal", Image: "x@sha256:" + strings.Repeat("c", 64), Version: "0.77.0",
+			Timeout: &metav1.Duration{Duration: time.Minute}, JavaDB: v1alpha1.JavaDBPerJob, JavaDBRepository: "registry.example.internal/platform/trivy-java-db:1"},
+	}, d, nil, nil)
+	p = g.Policy()
+	if p.Action != vuln.Block || p.Severity != vuln.High || p.OnScanError != vuln.Block || !p.IgnoreUnfixed || !p.IncludeUnknown ||
+		g.Scanner.URL != "https://trivy.example.internal" || g.Scanner.Version != "0.77.0" || g.Scanner.JavaDB != v1alpha1.JavaDBPerJob {
+		t.Fatalf("overrides %+v %+v", g, p)
+	}
+}
+
+func TestDecodeGate(t *testing.T) {
+	base := func(gate string) string {
+		return `{"mirror":{"namespace":"team-a","name":"auto-0123456789abcdef"},"source":"docker.io/library/nginx",
+			"target":"registry.example.internal/shared/docker.io/library/nginx","tags":{"tags":["1.27"]},
+			"onTagMutation":"Fail","allowedSources":["docker.io"],"gate":` + gate + `}`
+	}
+	gate := func(mod func(map[string]any)) string {
+		g := map[string]any{
+			"action": "Block", "severity": "Critical", "onScanError": "Report", "maxDBAge": "72h",
+			"scanner": map[string]any{"url": "http://tagwarden-trivy.tagwarden-system.svc:4954", "version": "0.76.1", "timeout": "10m", "javaDB": "Disabled"},
+		}
+		mod(g)
+		b, _ := json.Marshal(g)
+		return string(b)
+	}
+	scanner := func(k string, v any) func(map[string]any) {
+		return func(g map[string]any) { g["scanner"].(map[string]any)[k] = v }
+	}
+	s, err := Decode(strings.NewReader(base(gate(func(map[string]any) {}))))
+	if err != nil || s.Gate == nil || s.Gate.Policy().Action != vuln.Block {
+		t.Fatalf("spec %+v, err %v", s.Gate, err)
+	}
+	if _, err := Decode(strings.NewReader(base(gate(func(g map[string]any) {
+		scanner("javaDB", "PerJob")(g)
+		scanner("javaDBRepository", "registry.example.internal/platform/trivy-java-db:1")(g)
+	})))); err != nil {
+		t.Fatalf("PerJob: %v", err)
+	}
+	for name, mod := range map[string]func(map[string]any){
+		"action":            func(g map[string]any) { g["action"] = "Quarantine" },
+		"onScanError":       func(g map[string]any) { g["onScanError"] = "" },
+		"severity":          func(g map[string]any) { g["severity"] = "Unknown" },
+		"maxDBAge":          func(g map[string]any) { g["maxDBAge"] = "0s" },
+		"url scheme":        scanner("url", "ftp://trivy"),
+		"url credentials":   scanner("url", "https://user:pass@trivy.example.internal"),
+		"url path":          scanner("url", "https://trivy.example.internal/x"),
+		"version":           scanner("version", "latest"),
+		"timeout":           scanner("timeout", "2h"),
+		"javaDB":            scanner("javaDB", "Shared"),
+		"PerJob without DB": scanner("javaDB", "PerJob"),
+		"DB in other host": func(g map[string]any) {
+			scanner("javaDB", "PerJob")(g)
+			scanner("javaDBRepository", "ghcr.io/aquasecurity/trivy-java-db:1")(g)
+		},
+		"exception digest": func(g map[string]any) {
+			g["exceptions"] = []any{map[string]any{"name": "x", "namespaces": []string{"a"}, "repository": "r", "digests": []string{"sha256:1"}, "expires": "2027-01-01T00:00:00Z"}}
+		},
+		"exception no names": func(g map[string]any) {
+			g["exceptions"] = []any{map[string]any{"name": "x", "repository": "r", "expires": "2027-01-01T00:00:00Z"}}
+		},
+		"recorded":      func(g map[string]any) { g["recorded"] = []any{map[string]any{"tag": "v1", "digest": "sha256:1"}} },
+		"unknown field": func(g map[string]any) { g["token"] = "s3cret" },
+	} {
+		if _, err := Decode(strings.NewReader(base(gate(mod)))); err == nil {
 			t.Errorf("%s: want error", name)
 		}
 	}

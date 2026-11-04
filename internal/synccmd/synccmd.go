@@ -83,6 +83,8 @@ type options struct {
 	lookup func(ctx context.Context, host string) ([]net.IPAddr, error)
 	// window bounds lookup and connection retries at the start of a run.
 	window *registry.Window
+	// scanDir, layoutDir and scannerCA are the gate paths; tests replace them.
+	scanDir, layoutDir, scannerCA string
 }
 
 // transientError marks an error that may pass on the next run.
@@ -97,6 +99,7 @@ func Run(ctx context.Context, args []string, stdout io.Writer, termPath string) 
 		proxyCA: syncspec.ProxyCAFile, clientCertDir: syncspec.ClientCertDir,
 		sourceAuth: syncspec.SourceAuthFile, sourceCA: syncspec.SourceCAFile,
 		azureToken: syncspec.AzureTokenFile, awsToken: syncspec.AWSTokenFile, gcpToken: syncspec.GCPTokenFile,
+		scanDir: syncspec.ScanDir, layoutDir: syncspec.LayoutDir, scannerCA: syncspec.ScannerCAFile,
 		lookup: net.DefaultResolver.LookupIPAddr,
 	}
 	return run(ctx, args, stdout, termPath, o, os.Getenv)
@@ -121,9 +124,15 @@ func run(ctx context.Context, args []string, stdout io.Writer, termPath string, 
 	res, err := sync.Run(ctx, req)
 	audit(stdout, spec, res)
 	r := summarize(res)
+	if spec.Gate != nil {
+		gateSummary(&r, res)
+	}
 	code = syncspec.ExitOK
 	if err != nil {
 		code = syncspec.ExitSyncFailed
+		if notRetryable(ctx, err, res) {
+			code = syncspec.ExitConfig
+		}
 		// Per-tag errors are already listed; keep run-level ones such as a
 		// failed listing or a cancelled context.
 		if len(res.Errors) == 0 || ctx.Err() != nil {
@@ -186,7 +195,14 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
+	var gate *sync.Gate
+	if spec.Gate != nil {
+		if gate, err = newGate(spec, p); err != nil {
+			return syncspec.Spec{}, sync.Request{}, err
+		}
+	}
 	return spec, sync.Request{
+		Gate:              gate,
 		Source:            spec.SourceRepo,
 		Target:            spec.TargetRepo,
 		Policy:            spec.Tags,
@@ -422,6 +438,8 @@ type auditLine struct {
 	// UpstreamDigest is set for a mutation-ignored line.
 	UpstreamDigest string `json:"upstreamDigest,omitempty"`
 	Error          string `json:"error,omitempty"`
+	// Scan is set for a tag the gate scanned.
+	Scan *auditScan `json:"scan,omitempty"`
 }
 
 // audit writes one JSON line per selected tag, newest first.
@@ -440,6 +458,7 @@ func audit(w io.Writer, spec syncspec.Spec, res sync.Result) {
 	add(res.Skipped, "skipped")
 	add(res.Copied, "copied")
 	add(res.Mutated, "mutated")
+	add(res.Blocked, "blocked")
 	add(res.Failed, "failed")
 	errs := map[string]string{}
 	for _, e := range res.Errors {
@@ -461,6 +480,7 @@ func audit(w io.Writer, spec syncspec.Spec, res sync.Result) {
 			Action:    e.action,
 			Referrers: e.a.Referrers,
 			Error:     errs[tag],
+			Scan:      newAuditScan(spec.Gate, e.a.Scan),
 		}
 		switch {
 		case e.a.UpstreamDigest != "":
@@ -509,7 +529,9 @@ const (
 // keeps the first errors cut to keptErrorLen bytes, then as many synced
 // tags as fit, then as many further errors as fit, and flags what it cut.
 func encode(r report) []byte {
-	r.V = syncspec.ReportVersion
+	if r.V == 0 {
+		r.V = syncspec.ReportVersion
+	}
 	if r.Synced == nil {
 		r.Synced = []syncedTag{}
 	}
@@ -532,6 +554,13 @@ func encode(r report) []byte {
 	withRest := func(k int) []string { return append(slices.Clip(head), rest[:k]...) }
 
 	r.Errors = head
+	// Gate findings go before synced tags: pod Events depend on them.
+	if findings := r.TagFindings; len(findings) > 0 {
+		r.Synced = []syncedTag{}
+		n := largest(len(findings), func(k int) bool { r.TagFindings = findings[:k]; return fits(r) })
+		r.TagFindings, r.FindingsTruncated = findings[:n], n < len(findings)
+		r.Synced = synced
+	}
 	if !fits(r) {
 		r.Truncated = true
 		r.Synced = synced[:largest(len(synced), func(k int) bool { r.Synced = synced[:k]; return fits(r) })]
