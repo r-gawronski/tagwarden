@@ -1,0 +1,61 @@
+# git-cliff configuration for CHANGELOG.md (Keep a Changelog layout).
+# Run through `make changelog VERSION=x.y.z`. See docs/design/release.md.
+#
+# Sections: Security, Added (feat), Fixed (fix), Changed (refactor, perf),
+# Documentation (docs). ci, build, chore, test and style commits are left out,
+# and so are dependency bumps (build(deps), chore(deps), Dependabot): they
+# are not user-visible. A fix(deps) that mentions a CVE lands in Security.
+# The group names carry a numeric comment that only fixes their order.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+"""
+body = """
+{% if version -%}
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## [Unreleased]
+{% endif -%}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {% if commit.breaking %}**BREAKING** {% endif %}\
+{% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = true
+filter_commits = true
+topo_order = false
+sort_commits = "oldest"
+tag_pattern = "v[0-9].*"
+# Link the trailing (#NN), the squash-merge pull request number. An earlier
+# (#NN) in the subject is an issue reference and stays plain. Commits from
+# before the history rewrite have no number.
+commit_preprocessors = [
+  { pattern = '\(#([0-9]+)\)$', replace = "([#${1}](https://github.com/r-gawronski/tagwarden/pull/${1}))" },
+]
+commit_parsers = [
+  { message = "^(build|chore)\\(deps", skip = true },
+  { message = "^(feat|fix)(\\(.*\\))?!?:.*(?i:security|CVE-)", group = "<!-- 0 -->Security" },
+  { message = "^(feat|fix)\\(security\\)", group = "<!-- 0 -->Security" },
+  { message = "^feat", group = "<!-- 1 -->Added" },
+  { message = "^fix", group = "<!-- 2 -->Fixed" },
+  { message = "^(refactor|perf)", group = "<!-- 3 -->Changed" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = ".*", skip = true },
+]

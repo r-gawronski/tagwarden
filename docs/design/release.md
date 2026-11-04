@@ -44,7 +44,25 @@ image and chart packages public once.
 
 ## Cutting a release
 
-Run the **Release** workflow (`.github/workflows/release.yaml`) from the
+First prepare the changelog. Feature pull requests do not touch
+`CHANGELOG.md`; the release pull request does. [git-cliff](https://git-cliff.org)
+builds the entries from the conventional commit subjects on `main`
+(`cliff.toml`, pinned in the Makefile as `GIT_CLIFF_IMAGE`):
+
+```sh
+git switch -c chore/changelog-0.1.0 origin/main
+make changelog VERSION=0.1.0    # needs Docker and tags fetched
+```
+
+The target turns the commits since the last tag into a `## [0.1.0] - <date>`
+section below `## [Unreleased]`. Sections: Security (`feat` or `fix` whose
+subject mentions security or a CVE), Added (`feat`), Fixed (`fix`), Changed
+(`refactor`, `perf`) and Documentation (`docs`). `ci`, `build`, `chore`,
+`test` and dependency bumps are left out. Then edit by hand: add a short
+Highlights paragraph for a notable release, fix wording, merge duplicates.
+Open the pull request `chore: changelog for v0.1.0` and merge it.
+
+Then run the **Release** workflow (`.github/workflows/release.yaml`) from the
 Actions tab on `main`, or from a terminal:
 
 ```sh
@@ -53,7 +71,8 @@ gh workflow run release.yaml --ref main -f version=0.1.0-rc.1
 
 `version` is strict semver without the leading `v`. The workflow refuses to
 run off `main`, refuses a version whose tag exists, creates the annotated tag
-`v<version>` on the `main` commit it runs on, and dispatches `build.yaml` on
+`v<version>` on the `main` commit it runs on (after checking that
+`CHANGELOG.md` on that commit has a `## [<version>]` heading), and dispatches `build.yaml` on
 that tag. Only that dispatch publishes; a dispatch of `build.yaml` on a branch
 fails.
 
@@ -75,16 +94,17 @@ a read-only token, and the default workflow token is read-only.
 For a `v*` tag, the `release` job runs after `publish` succeeds, that is
 after the scan, signing and verification. It is the only job with
 `contents: write`. It runs
-`gh release create <tag> --verify-tag --generate-notes`, with `--prerelease`
-when the version has a pre-release suffix (`v0.1.0-rc.1`).
+`gh release create <tag> --verify-tag`, with `--prerelease` when the version
+has a pre-release suffix (`v0.1.0-rc.1`).
 
 Attached files: the packaged chart `tagwarden-<version>.tgz` and one SPDX SBOM
 per platform, `tagwarden_<version>_linux_<arch>.spdx.json`. `publish` hands
-them over as a workflow artifact. The notes start with the image and chart
-references with digests and a `cosign verify` example, followed by the
-generated changelog. `.github/release.yml` groups the changelog by label
-(security, enhancement, bug, documentation, ci/dependencies/test) and skips
-PRs labelled `skip-changelog`.
+them over as a workflow artifact. The notes are the `CHANGELOG.md` section of that version, followed by the
+image and chart references with digests and a `cosign verify` example. A tag
+pushed by hand without a changelog section still gets a release: the job
+warns and falls back to GitHub generated notes, grouped by label through
+`.github/release.yml`. Those miss commits from before the history rewrite,
+so prefer the changelog.
 
 ## Signatures and SBOM
 
