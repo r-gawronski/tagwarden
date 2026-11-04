@@ -208,7 +208,7 @@ func TestVulnerabilityExceptions(t *testing.T) {
 	const (
 		role    = "kind: ClusterRole\nmetadata:\n  labels:\n    app.kubernetes.io/managed-by: Helm\n    app.kubernetes.io/name: tagwarden\n    helm.sh/chart: tagwarden-0.1.0\n    app.kubernetes.io/instance: tagwarden\n  name: tagwarden-exception-approver\n"
 		binding = "kind: ClusterRoleBinding\nmetadata:\n  labels:\n    app.kubernetes.io/managed-by: Helm\n    app.kubernetes.io/name: tagwarden\n    helm.sh/chart: tagwarden-0.1.0\n    app.kubernetes.io/instance: tagwarden\n  name: tagwarden-exception-approver\n"
-		policy  = "expression: object.spec.approvedBy == request.userInfo.username\n"
+		policy  = "expression: (request.operation == 'UPDATE' && object.spec == oldObject.spec) || object.spec.approvedBy == request.userInfo.username\n"
 		subject = "- apiGroup: rbac.authorization.k8s.io\n  kind: Group\n  name: security-team\n"
 	)
 	for _, tc := range []struct {

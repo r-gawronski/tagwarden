@@ -541,12 +541,13 @@ type TokenSecretKeyRef struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.javaDB) || self.javaDB != 'PerJob' || has(self.javaDBRepository)",message="javaDB PerJob needs javaDBRepository"
 type ScannerSpec struct {
 	// url of the Trivy server. Defaults to the server the chart deploys.
-	// It must be https unless the host is a cluster Service name
-	// (<service>.<namespace>.svc[.<cluster domain>]).
+	// It must be https unless the host is <service>.<namespace>.svc or
+	// <service>.<namespace>.svc.cluster.local, with an optional port and
+	// no path.
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="isURL(self) && (self.startsWith('https://') || self.startsWith('http://'))",message="must be an http or https URL"
 	// +kubebuilder:validation:XValidation:rule="!self.contains('@') && !self.contains('?') && !self.contains('#')",message="must not contain credentials, a query or a fragment"
-	// +kubebuilder:validation:XValidation:rule=`self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:[0-9]{1,5})?(/[^/]*)*$')`,message="must be https unless the host is a cluster Service name"
+	// +kubebuilder:validation:XValidation:rule=`self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?/?$')`,message="must be https unless the host is <service>.<namespace>.svc or <service>.<namespace>.svc.cluster.local"
 	// +optional
 	URL string `json:"url,omitempty"`
 

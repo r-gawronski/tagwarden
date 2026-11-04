@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -94,6 +95,9 @@ var _ = Describe("vulnerability gate API", func() {
 		Entry("plain HTTP to a cluster Service with the cluster domain", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			scanner(t).URL = "http://tagwarden-trivy.tagwarden-system.svc.cluster.local:4954"
 		}),
+		Entry("plain HTTP to a cluster Service with a trailing slash", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			scanner(t).URL = "http://tagwarden-trivy.tagwarden-system.svc/"
+		}),
 		Entry("onScanError Block with action Report", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			gate(t).OnScanError = mirrorv1alpha1.GateActionBlock
 		}),
@@ -163,6 +167,15 @@ var _ = Describe("vulnerability gate API", func() {
 		Entry("plain HTTP to a look-alike Service name", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			scanner(t).URL = "http://trivy.svc.example.com:4954"
 		}),
+		Entry("plain HTTP to a Service name under another domain", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			scanner(t).URL = "http://trivy.ns.svc.attacker.example/"
+		}),
+		Entry("plain HTTP to a Service name with a custom cluster domain", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			scanner(t).URL = "http://trivy.ns.svc.cluster.example:4954"
+		}),
+		Entry("plain HTTP to a Service with a userinfo-like path", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			scanner(t).URL = "http://trivy.ns.svc.cluster.local.attacker.example"
+		}),
 		Entry("plain HTTP to a short Service name", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			scanner(t).URL = "http://trivy:4954"
 		}),
@@ -215,7 +228,10 @@ var _ = Describe("reserved autoMirror project", func() {
 	const pauseTag = "3.10"
 	// reservedTarget creates a Ready target whose autoMirror project is
 	// shared, with the gate g.
+	// A reservation applies to every target on the registry, which the
+	// other suites share, so the target is deleted after the spec.
 	reservedTarget := func(name string, g mirrorv1alpha1.VulnerabilityGate) {
+		DeferCleanup(func() { deleteAndWait(&mirrorv1alpha1.ClusterMirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: name}}) })
 		createReadyTarget(name, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			t.Spec.Projects = []mirrorv1alpha1.TargetProject{
 				{Name: sharedProject, NamespaceSelector: &metav1.LabelSelector{}},
@@ -289,6 +305,50 @@ var _ = Describe("reserved autoMirror project", func() {
 		expectReady(m)
 	})
 
+	It("refuses a user mirror of another target on the same registry", func() {
+		const (
+			gated = "reserved-registry-a"
+			plain = "reserved-registry-b"
+		)
+		// Target B: the same registry as A in upper case, no gate.
+		DeferCleanup(func() { deleteAndWait(&mirrorv1alpha1.ClusterMirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: plain}}) })
+		createReadyTarget(plain, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.Registry = "REGISTRY.EXAMPLE.INTERNAL:8443"
+			t.Spec.Projects = []mirrorv1alpha1.TargetProject{
+				{Name: sharedProject, NamespaceSelector: &metav1.LabelSelector{}},
+				{Name: otherProject, NamespaceSelector: &metav1.LabelSelector{}},
+			}
+		})
+		viaB := userMirror(plain, "via-b", sharedProject)
+		createMirror(viaB)
+		expectReady(viaB)
+		viaBOther := userMirror(plain, "via-b-other", otherProject)
+		createMirror(viaBOther)
+		expectReady(viaBOther)
+
+		// A appears with Block: B's mirror in the reserved project is refused.
+		reservedTarget(gated, block)
+		expectRefused(viaB)
+		Consistently(mirrorReady(viaBOther), time.Second).Should(HaveField("Status", metav1.ConditionTrue))
+
+		// A generated mirror of A is still allowed.
+		gen := userMirror(gated, pauseName, sharedProject)
+		gen.Labels = map[string]string{mirrorv1alpha1.LabelGenerated: trueValue, mirrorv1alpha1.LabelAutoTarget: gated}
+		createMirror(gen)
+		expectReady(gen)
+
+		// A drops Block: B's mirror is allowed again.
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var t mirrorv1alpha1.ClusterMirrorTarget
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: gated}, &t); err != nil {
+				return err
+			}
+			t.Spec.AutoMirror.VulnerabilityGate.Action = mirrorv1alpha1.GateActionReport
+			return k8sClient.Update(ctx, &t)
+		})).To(Succeed())
+		expectReady(viaB)
+	})
+
 	DescribeTable("does not reserve the project when the gate cannot block",
 		func(target string, g mirrorv1alpha1.VulnerabilityGate) {
 			reservedTarget(target, g)
@@ -337,3 +397,18 @@ var _ = Describe("reserved autoMirror project", func() {
 		Expect(recorder.Events(teamB, p.Name)).NotTo(ContainElement(ContainSubstring(reasonAlreadyMirrored)))
 	})
 })
+
+func TestRegistryKey(t *testing.T) {
+	for _, tc := range []struct{ a, b mirrorv1alpha1.RegistryHost }{
+		{"reg.example.internal", "REG.example.internal:443"},
+		{"registry.example.internal:8443", "Registry.Example.Internal:8443"},
+		{"[::1]", "[::1]:443"},
+	} {
+		if registryKey(tc.a) != registryKey(tc.b) {
+			t.Errorf("registryKey(%q) != registryKey(%q)", tc.a, tc.b)
+		}
+	}
+	if registryKey("reg.example.internal") == registryKey("reg.example.internal:8443") {
+		t.Error("different ports map to one key")
+	}
+}

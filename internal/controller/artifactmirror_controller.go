@@ -314,9 +314,8 @@ func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, st
 // model T5, T6, T7, T10, T16, T23, T36). It returns a reason and
 // message when it may not.
 func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (string, string, error) {
-	if projectReserved(t) && m.Spec.Target.Project == t.Spec.AutoMirror.Project && !isGenerated(t, m) {
-		return ReasonProjectReservedForAutoMirror, fmt.Sprintf("project %s of ClusterMirrorTarget %s is reserved for generated mirrors while its vulnerability gate can block; use another project",
-			m.Spec.Target.Project, t.Name), nil
+	if reason, msg, err := r.reserved(ctx, t, m); err != nil || reason != "" {
+		return reason, msg, err
 	}
 	i := slices.IndexFunc(t.Spec.Projects, func(p mirrorv1alpha1.TargetProject) bool { return p.Name == m.Spec.Target.Project })
 	if i < 0 {
@@ -362,6 +361,30 @@ func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alp
 		return ReasonInvalidSpec, fmt.Sprintf("target %s is not a valid repository, set target.repository", targetRepo(t, m)), nil
 	}
 	return r.checkLimits(ctx, t, m)
+}
+
+// reserved refuses a user mirror in a project that a target on the same
+// registry reserves for its generated mirrors. Any target counts, not only
+// the mirror's own: two targets on one registry write the same paths.
+func (r *ArtifactMirrorReconciler) reserved(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (string, string, error) {
+	var list mirrorv1alpha1.ClusterMirrorTargetList
+	if err := r.List(ctx, &list); err != nil {
+		return "", "", err
+	}
+	for i := range list.Items {
+		o := &list.Items[i]
+		if projectReserved(o) && o.Spec.AutoMirror.Project == m.Spec.Target.Project &&
+			registryKey(o.Spec.Registry) == registryKey(t.Spec.Registry) && !isGenerated(o, m) {
+			return ReasonProjectReservedForAutoMirror, fmt.Sprintf("project %s of registry %s is reserved for generated mirrors of ClusterMirrorTarget %s, whose vulnerability gate can block; use another project",
+				m.Spec.Target.Project, t.Spec.Registry, o.Name), nil
+		}
+	}
+	return "", "", nil
+}
+
+// registryKey is a registry host in lower case without the default port.
+func registryKey(h mirrorv1alpha1.RegistryHost) string {
+	return strings.TrimSuffix(strings.ToLower(string(h)), ":443")
 }
 
 func (r *ArtifactMirrorReconciler) deniedPrefixes() []netip.Prefix {
@@ -541,9 +564,22 @@ func (r *ArtifactMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			},
 			GenericFunc: func(ctrlevent.GenericEvent) bool { return false },
 		})).
+		// A target change can reserve a project for every target on its
+		// registry, so the mirrors of all of them are checked again.
 		Watches(&mirrorv1alpha1.ClusterMirrorTarget{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {
-				return r.mirrorsMatching(ctx, client.MatchingFields{indexTargetName: o.GetName()})
+				var targets mirrorv1alpha1.ClusterMirrorTargetList
+				if err := r.List(ctx, &targets); err != nil {
+					return nil
+				}
+				key := registryKey(o.(*mirrorv1alpha1.ClusterMirrorTarget).Spec.Registry)
+				reqs := r.mirrorsMatching(ctx, client.MatchingFields{indexTargetName: o.GetName()})
+				for i := range targets.Items {
+					if t := &targets.Items[i]; t.Name != o.GetName() && registryKey(t.Spec.Registry) == key {
+						reqs = append(reqs, r.mirrorsMatching(ctx, client.MatchingFields{indexTargetName: t.Name})...)
+					}
+				}
+				return reqs
 			})).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, o client.Object) []reconcile.Request {

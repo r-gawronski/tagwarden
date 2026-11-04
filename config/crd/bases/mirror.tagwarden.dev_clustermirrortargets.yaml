@@ -370,8 +370,9 @@ spec:
                           url:
                             description: |-
                               url of the Trivy server. Defaults to the server the chart deploys.
-                              It must be https unless the host is a cluster Service name
-                              (<service>.<namespace>.svc[.<cluster domain>]).
+                              It must be https unless the host is <service>.<namespace>.svc or
+                              <service>.<namespace>.svc.cluster.local, with an optional port and
+                              no path.
                             maxLength: 512
                             type: string
                             x-kubernetes-validations:
@@ -382,9 +383,9 @@ spec:
                                 fragment
                               rule: '!self.contains(''@'') && !self.contains(''?'')
                                 && !self.contains(''#'')'
-                            - message: must be https unless the host is a cluster
-                                Service name
-                              rule: self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:[0-9]{1,5})?(/[^/]*)*$')
+                            - message: must be https unless the host is <service>.<namespace>.svc
+                                or <service>.<namespace>.svc.cluster.local
+                              rule: self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?/?$')
                           version:
                             description: |-
                               version is the Trivy version of image, for example 0.76.1. The
