@@ -57,6 +57,27 @@ type Policy struct {
 	Tags []string `json:"tags,omitempty"`
 }
 
+// Stats counts what Explain did with the input. A tag is counted once, by the
+// first filter that removed it.
+type Stats struct {
+	// Listed is the number of input tags.
+	Listed int
+	// Filtered were removed by include or exclude.
+	Filtered int
+	// NotSemver were removed because keepLatest or semverRange needs a version.
+	NotSemver int
+	// Prerelease were removed because allowPrerelease is not set.
+	Prerelease int
+	// OutOfRange were removed by semverRange.
+	OutOfRange int
+	// Trimmed were removed by keepLatest.
+	Trimmed int
+	// Selected is the number of returned tags.
+	Selected int
+	// Missing lists explicit tags that are not in the input.
+	Missing []string
+}
+
 // Select returns the tags chosen by p.
 //
 // Pattern selection applies only when Include, SemverRange or KeepLatest is
@@ -69,12 +90,19 @@ type Policy struct {
 // name. Tags such as "1.2", "1.2.0" and "v1.2.0" are distinct: each takes its
 // own KeepLatest slot, and equal versions are ordered by name.
 func Select(tags []string, p Policy) ([]string, error) {
+	out, _, err := Explain(tags, p)
+	return out, err
+}
+
+// Explain is Select with the per-filter counts.
+func Explain(tags []string, p Policy) ([]string, Stats, error) {
+	st := Stats{Listed: len(tags)}
 	if len(tags) > MaxTags {
-		return nil, fmt.Errorf("tags: %d entries exceed the limit of %d", len(tags), MaxTags)
+		return nil, st, fmt.Errorf("tags: %d entries exceed the limit of %d", len(tags), MaxTags)
 	}
 	include, exclude, constraint, err := p.compile()
 	if err != nil {
-		return nil, err
+		return nil, st, err
 	}
 	semverOnly := constraint != nil || p.KeepLatest > 0
 	patterns := semverOnly || len(include) > 0
@@ -82,23 +110,32 @@ func Select(tags []string, p Policy) ([]string, error) {
 	var versions []versioned
 	var others []string
 	for _, t := range tags {
-		if !patterns || len(include) > 0 && !matchAny(include, t) || matchAny(exclude, t) {
+		if !patterns {
+			continue
+		}
+		if len(include) > 0 && !matchAny(include, t) || matchAny(exclude, t) {
+			st.Filtered++
 			continue
 		}
 		v := parse(t)
 		switch {
 		case v == nil:
-			if !semverOnly {
+			if semverOnly {
+				st.NotSemver++
+			} else {
 				others = append(others, t)
 			}
 		case semverOnly && !p.AllowPrerelease && v.Prerelease() != "":
+			st.Prerelease++
 		case constraint != nil && !constraint.Check(v):
+			st.OutOfRange++
 		default:
 			versions = append(versions, versioned{t, v})
 		}
 	}
 	sortVersions(versions)
 	if p.KeepLatest > 0 && len(versions) > p.KeepLatest {
+		st.Trimmed = len(versions) - p.KeepLatest
 		versions = versions[:p.KeepLatest]
 	}
 
@@ -108,6 +145,11 @@ func Select(tags []string, p Policy) ([]string, error) {
 	}
 	for _, t := range others {
 		selected[t] = true
+	}
+	for _, t := range p.Tags {
+		if !slices.Contains(tags, t) && !slices.Contains(st.Missing, t) {
+			st.Missing = append(st.Missing, t)
+		}
 	}
 	for _, t := range tags {
 		if !selected[t] && slices.Contains(p.Tags, t) {
@@ -126,7 +168,9 @@ func Select(tags []string, p Policy) ([]string, error) {
 	for _, v := range versions {
 		out = append(out, v.tag)
 	}
-	return append(out, others...), nil
+	out = append(out, others...)
+	st.Selected = len(out)
+	return out, st, nil
 }
 
 // Validate reports whether p is a valid policy: its patterns compile within

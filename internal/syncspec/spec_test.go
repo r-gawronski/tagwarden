@@ -597,3 +597,30 @@ func TestParseRescanReport(t *testing.T) {
 		}
 	}
 }
+
+func TestParseReportSelection(t *testing.T) {
+	ok := `{"v":1,"synced":[],"selection":{"listed":3,"prerelease":1,"selected":0,"missing":2,"missingTags":["a","b"]}}`
+	r, err := ParseReport(ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := r.Selection; s == nil || s.Listed != 3 || s.Prerelease != 1 || s.Selected != 0 || s.Missing != 2 || len(s.MissingTags) != 2 {
+		t.Errorf("selection %+v", s)
+	}
+	b, _ := json.Marshal(r)
+	if r2, err := ParseReport(string(b)); err != nil || r2.Selection.Missing != 2 {
+		t.Errorf("round trip: %v %s", err, b)
+	}
+	if r, err := ParseReport(`{"v":1,"synced":[]}`); err != nil || r.Selection != nil {
+		t.Errorf("old report: %v %+v", err, r.Selection)
+	}
+	for name, msg := range map[string]string{
+		"negative":     `{"v":1,"selection":{"listed":-1}}`,
+		"invalid name": `{"v":1,"selection":{"missingTags":["a b"]}}`,
+		"too many":     `{"v":1,"selection":{"missingTags":["a","b","c","d","e","f"]}}`,
+	} {
+		if _, err := ParseReport(msg); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

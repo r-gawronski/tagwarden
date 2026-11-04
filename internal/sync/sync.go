@@ -104,7 +104,9 @@ type Artifact struct {
 type Result struct {
 	// Selected lists the selected tags in the order tags.Select returns
 	// them, newest version first.
-	Selected                         []string
+	Selected []string
+	// Stats counts what the selection did; Run sets it, Rescan does not.
+	Stats                            *tags.Stats
 	Copied, Skipped, Mutated, Failed []Artifact
 	// Blocked lists the tags the gate did not copy.
 	Blocked []Artifact
@@ -138,12 +140,12 @@ func Run(ctx context.Context, r Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	selected, err := s.selectTags(ctx)
+	selected, st, err := s.selectTags(ctx)
 	if err != nil {
 		return Result{}, err
 	}
 
-	res := Result{Selected: selected}
+	res := Result{Selected: selected, Stats: &st}
 	var mutated bool
 	for _, tag := range selected {
 		if err := ctx.Err(); err != nil {
@@ -230,23 +232,31 @@ func newSyncer(r Request) (*syncer, error) {
 // resolves each one directly and never lists the source, so the listing
 // limit cannot apply. A tag the source does not have is dropped, as when
 // selecting from a listing.
-func (s *syncer) selectTags(ctx context.Context) ([]string, error) {
+func (s *syncer) selectTags(ctx context.Context) ([]string, tags.Stats, error) {
 	p := s.req.Policy
 	if len(p.Include) > 0 || p.SemverRange != "" || p.KeepLatest > 0 {
 		all, err := s.list(ctx)
 		if err != nil {
-			return nil, err
+			return nil, tags.Stats{}, err
 		}
-		return tags.Select(all, p)
+		return tags.Explain(all, p)
 	}
-	selected, err := tags.Select(p.Tags, p)
+	selected, st, err := tags.Explain(p.Tags, p)
 	if err != nil {
-		return nil, err
+		return nil, st, err
 	}
-	return slices.DeleteFunc(selected, func(t string) bool {
+	// Nothing was listed: the explicit tags are the input.
+	st = tags.Stats{}
+	selected = slices.DeleteFunc(selected, func(t string) bool {
 		_, err := resolve(ctx, s.src, s.req.Source.Tag(t))
-		return notFound(err)
-	}), nil
+		if notFound(err) {
+			st.Missing = append(st.Missing, t)
+			return true
+		}
+		return false
+	})
+	st.Selected = len(selected)
+	return selected, st, nil
 }
 
 // list pages through the source tags and stops with an error past MaxTags,

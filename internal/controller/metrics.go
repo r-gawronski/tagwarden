@@ -36,4 +36,10 @@ var scannerStartFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Help: "Gated sync Jobs deleted because the scanner sidecar did not start (image pull failure, bad config, crash loop), by target and waiting reason. Nothing is copied by such a run.",
 }, []string{"target", "reason"})
 
-func init() { metrics.Registry.MustRegister(gateUnscanned, scannerStartFailures) }
+// selectedTags is the number of tags the last sync of a mirror selected.
+var selectedTags = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "tagwarden_mirror_selected_tags",
+	Help: "Tags the last sync of an ArtifactMirror selected; 0 means the filters matched nothing (condition Synced, reason NoTagsSelected).",
+}, []string{"namespace", "mirror"})
+
+func init() { metrics.Registry.MustRegister(gateUnscanned, scannerStartFailures, selectedTags) }

@@ -61,6 +61,8 @@ const (
 	ReasonRescanned                    = "Rescanned"
 	ReasonRescanFailed                 = "RescanFailed"
 	ReasonTruncated                    = "Truncated"
+	ReasonNoTagsSelected               = "NoTagsSelected"
+	ReasonTagNotFound                  = "TagNotFound"
 	ReasonSyncFailed                   = "SyncFailed"
 	ReasonConfigRejected               = "ConfigRejected"
 	ReasonCrashed                      = "Crashed"

@@ -17,6 +17,7 @@ limitations under the License.
 package tags
 
 import (
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -193,4 +194,48 @@ func FuzzSelect(f *testing.F) {
 			got[s] = true
 		}
 	})
+}
+
+const missingTag = "v9.9.9"
+
+func TestExplainStats(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     []string
+		policy Policy
+		want   Stats
+	}{
+		{"prerelease only", []string{"0.1.0-rc.1", "latest"},
+			Policy{Include: []string{`^\d+\.\d+\.\d+(-rc\.\d+)?$`}, KeepLatest: 3},
+			Stats{Listed: 2, Filtered: 1, Prerelease: 1}},
+		{"range and keepLatest", all, Policy{SemverRange: ">=1.10.0", KeepLatest: 2},
+			Stats{Listed: 7, NotSemver: 1, Prerelease: 1, OutOfRange: 1, Trimmed: 2, Selected: 2}},
+		{"exclude filter", all, Policy{Include: []string{"."}, Exclude: []string{`-rc\.`, latest}},
+			Stats{Listed: 7, Filtered: 2, Selected: 5}},
+		{"allow prerelease", all, Policy{Include: []string{`-rc\.`}, KeepLatest: 1, AllowPrerelease: true},
+			Stats{Listed: 7, Filtered: 6, Selected: 1}},
+		{"explicit missing", all, Policy{Tags: []string{"v1.9.0", missingTag, missingTag, "nope"}},
+			Stats{Listed: 7, Selected: 1, Missing: []string{missingTag, "nope"}}},
+		{"explicit missing beside patterns", all, Policy{Include: []string{latestRe}, Tags: []string{"gone"}},
+			Stats{Listed: 7, Filtered: 6, Selected: 1, Missing: []string{"gone"}}},
+		{"empty input", nil, Policy{KeepLatest: 1}, Stats{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, got, err := Explain(tc.in, tc.policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Selected != len(out) {
+				t.Errorf("Selected %d, %d returned", got.Selected, len(out))
+			}
+			if !slices.Equal(got.Missing, tc.want.Missing) {
+				t.Errorf("Missing %v, want %v", got.Missing, tc.want.Missing)
+			}
+			got.Missing, tc.want.Missing = nil, nil
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
 }
