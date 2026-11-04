@@ -319,7 +319,7 @@ var _ = Describe("re-scan", Ordered, func() {
 		Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(1), "the scanner sidecar")
 		Expect(job.OwnerReferences).To(ConsistOf(HaveField("Kind", "CronJob")))
 		Eventually(func() *metav1.Time { return status().LastRescan }).Should(HaveField("Time", BeTemporally(">", before)))
-		Expect(recorder.Events(ns, gen.Name)).To(ContainElement(ContainSubstring("Normal RescanStarted")))
+		Eventually(func() []string { return recorder.Events(ns, gen.Name) }).Should(ContainElement(ContainSubstring("Normal RescanStarted")))
 
 		By("starting no second re-scan in the same interval")
 		Consistently(rescanJobs, 2*time.Second).Should(HaveLen(1))
@@ -339,7 +339,7 @@ var _ = Describe("re-scan", Ordered, func() {
 		Expect(meta.FindStatusCondition(st.Conditions, ConditionVulnerabilitiesFound)).To(And(
 			HaveField("Status", metav1.ConditionTrue), HaveField("Reason", ReasonBlocked)))
 		Expect(judgedTags(&mirrorv1alpha1.ArtifactMirror{Status: st})).To(BeEmpty(), "an untagged tag is not judged")
-		Expect(recorder.Events(ns, gen.Name)).To(ContainElement(ContainSubstring("Warning " + reasonTagUntagged + " re-scan: tag 1.0")))
+		Eventually(func() []string { return recorder.Events(ns, gen.Name) }).Should(ContainElement(ContainSubstring("Warning " + reasonTagUntagged + " re-scan: tag 1.0")))
 		Eventually(func() string { return strings.Join(recorder.Events(pod.Namespace, pod.Name), "\n") }).Should(ContainSubstring(
 			"Warning " + reasonImageVulnerable + " " + image + ":1.0 found vulnerable by re-scan: 1 Critical (" + testCVE +
 				"); tag deleted from the target, the digest stays; see ArtifactMirror " + ns + "/" + gen.Name))

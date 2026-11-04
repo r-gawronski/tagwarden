@@ -267,7 +267,7 @@ var _ = Describe("reserved autoMirror project", func() {
 			HaveField("Message", ContainSubstring("reserved for generated mirrors"))))
 		_, err := cronJob(m)()
 		ExpectWithOffset(1, notFound(err)).To(BeTrue())
-		ExpectWithOffset(1, recorder.Events(m.Namespace, m.Name)).To(ContainElement(ContainSubstring("Warning " + ReasonProjectReservedForAutoMirror)))
+		EventuallyWithOffset(1, func() []string { return recorder.Events(m.Namespace, m.Name) }).Should(ContainElement(ContainSubstring("Warning " + ReasonProjectReservedForAutoMirror)))
 	}
 	expectReady := func(m *mirrorv1alpha1.ArtifactMirror) {
 		EventuallyWithOffset(1, mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
