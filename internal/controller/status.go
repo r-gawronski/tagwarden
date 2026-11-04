@@ -91,6 +91,9 @@ func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1al
 func (r *ArtifactMirrorReconciler) markApplied(ctx context.Context, jobs []*batchv1.Job) {
 	for _, j := range jobs {
 		patch := client.MergeFrom(j.DeepCopy())
+		if j.Annotations == nil {
+			j.Annotations = map[string]string{}
+		}
 		j.Annotations[AnnotationApplied] = "true"
 		if err := r.Patch(ctx, j, patch); err != nil && !apierrors.IsNotFound(err) {
 			log.FromContext(ctx).Error(err, "marking Job applied", "job", j.Name)
