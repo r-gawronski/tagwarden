@@ -25,9 +25,9 @@ definition for `make docker-build` and the e2e tests.
 
 | Trigger | Result |
 |---------|--------|
-| Pull request | Both platforms built, not pushed. Trivy scans the `linux/amd64` image and fails on fixed CRITICAL or HIGH findings. The release chart is packaged and linted with version `0.0.0-ci.<shortsha>`. |
-| Push to `main` | Image `ghcr.io/<owner>/tagwarden:main-<shortsha>`, scanned per platform, signed, with an SBOM attestation per platform. |
-| Tag `v<semver>` (pushed, or dispatched by the Release workflow) | Image `ghcr.io/<owner>/tagwarden:<version>` as for `main`, and chart `oci://ghcr.io/<owner>/charts/tagwarden:<version>`, signed. Then a GitHub Release for the tag (see below). |
+| Pull request | Skipped when only docs changed. Otherwise both platforms built, not pushed. Trivy scans the `linux/amd64` image and fails on fixed CRITICAL or HIGH findings. The release chart is packaged and linted with version `0.0.0-ci.<shortsha>`. A newer push cancels the older run. |
+| Push to `main` | Skipped when only docs changed (no new image). Otherwise image `ghcr.io/<owner>/tagwarden:main-<shortsha>`, scanned per platform, signed, with an SBOM attestation per platform. |
+| Tag `v<semver>` (pushed, or dispatched by the Release workflow) | Always runs. Image `ghcr.io/<owner>/tagwarden:<version>` as for `main`, and chart `oci://ghcr.io/<owner>/charts/tagwarden:<version>`, signed. Then a GitHub Release for the tag (see below). |
 
 `<owner>` is the lowercased repository owner and `<version>` is the tag
 without the leading `v`. The job fails for a tag that is not strict
