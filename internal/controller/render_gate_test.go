@@ -41,6 +41,8 @@ import (
 const (
 	testTokenSecret = "tagwarden-trivy-token" //nolint:gosec // Secret name, not a credential
 	testCVE         = "CVE-2026-12345"
+	externalScanner = "https://trivy.scanners.example.internal:4954"
+	externalToken   = "external-token" //nolint:gosec // Secret name, not a credential
 )
 
 // testScanner is the manager scanner configuration of the controller tests.
@@ -222,9 +224,9 @@ func TestGatedRenderTargetScanner(t *testing.T) {
 	storage := resource.MustParse("40Gi")
 	limits := corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")}}
 	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Scanner: &mirrorv1alpha1.ScannerSpec{
-		URL:               "https://trivy.scanners.example.internal:4954",
+		URL:               externalScanner,
 		CABundleSecretRef: &mirrorv1alpha1.SecretKeyRef{Name: "external-ca", Key: "ca.pem"},
-		TokenSecretRef:    &mirrorv1alpha1.TokenSecretKeyRef{Name: "external-token", Key: "t"},
+		TokenSecretRef:    &mirrorv1alpha1.TokenSecretKeyRef{Name: externalToken, Key: "t"},
 		Image:             "registry.example.internal/trivy" + trivyDigest, Version: "0.76.2",
 		JavaDB: mirrorv1alpha1.JavaDBPerJob, JavaDBRepository: "registry.example.internal:8443/platform/trivy-java-db:1",
 		Timeout: duration(5 * time.Minute), Storage: &storage, Resources: &limits,
@@ -256,7 +258,7 @@ func TestGatedRenderTargetScanner(t *testing.T) {
 			}
 		}
 	}
-	if tok == nil || tok.Name != "external-token" || tok.Key != "t" {
+	if tok == nil || tok.Name != externalToken || tok.Key != "t" {
 		t.Errorf("token = %+v", tok)
 	}
 	vols := map[string]corev1.Volume{}
@@ -387,5 +389,38 @@ func TestSecurityDriftSidecar(t *testing.T) {
 	delete(live.Labels, LabelScanner)
 	if !securityDrift(live, want) {
 		t.Error("removing the scanner label is not drift")
+	}
+}
+
+// TestGateTokenDefault checks that the in-chart token goes only to the
+// in-chart server: an external scanner.url without tokenSecretRef gets no
+// token (threat model T33).
+func TestGateTokenDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		scanner *mirrorv1alpha1.ScannerSpec
+		want    string
+	}{
+		{name: "in-chart server", want: testTokenSecret},
+		{name: "in-chart server, own image", scanner: &mirrorv1alpha1.ScannerSpec{Image: trivyImage, Version: trivyVersion}, want: testTokenSecret},
+		{name: "external server", scanner: &mirrorv1alpha1.ScannerSpec{URL: externalScanner}},
+		{name: "external server with token", want: externalToken, scanner: &mirrorv1alpha1.ScannerSpec{
+			URL: externalScanner, TokenSecretRef: &mirrorv1alpha1.TokenSecretKeyRef{Name: externalToken}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Scanner: tc.scanner})
+			s := syncSpec(tg, m, nil)
+			sc, _, err := reconcilerWith(t).gate(context.Background(), tg, m, &s)
+			if err != nil || sc == nil {
+				t.Fatal(err)
+			}
+			got := ""
+			if sc.token != nil {
+				got = sc.token.Name
+			}
+			if got != tc.want {
+				t.Errorf("token Secret %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

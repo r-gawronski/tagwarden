@@ -71,10 +71,12 @@ func (r *ArtifactMirrorReconciler) gate(ctx context.Context, t *mirrorv1alpha1.C
 	}
 	s.Gate = out
 	sc := &sidecar{gate: out, scanner: g.Scanner}
+	// The in-chart token goes only to the in-chart server: an external
+	// scanner.url without tokenSecretRef gets no token (threat model T33).
 	switch {
 	case g.Scanner != nil && g.Scanner.TokenSecretRef != nil:
 		sc.token = g.Scanner.TokenSecretRef
-	case r.Scanner.TokenSecret != "":
+	case (g.Scanner == nil || g.Scanner.URL == "") && r.Scanner.TokenSecret != "":
 		sc.token = &mirrorv1alpha1.TokenSecretKeyRef{Name: r.Scanner.TokenSecret, Key: defaultTokenKey}
 	}
 	return sc, "", nil
