@@ -85,7 +85,14 @@ setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter='!gate'
+	$(MAKE) cleanup-test-e2e
+
+# The gate tests download the vulnerability DB (about 1.6 GiB unpacked) and
+# pull images from the internet, so they stay out of test-e2e.
+.PHONY: test-e2e-gate
+test-e2e-gate: setup-test-e2e manifests generate fmt vet ## Run the vulnerability gate e2e tests (large DB download, internet).
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=gate -timeout 60m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e

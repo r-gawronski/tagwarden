@@ -28,6 +28,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -36,6 +37,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -243,13 +245,58 @@ func getMirror(g Gomega, namespace, mirror string) *mirrorv1alpha1.ArtifactMirro
 	return &m
 }
 
-// runSync starts a Job from the CronJob of a mirror, as the schedule would,
-// and waits until it finishes with the wanted condition (Complete or Failed).
+// deployInfra deploys the registries, the proxy and the NetworkPolicies of
+// e2e-infra, the target and proxy Secrets of the operator namespace and the
+// tenant namespaces, and waits until the Deployments are available.
+func deployInfra(ca *testCA) {
+	By("deploying the registries, the proxy and the NetworkPolicies")
+	infra, err := os.ReadFile("test/e2e/testdata/infra.yaml")
+	Expect(err).NotTo(HaveOccurred())
+	kubectlApply(infra)
+	hosts := map[string]string{"source": "source.example.internal", "target": "target.e2e-infra.svc.cluster.local"}
+	for svc, host := range hosts {
+		crt, key := ca.leaf(host)
+		applySecret(infraNamespace, svc+"-tls", corev1.SecretTypeTLS,
+			map[string][]byte{corev1.TLSCertKey: crt, corev1.TLSPrivateKeyKey: key})
+	}
+
+	By("creating the target Secrets in the operator namespace")
+	applySecret(namespace, "e2e-ca", corev1.SecretTypeOpaque, map[string][]byte{"ca.crt": ca.pem})
+	auth := base64.StdEncoding.EncodeToString([]byte(e2eUser + ":" + e2ePassword))
+	dockerConfig, err := json.Marshal(map[string]any{
+		"auths": map[string]any{targetHost: map[string]string{"auth": auth}},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	applySecret(namespace, "target-push", corev1.SecretTypeDockerConfigJson,
+		map[string][]byte{corev1.DockerConfigJsonKey: dockerConfig})
+	applySecret(namespace, "proxy-auth", corev1.SecretTypeBasicAuth, map[string][]byte{
+		corev1.BasicAuthUsernameKey: []byte(e2eUser), corev1.BasicAuthPasswordKey: []byte(e2ePassword),
+	})
+
+	By("creating the tenant namespaces")
+	kubectlApply([]byte(fmt.Sprintf(`{"apiVersion":"v1","kind":"List","items":[`+
+		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":%q,"labels":{"e2e.tagwarden.dev/team":"true"}}},`+
+		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":%q}}]}`, e2eTeam, e2eOther)))
+
+	By("waiting for the registries and the proxy")
+	_, err = utils.Run(exec.Command("kubectl", "wait", "deployment", "--all", "-n", infraNamespace,
+		"--for=condition=Available", "--timeout=5m"))
+	Expect(err).NotTo(HaveOccurred())
+}
+
+// runSync starts a Job from the CronJob of a mirror of the e2e team, as the
+// schedule would, and waits until it finishes with the wanted condition
+// (Complete or Failed).
 func runSync(mirror, job, want string) {
+	runSyncIn(e2eTeam, mirror, job, want)
+}
+
+// runSyncIn is runSync for a mirror in any namespace.
+func runSyncIn(mirrorNamespace, mirror, job, want string) {
 	_, err := utils.Run(exec.Command("kubectl", "create", "job", job, "-n", namespace,
-		"--from=cronjob/"+cronJobName(e2eTeam, mirror)))
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-	EventuallyWithOffset(1, func(g Gomega) {
+		"--from=cronjob/"+cronJobName(mirrorNamespace, mirror)))
+	ExpectWithOffset(2, err).NotTo(HaveOccurred())
+	EventuallyWithOffset(2, func(g Gomega) {
 		out, err := utils.Run(exec.Command("kubectl", "get", "job", job, "-n", namespace,
 			"-o", `jsonpath={.status.conditions[?(@.status=="True")].type}`))
 		g.Expect(err).NotTo(HaveOccurred())

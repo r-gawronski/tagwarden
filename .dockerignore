@@ -12,3 +12,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Embedded by internal/vuln (go:embed)
+!internal/vuln/report.tpl
