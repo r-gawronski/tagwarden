@@ -274,7 +274,7 @@ func setGate(fields map[string]any) {
 // scanner to nil removes any override of image, token or URL.
 func defaultGate() map[string]any {
 	return map[string]any{"action": "Report", "onScanError": "Report", "severity": "Critical",
-		"maxDBAge": nil, "scanner": nil}
+		"maxDBAge": nil, "scanner": nil, "rescanInterval": nil, "onVulnerableTag": nil}
 }
 
 func getTarget(g Gomega) *mirrorv1alpha1.ClusterMirrorTarget {

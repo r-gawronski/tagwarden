@@ -442,9 +442,10 @@ func (r *AutoMirrorReconciler) relay(pod *corev1.Pod, state string, cur *mirrorv
 }
 
 // relayGate reports gate outcomes on the pod: the target's ScannerReady
-// once per source, and for each tag the pod uses, its entry in the
-// generated mirror's status.findings. Ready and Synced stay True for gate
-// outcomes, so relay does not see them. Pods using other tags get nothing;
+// once per source, and for each tag the pod uses, its entries in the
+// generated mirror's status.findings and status.vulnerable (re-scan,
+// MirroredImageVulnerable). Ready and Synced stay True for gate outcomes,
+// so relay does not see them. Pods using other tags get nothing;
 // accepted findings are not in status.findings. Each key records an Event
 // only when its state changes, and is cleared when the outcome goes away.
 func (r *AutoMirrorReconciler) relayGate(pod *corev1.Pod, t *mirrorv1alpha1.ClusterMirrorTarget, state string, cur *mirrorv1alpha1.ArtifactMirror, want []string) {
@@ -497,6 +498,17 @@ func (r *AutoMirrorReconciler) relayGate(pod *corev1.Pod, t *mirrorv1alpha1.Clus
 			reason, msg = reasonVulnerabilitiesFound, fmt.Sprintf("%s has %s, mirrored anyway; %s", image, findingSummary(f), see)
 		}
 		r.report(pod, key, string(f.Verdict)+"/"+string(f.Outcome)+"/"+f.Digest, corev1.EventTypeWarning, reason, capMessage(msg))
+	}
+	for _, tag := range want {
+		key := state + "#rescan:" + tag
+		i := slices.IndexFunc(cur.Status.Vulnerable, func(v mirrorv1alpha1.VulnerableTag) bool { return v.Tag == tag })
+		if i < 0 {
+			r.clear(pod, key)
+			continue
+		}
+		v := cur.Status.Vulnerable[i]
+		r.report(pod, key, string(v.Action)+"/"+v.Digest, corev1.EventTypeWarning, reasonImageVulnerable,
+			capMessage(fmt.Sprintf("%s:%s found vulnerable by re-scan: %s; %s; %s", state, tag, findingSummary(vulnerableFinding(v)), untagText(v.Action), see)))
 	}
 }
 
@@ -586,6 +598,9 @@ func (r *AutoMirrorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		for _, f := range m.Status.Findings {
 			fmt.Fprintf(&out, "%s=%s/%s/%s;", f.Tag, f.Verdict, f.Outcome, f.Digest)
+		}
+		for _, v := range m.Status.Vulnerable {
+			fmt.Fprintf(&out, "rescan:%s=%s/%s;", v.Tag, v.Action, v.Digest)
 		}
 		return out.String()
 	}

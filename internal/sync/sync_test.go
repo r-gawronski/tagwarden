@@ -84,6 +84,9 @@ type regOpts struct {
 	noHeadDigest bool
 	// listFails answers /tags/list with 500.
 	listFails bool
+	// noDelete refuses manifest and tag deletes like a registry without
+	// tag delete support.
+	noDelete bool
 }
 
 func newRegistry(t *testing.T, o regOpts) *testRegistry {
@@ -98,6 +101,12 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 		}
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			r.writes.Add(1)
+		}
+		if o.noDelete && req.Method == http.MethodDelete {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_, _ = io.WriteString(w, `{"errors":[{"code":"UNSUPPORTED","message":"tag delete is not supported"}]}`)
+			return
 		}
 		if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/manifests/") {
 			r.manifestGets.Add(1)

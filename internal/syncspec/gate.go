@@ -136,11 +136,28 @@ type Gate struct {
 	// judged is scanned, so tags copied before the gate or during a scan
 	// error are reported too. Never derive it from status.synced: a tag on
 	// the target is not a tag that was judged.
-	Judged []SyncedTag `json:"judged,omitempty"`
+	Judged []JudgedTag `json:"judged,omitempty"`
 	// JudgedFingerprint is the policy fingerprint Judged was produced
 	// under (Report.JudgedFingerprint). When it differs from the current
 	// Fingerprint, the Job ignores Judged and judges every tag again.
 	JudgedFingerprint string `json:"judgedFingerprint,omitempty"`
+	// RescanInterval, when set, bounds how long a judged pair holds: a
+	// pair judged longer ago, or without JudgedAt, is scanned again. It
+	// also enables re-scan Jobs.
+	RescanInterval metav1.Duration `json:"rescanInterval,omitzero"`
+	// OnVulnerableTag is what a re-scan does with a tag that has findings.
+	OnVulnerableTag v1alpha1.OnVulnerableTag `json:"onVulnerableTag,omitempty"`
+	// Untaggable lists the tags a re-scan may delete under Untag: tags this
+	// mirror recorded on the target that no other mirror of the target
+	// repository selects (the prune rules of threat model T13).
+	Untaggable []string `json:"untaggable,omitempty"`
+}
+
+// JudgedTag is a judged pair and when the controller recorded it.
+type JudgedTag struct {
+	Tag      string    `json:"tag"`
+	Digest   string    `json:"digest"`
+	JudgedAt time.Time `json:"judgedAt,omitzero"`
 }
 
 // GateScanner is the Trivy server and client of the gate.
@@ -191,7 +208,7 @@ const (
 // place that reads the API gate types for the Job. The scanner URL is
 // normalised with ScannerURL for clusterDomain, so the Job and the sidecar
 // use the same host as the controller's probe.
-func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, clusterDomain string, excs []v1alpha1.VulnerabilityException, judged []SyncedTag, judgedFingerprint string) (*Gate, error) {
+func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, clusterDomain string, excs []v1alpha1.VulnerabilityException, judged []JudgedTag, judgedFingerprint string) (*Gate, error) {
 	out := &Gate{
 		Action: v1alpha1.GateActionReport, Severity: v1alpha1.SeverityThresholdCritical,
 		IgnoreUnfixed: g.IgnoreUnfixed, IncludeUnknown: g.IncludeUnknown,
@@ -203,6 +220,10 @@ func NewGate(g *v1alpha1.VulnerabilityGate, d ScannerDefaults, clusterDomain str
 			JavaDB:  v1alpha1.JavaDBDisabled,
 		},
 		Judged: judged, JudgedFingerprint: judgedFingerprint,
+		OnVulnerableTag: g.OnVulnerableTag,
+	}
+	if g.RescanInterval != nil {
+		out.RescanInterval = *g.RescanInterval
 	}
 	if g.Action != "" {
 		out.Action = g.Action
@@ -338,7 +359,30 @@ func (g *Gate) validate(target name.Repository) error {
 			return errors.New("judged: invalid entry")
 		}
 	}
+	if g.RescanInterval.Duration < 0 {
+		return errors.New("rescanInterval: must not be negative")
+	}
+	switch g.OnVulnerableTag {
+	case "", v1alpha1.OnVulnerableTagReport:
+	case v1alpha1.OnVulnerableTagUntag:
+		if g.Action != v1alpha1.GateActionBlock {
+			return errors.New("onVulnerableTag: Untag needs action Block")
+		}
+	default:
+		return fmt.Errorf("onVulnerableTag: unknown value %q", g.OnVulnerableTag)
+	}
+	for _, t := range g.Untaggable {
+		if !tagPattern.MatchString(t) {
+			return errors.New("untaggable: invalid tag")
+		}
+	}
 	return nil
+}
+
+// Holds reports whether the judged pair j still holds at now: always
+// without a rescan interval, else only when it was judged within it.
+func (g *Gate) Holds(j JudgedTag, now time.Time) bool {
+	return g.RescanInterval.Duration <= 0 || !j.JudgedAt.IsZero() && now.Sub(j.JudgedAt) <= g.RescanInterval.Duration
 }
 
 func (s GateScanner) validate(target name.Repository) error {

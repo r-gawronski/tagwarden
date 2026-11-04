@@ -307,7 +307,7 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 }
 
 // syncRequestAndWatch handles a sync request and, for a gated mirror,
-// checks that the scanner sidecars start.
+// checks that the scanner sidecars start and starts re-scans.
 func (r *ArtifactMirrorReconciler) syncRequestAndWatch(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, cj *batchv1.CronJob, scanning bool, ev *pending) (ctrl.Result, error) {
 	var wait time.Duration
 	if scanning {
@@ -317,10 +317,12 @@ func (r *ArtifactMirrorReconciler) syncRequestAndWatch(ctx context.Context, t *m
 		}
 	}
 	res, err := r.syncNow(ctx, t, m, cj, ev)
-	if wait > 0 && (res.RequeueAfter == 0 || wait < res.RequeueAfter) {
-		res.RequeueAfter = wait
+	if err != nil || !scanning {
+		return res, err
 	}
-	return res, err
+	res = sooner(res, ctrl.Result{RequeueAfter: wait})
+	rres, err := r.rescan(ctx, t, m, cj, ev)
+	return sooner(res, rres), err
 }
 
 // reportTrackingMismatch queues a Warning Event when the tracking id of a

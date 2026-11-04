@@ -269,6 +269,69 @@ var _ = Describe("Vulnerability gate", Ordered, ContinueOnFailure, Label("gate")
 		})
 	})
 
+	// ---- Re-scan (step 9) ----
+
+	Describe("re-scan", func() {
+		It("untags a mirrored tag that a re-scan finds vulnerable under Block", func() {
+			By("mirroring the vulnerable image under Report")
+			ns, pod, m := run("gate-rescan", vulnerableImage)
+			expectOnTarget(vulnerableImage, true)
+			Expect(findingFor(m, vulnerableImage.tag)).NotTo(BeNil())
+
+			By("switching to Block with Untag and a re-scan interval")
+			setGate(map[string]any{"action": "Block", "onVulnerableTag": "Untag", "rescanInterval": "1h"})
+
+			By("moving the last re-scan two hours back, so the mirror's slot is due")
+			patch := fmt.Sprintf(`{"status":{"lastRescan":%q}}`, time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339))
+			_, err := utils.Run(exec.Command("kubectl", "patch", "artifactmirror", vulnerableImage.generatedMirror(), "-n", ns,
+				"--subresource=status", "--type=merge", "-p", patch))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the re-scan Job")
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "get", "jobs", "-n", namespace, "-o", "json"))
+				g.Expect(err).NotTo(HaveOccurred())
+				var jobs batchv1.JobList
+				g.Expect(json.Unmarshal([]byte(out), &jobs)).To(Succeed())
+				var done []string
+				for _, j := range jobs.Items {
+					if j.Annotations["tagwarden.dev/mirror-namespace"] == ns && j.Annotations["tagwarden.dev/trigger"] == "rescan" {
+						g.Expect(j.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--rescan"))
+						if j.Status.Succeeded > 0 {
+							done = append(done, j.Name)
+						}
+					}
+				}
+				g.Expect(done).To(HaveLen(1))
+			}, 5*time.Minute).Should(Succeed())
+
+			By("recording the tag as vulnerable and untagged")
+			Eventually(func(g Gomega) {
+				st := generated(g, ns, vulnerableImage).Status
+				g.Expect(st.Vulnerable).To(ContainElement(And(
+					HaveField("Tag", vulnerableImage.tag), HaveField("Digest", vulnerableImage.digest),
+					HaveField("Action", mirrorv1alpha1.VulnerableUntagged), HaveField("TopIDs", ContainElement(vulnerableCVE)))))
+				g.Expect(st.LastRescan).NotTo(BeNil())
+				c := condition(st.Conditions, "VulnerabilitiesFound")
+				g.Expect(c).NotTo(BeNil())
+				g.Expect(c.Reason).To(Equal("Blocked"))
+			}).Should(Succeed())
+			expectOnTarget(vulnerableImage, false)
+			repo, err := name.NewRepository(dstHost + "/" + vulnerableImage.targetPath())
+			Expect(err).NotTo(HaveOccurred())
+			_, err = remote.Head(repo.Digest(vulnerableImage.digest), dstOpts...)
+			Expect(err).NotTo(HaveOccurred(), "untag must keep the digest")
+
+			expectEvent(ns, pod, "MirroredImageVulnerable", corev1.EventTypeWarning, vulnerableCVE)
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "get", "events", "-n", ns, "-o", "json",
+					"--field-selector", "involvedObject.kind=ArtifactMirror,reason=TagUntagged"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(ContainSubstring(vulnerableImage.tag))
+			}).Should(Succeed())
+		})
+	})
+
 	// ---- Scanner outage, stale DB ----
 
 	Describe("scanner failures", func() {

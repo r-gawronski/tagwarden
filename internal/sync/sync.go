@@ -93,6 +93,8 @@ type Artifact struct {
 	// artifacts the gate did not copy because they are not only
 	// signatures, attestations or SBOMs.
 	SkippedReferrers []string
+	// Untag is what a re-scan did with a tag with findings.
+	Untag v1alpha1.VulnerableTagAction
 }
 
 // Result lists what happened to each selected tag. Overwritten mutated tags
@@ -106,7 +108,9 @@ type Result struct {
 	Copied, Skipped, Mutated, Failed []Artifact
 	// Blocked lists the tags the gate did not copy.
 	Blocked []Artifact
-	Errors  []string
+	// Untagged lists the tags a re-scan deleted from the target.
+	Untagged []Artifact
+	Errors   []string
 	// Gate is the scanner check of a gated run, syncspec.GateOK or a scan
 	// error reason; empty when nothing was scanned.
 	Gate string
@@ -179,7 +183,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 // stamp sets the finish time of tag in every list. A tag is processed
 // once, so its entries are the last ones appended.
 func stamp(res *Result, tag string, t time.Time) {
-	for _, as := range [][]Artifact{res.Copied, res.Skipped, res.Mutated, res.Failed, res.Blocked} {
+	for _, as := range [][]Artifact{res.Copied, res.Skipped, res.Mutated, res.Failed, res.Blocked, res.Untagged} {
 		if n := len(as); n > 0 && as[n-1].Tag == tag {
 			as[n-1].Finished = t
 		}

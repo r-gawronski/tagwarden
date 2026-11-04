@@ -113,7 +113,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, termPath string, 
 			code = syncspec.ExitSyncFailed
 		}
 	}()
-	spec, req, err := setup(ctx, args, o, getenv)
+	spec, req, rescan, err := setup(ctx, args, o, getenv)
 	if err != nil {
 		writeTermination(stdout, termPath, report{Errors: []string{err.Error()}})
 		if errors.As(err, new(transientError)) {
@@ -121,11 +121,15 @@ func run(ctx context.Context, args []string, stdout io.Writer, termPath string, 
 		}
 		return syncspec.ExitConfig
 	}
-	res, err := sync.Run(ctx, req)
-	audit(stdout, spec, res)
+	do := sync.Run
+	if rescan {
+		do = sync.Rescan
+	}
+	res, err := do(ctx, req)
+	audit(stdout, spec, res, rescan)
 	r := summarize(res)
 	if spec.Gate != nil {
-		gateSummary(&r, res, req.Gate.Fingerprint)
+		gateSummary(&r, res, req.Gate.Fingerprint, rescan)
 	}
 	code = syncspec.ExitOK
 	if err != nil {
@@ -143,17 +147,29 @@ func run(ctx context.Context, args []string, stdout io.Writer, termPath string, 
 	return code
 }
 
-func setup(ctx context.Context, args []string, p options, getenv func(string) string) (syncspec.Spec, sync.Request, error) {
+// setup reads the flags, the spec and the mounted files. With --rescan
+// the run re-scans the tags on the target instead of syncing; it needs a
+// gated spec.
+func setup(ctx context.Context, args []string, p options, getenv func(string) string) (syncspec.Spec, sync.Request, bool, error) {
 	fl := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fl.SetOutput(io.Discard)
 	specPath := fl.String("spec", syncspec.SpecFile, "path to the sync spec")
+	rescan := fl.Bool("rescan", false, "re-scan the mirrored tags on the target")
 	if err := fl.Parse(args); err != nil {
-		return syncspec.Spec{}, sync.Request{}, err
+		return syncspec.Spec{}, sync.Request{}, false, err
 	}
 	if fl.NArg() > 0 {
-		return syncspec.Spec{}, sync.Request{}, fmt.Errorf("unexpected arguments %q", fl.Args())
+		return syncspec.Spec{}, sync.Request{}, false, fmt.Errorf("unexpected arguments %q", fl.Args())
 	}
-	f, err := os.Open(*specPath)
+	spec, req, err := load(ctx, *specPath, p, getenv)
+	if err == nil && *rescan && spec.Gate == nil {
+		err = errors.New("--rescan needs a gated spec")
+	}
+	return spec, req, *rescan, err
+}
+
+func load(ctx context.Context, specPath string, p options, getenv func(string) string) (syncspec.Spec, sync.Request, error) {
+	f, err := os.Open(specPath) //nolint:gosec // the --spec flag of the Job, a fixed in-pod path
 	if err != nil {
 		return syncspec.Spec{}, sync.Request{}, err
 	}
@@ -442,10 +458,13 @@ type auditLine struct {
 	Scan *auditScan `json:"scan,omitempty"`
 	// SkippedReferrers are referrers the gate did not copy.
 	SkippedReferrers []string `json:"skippedReferrers,omitempty"`
+	// Untag is what a re-scan did with a tag with findings.
+	Untag string `json:"untag,omitempty"`
 }
 
-// audit writes one JSON line per selected tag, newest first.
-func audit(w io.Writer, spec syncspec.Spec, res sync.Result) {
+// audit writes one JSON line per selected tag, newest first. Every tag a
+// re-scan read from the target has action rescan.
+func audit(w io.Writer, spec syncspec.Spec, res sync.Result, rescan bool) {
 	type entry struct {
 		a      sync.Artifact
 		action string
@@ -461,6 +480,7 @@ func audit(w io.Writer, spec syncspec.Spec, res sync.Result) {
 	add(res.Copied, "copied")
 	add(res.Mutated, "mutated")
 	add(res.Blocked, "blocked")
+	add(res.Untagged, "skipped")
 	add(res.Failed, "failed")
 	errs := map[string]string{}
 	for _, e := range res.Errors {
@@ -483,8 +503,12 @@ func audit(w io.Writer, spec syncspec.Spec, res sync.Result) {
 			Referrers: e.a.Referrers,
 			Error:     errs[tag],
 			Scan:      newAuditScan(spec.Gate, e.a.Scan),
+			Untag:     string(e.a.Untag),
 
 			SkippedReferrers: e.a.SkippedReferrers,
+		}
+		if rescan && e.action != "failed" {
+			l.Action = "rescan"
 		}
 		switch {
 		case e.a.UpstreamDigest != "":

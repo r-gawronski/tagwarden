@@ -144,17 +144,28 @@ func (r *ArtifactMirrorReconciler) syncNow(ctx context.Context, t *mirrorv1alpha
 		}
 	}
 
+	job := jobFrom(cj, name, TriggerManual)
+	if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
+		return ctrl.Result{}, err
+	}
+	m.Status.LastSyncStartTime = new(metav1.Now())
+	recordRequest(m, ev, value, mirrorv1alpha1.SyncRequestStarted, fmt.Sprintf("Created Job %s/%s", job.Namespace, job.Name))
+	return ctrl.Result{}, nil
+}
+
+// jobFrom builds a Job from the CronJob template with the trigger
+// annotation. As with kubectl create job --from=cronjob, the CronJob
+// controls the Job: its history limits and garbage collection cover it.
+// The CronJob controller does not add it to status.active, so
+// concurrencyPolicy does not see it, and it records an UnexpectedJob Event
+// while the Job runs.
+func jobFrom(cj *batchv1.CronJob, name, trigger string) *batchv1.Job {
 	tmpl := cj.Spec.JobTemplate
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: cj.Namespace,
-			Labels:      maps.Clone(tmpl.Labels),
-			Annotations: maps.Clone(tmpl.Annotations),
-			// As with kubectl create job --from=cronjob, the CronJob
-			// controls the Job: its history limits and garbage collection
-			// cover it. The CronJob controller does not add it to
-			// status.active, so concurrencyPolicy does not see it, and it
-			// records an UnexpectedJob Event while the Job runs.
+			Labels:          maps.Clone(tmpl.Labels),
+			Annotations:     maps.Clone(tmpl.Annotations),
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cj, batchv1.SchemeGroupVersion.WithKind("CronJob"))},
 		},
 		Spec: *tmpl.Spec.DeepCopy(),
@@ -162,13 +173,8 @@ func (r *ArtifactMirrorReconciler) syncNow(ctx context.Context, t *mirrorv1alpha
 	if job.Annotations == nil {
 		job.Annotations = map[string]string{}
 	}
-	job.Annotations[AnnotationTrigger] = TriggerManual
-	if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
-		return ctrl.Result{}, err
-	}
-	m.Status.LastSyncStartTime = new(metav1.Now())
-	recordRequest(m, ev, value, mirrorv1alpha1.SyncRequestStarted, fmt.Sprintf("Created Job %s/%s", job.Namespace, job.Name))
-	return ctrl.Result{}, nil
+	job.Annotations[AnnotationTrigger] = trigger
+	return job
 }
 
 // trackSyncStart moves status.lastSyncStartTime to the latest start of a

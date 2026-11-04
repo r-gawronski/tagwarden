@@ -42,6 +42,9 @@ import (
 
 func hexDigest(c string) string { return "sha256:" + strings.Repeat(c, 64) }
 
+// jobStart is the start of the Job whose report applyGate records.
+var jobStart = time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+
 var (
 	fpA = strings.Repeat("a", 64)
 	fpB = strings.Repeat("b", 64)
@@ -85,7 +88,7 @@ func judgedTags(m *mirrorv1alpha1.ArtifactMirror) []string {
 	if m.Status.Gate == nil {
 		return nil
 	}
-	return tagsOf(m.Status.Gate.Judged, func(j mirrorv1alpha1.SyncedTag) string { return j.Tag })
+	return tagsOf(m.Status.Gate.Judged, func(j mirrorv1alpha1.JudgedTag) string { return j.Tag })
 }
 
 // wantGate checks the finding and judged tags of m, joined by spaces, and
@@ -120,7 +123,7 @@ func TestApplyGate(t *testing.T) {
 	// First run: 1.0 has findings (copied), 1.1 passed.
 	rep := v2(fpA, syncspec.GateOK, []string{tag11, tag10}, []string{tag11, tag10},
 		tagFinding(tag10, t0, mirrorv1alpha1.SeverityCritical, mirrorv1alpha1.OutcomeCopied))
-	applyGate(m, rep, true, true, &ev)
+	applyGate(m, rep, true, true, jobStart, &ev)
 	wantGate(t, "first run", m, tag10, both, vf, yes, ReasonReported)
 	wantGate(t, "first run", m, tag10, both, vg, yes, ReasonReady)
 	f := m.Status.Findings[0]
@@ -141,36 +144,36 @@ func TestApplyGate(t *testing.T) {
 	// The same report again changes nothing and records no Event.
 	before := m.Status.DeepCopy()
 	ev = nil
-	applyGate(m, rep, true, false, &ev)
+	applyGate(m, rep, true, false, jobStart, &ev)
 	if !equality.Semantic.DeepEqual(before, &m.Status) || len(ev) != 0 {
 		t.Errorf("applying the report twice changed the status or recorded %v", ev)
 	}
 
-	applyGate(m, v2(fpA, "", []string{tag11, tag10}, nil), true, true, &ev)
+	applyGate(m, v2(fpA, "", []string{tag11, tag10}, nil), true, true, jobStart, &ev)
 	wantGate(t, "nothing scanned", m, tag10, both, vf, yes, ReasonReported)
 
 	// 1.2 is new and blocked, 1.0 now passes.
 	applyGate(m, v2(fpA, syncspec.GateOK, []string{tag11, tag10}, []string{tag12, tag10},
-		tagFinding(tag12, t1, mirrorv1alpha1.SeverityHigh, mirrorv1alpha1.OutcomeBlocked)), true, true, &ev)
+		tagFinding(tag12, t1, mirrorv1alpha1.SeverityHigh, mirrorv1alpha1.OutcomeBlocked)), true, true, jobStart, &ev)
 	wantGate(t, "blocked", m, tag12, all, vf, yes, ReasonBlocked)
 
 	// A failed run or a truncated synced list does not prune; a
 	// successful, complete one does.
-	applyGate(m, v2(fpA, "", nil, nil), false, true, &ev)
+	applyGate(m, v2(fpA, "", nil, nil), false, true, jobStart, &ev)
 	wantGate(t, "failed run", m, tag12, all, vf, yes, ReasonBlocked)
 	truncated := v2(fpA, "", []string{tag10}, nil)
 	truncated.Truncated = true
-	applyGate(m, truncated, true, true, &ev)
+	applyGate(m, truncated, true, true, jobStart, &ev)
 	wantGate(t, "truncated", m, tag12, all, vf, yes, ReasonBlocked)
-	applyGate(m, v2(fpA, "", []string{tag10}, nil), true, true, &ev)
+	applyGate(m, v2(fpA, "", []string{tag10}, nil), true, true, jobStart, &ev)
 	wantGate(t, "pruned", m, "", tag10, vf, no, ReasonClear)
 
 	// Another fingerprint drops the stored judged pairs.
-	applyGate(m, v2(fpB, syncspec.GateOK, []string{tag10, tag11}, []string{tag11}), true, true, &ev)
+	applyGate(m, v2(fpB, syncspec.GateOK, []string{tag10, tag11}, []string{tag11}), true, true, jobStart, &ev)
 	wantGate(t, "new fingerprint", m, "", tag11, vf, no, ReasonClear)
 
 	// A stale DB: scan errors and the run-level gate set VulnerabilityGate.
-	applyGate(m, v2(fpB, syncspec.GateDBStale, []string{tag10, tag11}, nil, scanError(tag10, t1, syncspec.GateDBStale)), true, true, &ev)
+	applyGate(m, v2(fpB, syncspec.GateDBStale, []string{tag10, tag11}, nil, scanError(tag10, t1, syncspec.GateDBStale)), true, true, jobStart, &ev)
 	wantGate(t, "stale DB", m, tag10, tag11, vg, no, ReasonDBStale)
 	if c := meta.FindStatusCondition(m.Status.Conditions, vg); !strings.Contains(c.Message, tag10+" (DBStale)") {
 		t.Errorf("VulnerabilityGate message = %q", c.Message)
@@ -195,7 +198,7 @@ func TestApplyGateJudgedFeedback(t *testing.T) {
 	}
 	rep.Synced = append(rep.Synced, syncspec.SyncedTag{Tag: "1.4", Digest: hexDigest("1")})
 	rep.Judged = append(rep.Judged, syncspec.SyncedTag{Tag: "1.4", Digest: hexDigest("2")}) // other digest
-	applyGate(m, rep, true, false, &pending{})
+	applyGate(m, rep, true, false, jobStart, &pending{})
 	if got := strings.Join(judgedTags(m), " "); got != tag10 {
 		t.Errorf("judged %q, want only 1.0", got)
 	}
@@ -212,7 +215,7 @@ func TestApplyGateOrderAndCap(t *testing.T) {
 		synced = append(synced, tag)
 	}
 	var ev pending
-	applyGate(m, v2(fpA, syncspec.GateOK, synced, nil, old...), true, true, &ev)
+	applyGate(m, v2(fpA, syncspec.GateOK, synced, nil, old...), true, true, jobStart, &ev)
 	if len(ev) != maxGateEvents {
 		t.Errorf("%d events, want %d", len(ev), maxGateEvents)
 	}
@@ -226,7 +229,7 @@ func TestApplyGateOrderAndCap(t *testing.T) {
 		run = append(run, tagFinding(tag, t0.Add(time.Hour), sev, mirrorv1alpha1.OutcomeCopied))
 		synced = append(synced, tag)
 	}
-	applyGate(m, v2(fpA, syncspec.GateOK, synced, nil, run...), true, false, &ev)
+	applyGate(m, v2(fpA, syncspec.GateOK, synced, nil, run...), true, false, jobStart, &ev)
 	if len(m.Status.Findings) != maxFindings {
 		t.Fatalf("%d findings, want %d", len(m.Status.Findings), maxFindings)
 	}
@@ -372,8 +375,9 @@ var _ = Describe("vulnerability gate status and pod Events", Ordered, func() {
 		Expect(st.Findings).To(HaveLen(1))
 		Expect(st.Findings[0]).To(And(HaveField("Tag", "1.0"), HaveField("JavaScanned", false), HaveField("TopIDs", ConsistOf(testCVE, "CVE-2026-2"))))
 		Expect(*st.JavaScanned).To(BeFalse())
-		Expect(st.Gate).To(Equal(&mirrorv1alpha1.GateStatus{JudgedFingerprint: fpA, Judged: []mirrorv1alpha1.SyncedTag{
-			{Tag: "2.0", Digest: hexDigest("2")}, {Tag: "1.0", Digest: hexDigest("1")}}}))
+		judgedAt := metav1.NewTime(start.Add(time.Duration(jobs)*time.Minute - time.Second))
+		Expect(st.Gate).To(Equal(&mirrorv1alpha1.GateStatus{JudgedFingerprint: fpA, Judged: []mirrorv1alpha1.JudgedTag{
+			{Tag: "2.0", Digest: hexDigest("2"), JudgedAt: &judgedAt}, {Tag: tag10, Digest: hexDigest("1"), JudgedAt: &judgedAt}}}))
 		Expect(meta.IsStatusConditionTrue(st.Conditions, ConditionSynced)).To(BeTrue())
 		Expect(meta.IsStatusConditionTrue(st.Conditions, ConditionVulnerabilityGate)).To(BeTrue())
 		Expect(recorder.Events(ns, gen.Name)).To(ContainElement(ContainSubstring("Warning " + reasonVulnerabilitiesFound)))

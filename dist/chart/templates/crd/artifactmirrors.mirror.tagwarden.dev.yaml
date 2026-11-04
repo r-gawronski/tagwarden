@@ -402,14 +402,24 @@ spec:
                       (passed, accepted or findings), never scan errors. At most 200; tags
                       that do not fit are scanned again.
                     items:
-                      description: SyncedTag records a mirrored tag and its digest.
+                      description: JudgedTag is a tag and digest with a final gate
+                        verdict.
                       properties:
                         digest:
-                          description: digest is the manifest digest the tag was copied
-                            by.
+                          description: digest is the index or manifest digest that
+                            was judged.
+                          maxLength: 71
+                          type: string
+                        judgedAt:
+                          description: |-
+                            judgedAt is the start of the Job that judged the pair, set by the
+                            controller. With rescanInterval set, a pair older than the interval,
+                            or without judgedAt, is judged again.
+                          format: date-time
                           type: string
                         tag:
-                          description: tag is the mirrored tag.
+                          description: tag is the target tag.
+                          maxLength: 128
                           type: string
                       required:
                       - digest
@@ -432,6 +442,11 @@ spec:
                   scanner.javaDB is Disabled, so the JAR files that are not scanned
                   stay visible. Absent on mirrors that are not gated.
                 type: boolean
+              lastRescan:
+                description: lastRescan is when the controller last started a re-scan
+                  Job.
+                format: date-time
+                type: string
               lastSuccessfulSyncTime:
                 description: lastSuccessfulSyncTime is when the last successful sync
                   finished.
@@ -505,6 +520,87 @@ spec:
                   - tag
                   type: object
                 maxItems: 200
+                type: array
+                x-kubernetes-list-type: atomic
+              vulnerable:
+                description: |-
+                  vulnerable lists the tags on the target that the last re-scan found
+                  vulnerable, most severe first, at most 20. A later sync that judges
+                  a tag again replaces its entry with one in findings.
+                items:
+                  description: VulnerableTag is a tag on the target that a re-scan
+                    found vulnerable.
+                  properties:
+                    action:
+                      description: action is what the re-scan did with the tag.
+                      enum:
+                      - Kept
+                      - Untagged
+                      - UntagFailed
+                      - UntagRefused
+                      type: string
+                    counts:
+                      description: counts are the findings per severity.
+                      properties:
+                        critical:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        high:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        low:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        medium:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        unknown:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                      type: object
+                    digest:
+                      description: digest is the index or manifest digest the target
+                        tag pointed to.
+                      maxLength: 71
+                      type: string
+                    scannedAt:
+                      description: scannedAt is when the tag was scanned.
+                      format: date-time
+                      type: string
+                    severity:
+                      description: severity is the highest severity among the findings.
+                      enum:
+                      - Critical
+                      - High
+                      - Medium
+                      - Low
+                      - Unknown
+                      type: string
+                    tag:
+                      description: tag is the target tag.
+                      maxLength: 128
+                      type: string
+                    topIDs:
+                      description: topIDs are up to five vulnerability IDs, highest
+                        severity first.
+                      items:
+                        pattern: ^[A-Z]+-[0-9A-Za-z-]{1,64}$
+                        type: string
+                      maxItems: 5
+                      type: array
+                      x-kubernetes-list-type: atomic
+                  required:
+                  - action
+                  - digest
+                  - scannedAt
+                  - tag
+                  type: object
+                maxItems: 20
                 type: array
                 x-kubernetes-list-type: atomic
             type: object

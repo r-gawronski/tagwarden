@@ -660,7 +660,15 @@ var _ = Describe("ArtifactMirror Controller", func() {
 // container result, the way the Job controller and kubelet would. A
 // foreign pod has no owner reference.
 func finishSyncJob(m *mirrorv1alpha1.ArtifactMirror, name string, at time.Time, exitCode int32, message string, foreignPod bool) {
+	finishJob(m, name, at, exitCode, message, foreignPod, "")
+}
+
+// finishJob is finishSyncJob for a Job with an AnnotationTrigger value.
+func finishJob(m *mirrorv1alpha1.ArtifactMirror, name string, at time.Time, exitCode int32, message string, foreignPod bool, trigger string) {
 	labels, annotations := mirrorMeta(m)
+	if trigger != "" {
+		annotations[AnnotationTrigger] = trigger
+	}
 	podSpec := corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever,
 		Containers: []corev1.Container{{Name: syncContainer, Image: syncImage}}}
 	job := &batchv1.Job{

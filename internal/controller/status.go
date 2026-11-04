@@ -80,8 +80,18 @@ func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1al
 		}
 		ev.add(eventType, cond.Reason, "Sync", cond.Message)
 	}
-	if gated && rep != nil && rep.V == syncspec.ReportVersionGate {
-		applyGate(m, rep, term.ExitCode == syncspec.ExitOK, isNew, ev)
+	// The Job's trigger annotation, set by the controller, decides how the
+	// report is read; a report that claims otherwise only fills Synced.
+	if rescan := job.Annotations[AnnotationTrigger] == TriggerRescan; gated && rep != nil && rep.V == syncspec.ReportVersionGate && rep.Rescan == rescan {
+		start := job.CreationTimestamp.Time
+		if job.Status.StartTime != nil {
+			start = job.Status.StartTime.Time
+		}
+		apply := applyGate
+		if rescan {
+			apply = applyRescan
+		}
+		apply(m, rep, term.ExitCode == syncspec.ExitOK, isNew, start, ev)
 	}
 	return nil
 }
