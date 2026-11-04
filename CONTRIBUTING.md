@@ -84,8 +84,10 @@ message, so write it as a Conventional Commit.
 - CI, CodeQL and DCO are green.
 - A pull request that touches the controller, sync, registry, chart or e2e
   code has a green e2e run on its last commit. A skipped e2e check does not
-  count. Until branch protection exists, this checklist is the only thing
-  that enforces it.
+  count. A ruleset on main requires a pull request, squash merge, linear
+  history and green lint, test, generate-check, govulncheck, chart,
+  analyze, dco and gitleaks checks. The e2e runs are opt-in by label, so
+  the reviewer enforces this item.
 
 ## Security
 

@@ -1,12 +1,9 @@
 name: CI
 
 on:
+  # No path filter on pull requests: these jobs are required status checks
+  # on main, and a filtered-out run would leave them pending forever.
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - LICENSE
-      - .github/CODEOWNERS
   push:
     branches: [main]
     paths-ignore:
