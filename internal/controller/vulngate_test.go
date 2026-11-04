@@ -95,6 +95,9 @@ var _ = Describe("vulnerability gate API", func() {
 		Entry("plain HTTP to a cluster Service with the cluster domain", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			scanner(t).URL = "http://tagwarden-trivy.tagwarden-system.svc.cluster.local:4954"
 		}),
+		Entry("plain HTTP to a fully qualified cluster Service name", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			scanner(t).URL = "http://tagwarden-trivy.tagwarden-system.svc.cluster.local.:4954"
+		}),
 		Entry("plain HTTP to a cluster Service with a trailing slash", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			scanner(t).URL = "http://tagwarden-trivy.tagwarden-system.svc/"
 		}),
@@ -175,6 +178,12 @@ var _ = Describe("vulnerability gate API", func() {
 		}),
 		Entry("plain HTTP to a Service with a userinfo-like path", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			scanner(t).URL = "http://trivy.ns.svc.cluster.local.attacker.example"
+		}),
+		Entry("plain HTTP to a Service name under the svc top-level domain", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			scanner(t).URL = "http://trivy.ns.svc.:4954"
+		}),
+		Entry("plain HTTP to a fully qualified Service name with a trailing path dot", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			scanner(t).URL = "http://trivy.ns.svc.cluster.local..:4954"
 		}),
 		Entry("plain HTTP to a short Service name", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
 			scanner(t).URL = "http://trivy:4954"

@@ -279,3 +279,45 @@ func TestGARHosts(t *testing.T) {
 		}
 	}
 }
+
+func TestScannerURL(t *testing.T) {
+	const (
+		clusterLocal = "cluster.local"
+		corpDomain   = "corp.example"
+		fqdnURL      = "http://trivy.tagwarden-system.svc.cluster.local.:4954"
+	)
+	tests := []struct {
+		raw, domain, want string
+		inCluster         bool
+		err               bool
+	}{
+		{raw: "http://trivy.tagwarden-system.svc:4954", domain: clusterLocal,
+			want: fqdnURL, inCluster: true},
+		{raw: "http://trivy.tagwarden-system.svc.cluster.local:4954/", domain: clusterLocal,
+			want: "http://trivy.tagwarden-system.svc.cluster.local.:4954/", inCluster: true},
+		{raw: fqdnURL, domain: clusterLocal,
+			want: fqdnURL, inCluster: true},
+		{raw: "http://trivy.ns.svc", domain: corpDomain,
+			want: "http://trivy.ns.svc.corp.example.", inCluster: true},
+		{raw: "http://trivy.ns.svc.cluster.local", domain: corpDomain,
+			want: "http://trivy.ns.svc.corp.example.", inCluster: true},
+		{raw: "https://trivy.ns.svc.corp.example:4954", domain: corpDomain,
+			want: "https://trivy.ns.svc.corp.example.:4954", inCluster: true},
+		{raw: "https://trivy.scanners.example.internal:4954", domain: clusterLocal,
+			want: "https://trivy.scanners.example.internal.:4954"},
+		{raw: "https://trivy.ns.svc.example.com", domain: clusterLocal,
+			want: "https://trivy.ns.svc.example.com."},
+		{raw: "https://Trivy.Example.Internal.", domain: clusterLocal,
+			want: "https://trivy.example.internal."},
+		{raw: "https://192.0.2.10:4954", domain: clusterLocal, want: "https://192.0.2.10:4954"},
+		{raw: "https://[2001:db8::1]:4954", domain: clusterLocal, want: "https://[2001:db8::1]:4954"},
+		{raw: "://bad", domain: clusterLocal, err: true},
+		{raw: "https://", domain: clusterLocal, err: true},
+	}
+	for _, tt := range tests {
+		got, inCluster, err := ScannerURL(tt.raw, tt.domain)
+		if (err != nil) != tt.err || got != tt.want || inCluster != tt.inCluster {
+			t.Errorf("ScannerURL(%q, %q) = %q, %v, %v; want %q, %v", tt.raw, tt.domain, got, inCluster, err, tt.want, tt.inCluster)
+		}
+	}
+}

@@ -547,7 +547,7 @@ type ScannerSpec struct {
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="isURL(self) && (self.startsWith('https://') || self.startsWith('http://'))",message="must be an http or https URL"
 	// +kubebuilder:validation:XValidation:rule="!self.contains('@') && !self.contains('?') && !self.contains('#')",message="must not contain credentials, a query or a fragment"
-	// +kubebuilder:validation:XValidation:rule=`self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?/?$')`,message="must be https unless the host is <service>.<namespace>.svc or <service>.<namespace>.svc.cluster.local"
+	// +kubebuilder:validation:XValidation:rule=`self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local\.?)?(:[0-9]{1,5})?/?$')`,message="must be https unless the host is <service>.<namespace>.svc or <service>.<namespace>.svc.cluster.local"
 	// +optional
 	URL string `json:"url,omitempty"`
 

@@ -385,7 +385,7 @@ spec:
                                 && !self.contains(''#'')'
                             - message: must be https unless the host is <service>.<namespace>.svc
                                 or <service>.<namespace>.svc.cluster.local
-                              rule: self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?/?$')
+                              rule: self.startsWith('https://') || self.matches(r'^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local\.?)?(:[0-9]{1,5})?/?$')
                           version:
                             description: |-
                               version is the Trivy version of image, for example 0.76.1. The
