@@ -69,7 +69,8 @@ pushes to `main`: a docs-only merge skips CI, CodeQL, the image build (no new
 DCO and secret scanning always run.
 
 A new push to a pull request or to `main` cancels the older run of the same
-workflow. Release tag runs never cancel each other. Scorecard runs weekly and
+workflow, except Build on `main` and on tags: a publish run always finishes,
+so no image is left pushed but unsigned. Scorecard runs weekly and
 on demand, not on every push.
 
 On pull requests the e2e workflow runs only when the pull request has the
