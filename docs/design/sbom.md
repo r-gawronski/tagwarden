@@ -67,6 +67,7 @@ Read on 2026-11-04. Rows marked "spike" are checked in step 0.
 | OCI 1.1 referrer | An image manifest with `subject` set to the described manifest, `artifactType` set to the SBOM media type, the empty config `application/vnd.oci.empty.v1+json` (`{}`, 2 bytes) and one layer with the SBOM. |
 | SBOM media types | CycloneDX JSON `application/vnd.cyclonedx+json`, SPDX JSON `application/spdx+json`. Both are already in the gate's referrer allowlist (`vuln.SupplyChainArtifact`). |
 | Registries without the referrers API | OCI distribution spec 1.1 defines the referrers tag schema: an image index tagged `sha256-<hex>` that lists the referrers. go-containerregistry `remote.Write` detects a missing `OCI-Subject` response header and updates that index itself, with `artifactType` and annotations of the referrer. `remote.Referrers` reads it back. |
+| Referrers index `artifactType` | The spec says it is the manifest's `artifactType`, else the config media type. The go-containerregistry in-process registry lists the config media type even when `artifactType` is set (found in step 1); other registries may do the same (spike). So the format of a generated referrer is also an annotation. |
 | cosign `.sbom` tag | `sha256-<hex>.sbom`, cosign's legacy single-artifact scheme. Upstream images use it; Tagwarden copies it (sync engine) but never writes it. |
 | buildkit SBOM attestations | In-toto attestation manifests inside the image index (`vnd.docker.reference.type: attestation-manifest`). Copied with the index as today. |
 | Referrers API support | Spike: distribution (registry:3), zot, Harbor, Quay, Artifactory, ACR, ECR, GAR. Which return `OCI-Subject` and which need the tag fallback. |
@@ -300,6 +301,7 @@ A generated SBOM is pushed as:
   "annotations": {
     "org.opencontainers.image.created": "2026-11-04T12:00:00Z",
     "dev.tagwarden.sbom.generator": "trivy/0.76.1",
+    "dev.tagwarden.sbom.format": "CycloneDX",
     "dev.tagwarden.sbom.java-scanned": "false"
   }
 }
@@ -307,7 +309,9 @@ A generated SBOM is pushed as:
 
 - The layer is the document as Trivy wrote it. Tagwarden checks it but
   does not rewrite it.
-- `dev.tagwarden.sbom.generator` marks a generated SBOM.
+- `dev.tagwarden.sbom.generator` marks a generated SBOM and
+  `dev.tagwarden.sbom.format` names its format; the referrers index carries
+  both, so a lookup needs no manifest GET.
   `dev.tagwarden.sbom.java-scanned` is `false` with `javaDB: Disabled`, so
   the JAR blind spot is visible on the artifact itself, as in the gate.
 - `dev.tagwarden.sbom.platform` names the platform on the index-level copy.
@@ -490,10 +494,12 @@ Each step is a PR with tests first.
    signed attestation format cosign, Kyverno and policy-controller verify
    with a key; whether `golang.org/x/crypto` is in the module graph.
    Results in `docs/design/spikes.md`.
-1. **SBOM package** (`internal/sbom`). Formats and media types, document
-   check with a size cap (fuzz test), referrer manifest and image for
-   push, upstream referrer rules, generated-referrer detection, reserved
-   annotation check. Table tests, no I/O.
+1. **SBOM package.** Done (`internal/sbom`). Formats and media types,
+   document check with a size cap and unique top-level keys (fuzz test),
+   referrer manifest and image for push, upstream referrer rules,
+   generated-referrer detection, reserved annotation check. Table tests and
+   a push round trip against the in-process registry with and without the
+   referrers API.
 2. **API.** `spec.sbom` with CEL, target condition `SBOMReady`
    (`NotConfigured`, `WeakerTargetOnRegistry`), the gauge, chart flags.
    Envtest.
