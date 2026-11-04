@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
+COPY LICENSE NOTICE /licenses/
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

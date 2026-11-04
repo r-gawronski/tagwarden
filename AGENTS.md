@@ -41,6 +41,7 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 - `config/rbac/role.yaml` - from `make manifests`
 - `config/webhook/manifests.yaml` - from `make manifests`
 - `**/zz_generated.*.go` - from `make generate`
+- `NOTICE` - from `make notice` (rerun after dependency changes)
 - `PROJECT` - from `kubebuilder [OPTIONS]`
 
 ### Never Remove Scaffold Markers
