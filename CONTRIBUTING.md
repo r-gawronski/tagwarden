@@ -92,6 +92,12 @@ message, so write it as a Conventional Commit.
   analyze, dco and gitleaks checks. The e2e runs are opt-in by label, so
   the reviewer enforces this item.
 
+## Cutting a release
+
+Maintainers run the Release workflow from the Actions tab, or
+`gh workflow run release.yaml --ref main -f version=X.Y.Z`. It tags `main` and
+starts the build. See [docs/design/release.md](docs/design/release.md).
+
 ## Security
 
 Never report vulnerabilities in public issues or pull requests. See [SECURITY.md](SECURITY.md).

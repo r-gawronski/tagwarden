@@ -1,5 +1,6 @@
 # Builds the operator image and the chart. Pull requests build and scan only.
-# Pushes to main publish the image; v* tags publish the image and the chart,
+# Pushes to main publish the image; v* tags (pushed, or dispatched by
+# release.yaml) publish the image and the chart,
 # both signed keylessly, with an SPDX SBOM attestation per image platform.
 # A tag also gets a GitHub Release. See docs/design/release.md.
 name: Build
@@ -9,6 +10,7 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  workflow_dispatch: # started by release.yaml for a new tag
 
 permissions:
   contents: read
@@ -22,6 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Refuse a dispatch that is not on a tag
+        if: github.event_name == 'workflow_dispatch' && github.ref_type != 'tag'
+        env:
+          REF: ${{ github.ref }}
+        run: echo "::error::run this workflow on a v* tag, not on $REF" && exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -71,7 +78,7 @@ jobs:
         run: make chart-package CHART_VERSION="0.0.0-ci.${SHA::7}" CHART_IMAGE="ghcr.io/${OWNER,,}/tagwarden"
 
   publish:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag')
     needs: [image, chart-package]
     runs-on: ubuntu-latest
     timeout-minutes: 30

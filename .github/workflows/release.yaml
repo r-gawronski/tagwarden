@@ -1,0 +1,47 @@
+# Manual release: tags main and dispatches build.yaml on the tag.
+# GITHUB_TOKEN tag pushes do not trigger push workflows, hence the dispatch.
+# See docs/design/release.md.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the leading v, e.g. 0.1.0-rc.1
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # create the tag
+      actions: write # dispatch build.yaml
+    steps:
+      - name: Tag and dispatch the build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          V: ${{ inputs.version }}
+        run: |
+          [ "$REF" = refs/heads/main ] || { echo "::error::run on main, not $REF"; exit 1; }
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          [[ "$V" =~ $semver ]] || { echo "::error::version is not semver without a leading v"; exit 1; }
+          if out=$(gh api "repos/$GH_REPO/git/refs/tags/v$V" 2>&1); then
+            echo "::error::tag v$V already exists"
+            exit 1
+          fi
+          grep -q 'HTTP 404' <<<"$out" || { echo "::error::tag lookup failed: $out"; exit 1; }
+          obj=$(gh api "repos/$GH_REPO/git/tags" -f tag="v$V" -f message="v$V" -f object="$SHA" -f type=commit --jq .sha)
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/v$V" -f sha="$obj" >/dev/null
+          gh workflow run build.yaml --ref "v$V"
+          echo "Tagged v$V at $SHA. Build: https://github.com/$GH_REPO/actions/workflows/build.yaml"
