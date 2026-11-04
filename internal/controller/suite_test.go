@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,10 +172,12 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 	Expect((&ClusterMirrorTargetReconciler{
-		Recorder:  recorder,
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Namespace: operatorNamespace,
+		Recorder:      recorder,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Namespace:     operatorNamespace,
+		DeniedCIDRs:   []netip.Prefix{netip.MustParsePrefix(deniedCIDR)},
+		allowLoopback: true,
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&ArtifactMirrorReconciler{
 		Client:              mgr.GetClient(),

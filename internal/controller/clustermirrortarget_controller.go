@@ -21,7 +21,11 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"slices"
+	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,6 +52,24 @@ type ClusterMirrorTargetReconciler struct {
 	Recorder events.EventRecorder
 	// Namespace is the operator namespace that holds the referenced Secrets.
 	Namespace string
+	// Scanner holds the manager's --trivy-* flags, the defaults for gated
+	// targets.
+	Scanner ScannerConfig
+	// DeniedCIDRs are refused as scanner addresses unless the scanner host
+	// is a cluster Service name.
+	DeniedCIDRs []netip.Prefix
+
+	// allowLoopback lets tests probe local servers.
+	allowLoopback bool
+	mu            sync.Mutex
+	probes        map[string]probeResult
+}
+
+// probeResult is a cached /version answer of one scanner URL and CA.
+type probeResult struct {
+	at   time.Time
+	info *versionInfo
+	err  error
 }
 
 // +kubebuilder:rbac:groups=mirror.tagwarden.dev,resources=clustermirrortargets,verbs=get;list;watch
@@ -82,8 +104,30 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	old := meta.FindStatusCondition(t.Status.Conditions, ConditionReady)
 	newReason := reason != "" && (old == nil || old.Reason != reason)
-	if !meta.SetStatusCondition(&t.Status.Conditions, cond) {
-		return ctrl.Result{}, nil
+	changed := meta.SetStatusCondition(&t.Status.Conditions, cond)
+
+	var res ctrl.Result
+	var changes []metav1.Condition
+	if g := gateOf(&t); g != nil {
+		sc, db, err := r.scanner(ctx, g)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		for _, c := range []metav1.Condition{sc, db} {
+			c.ObservedGeneration = t.Generation
+			prev := meta.FindStatusCondition(t.Status.Conditions, c.Type)
+			if prev == nil || prev.Status != c.Status || prev.Reason != c.Reason {
+				changes = append(changes, c)
+			}
+			changed = meta.SetStatusCondition(&t.Status.Conditions, c) || changed
+		}
+		res.RequeueAfter = scannerProbeInterval
+	} else {
+		changed = meta.RemoveStatusCondition(&t.Status.Conditions, ConditionScannerReady) || changed
+		changed = meta.RemoveStatusCondition(&t.Status.Conditions, ConditionVulnerabilityDBReady) || changed
+	}
+	if !changed {
+		return res, nil
 	}
 	if err := r.Status().Update(ctx, &t); err != nil {
 		return ctrl.Result{}, err
@@ -91,7 +135,72 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 	if newReason {
 		r.Recorder.Eventf(&t, nil, corev1.EventTypeWarning, reason, "Reconcile", "%s", msg)
 	}
-	return ctrl.Result{}, nil
+	for _, c := range changes {
+		if c.Status == metav1.ConditionTrue {
+			r.Recorder.Eventf(&t, nil, corev1.EventTypeNormal, c.Type, "Probe", "%s", c.Message)
+		} else {
+			r.Recorder.Eventf(&t, nil, corev1.EventTypeWarning, c.Reason, "Probe", "%s", c.Message)
+		}
+	}
+	return res, nil
+}
+
+// scanner returns the ScannerReady and VulnerabilityDBReady conditions of
+// a gate. It probes each scanner URL and CA at most once per interval, so
+// status updates and many targets do not hammer a server that is down. It
+// reads the CA Secret, never the token.
+func (r *ClusterMirrorTargetReconciler) scanner(ctx context.Context, g *mirrorv1alpha1.VulnerabilityGate) (metav1.Condition, metav1.Condition, error) {
+	maxAge := defaultMaxDBAge
+	if g.MaxDBAge != nil {
+		maxAge = g.MaxDBAge.Duration
+	}
+	now := time.Now()
+	c, problem := effectiveScanner(g.Scanner, r.Scanner)
+	var ca []byte
+	if problem == "" && g.Scanner != nil && g.Scanner.CABundleSecretRef != nil {
+		ref := g.Scanner.CABundleSecretRef
+		s, _, msg, err := r.secret(ctx, ref.Name)
+		switch {
+		case err != nil:
+			return metav1.Condition{}, metav1.Condition{}, err
+		case s == nil:
+			problem = msg
+		case !x509.NewCertPool().AppendCertsFromPEM(s.Data[ref.Key]):
+			problem = fmt.Sprintf("Secret %s key %s holds no PEM certificate", s.Name, ref.Key)
+		default:
+			ca = s.Data[ref.Key]
+		}
+	}
+	if problem != "" {
+		sc, db := scannerConditions(c, problem, nil, nil, maxAge, now)
+		return sc, db, nil
+	}
+	key := c.URL + "\x00" + string(ca)
+	r.mu.Lock()
+	p, ok := r.probes[key]
+	r.mu.Unlock()
+	if !ok || now.Sub(p.at) >= scannerProbeInterval {
+		p = probeResult{at: now}
+		u, err := url.Parse(c.URL)
+		if err != nil {
+			p.err = err
+		} else {
+			p.info, p.err = probeScanner(ctx, c.URL, ca, scannerAddrCheck(u.Hostname(), r.DeniedCIDRs, r.allowLoopback))
+		}
+		r.mu.Lock()
+		if r.probes == nil {
+			r.probes = map[string]probeResult{}
+		}
+		for k, old := range r.probes {
+			if now.Sub(old.at) >= scannerProbeInterval {
+				delete(r.probes, k)
+			}
+		}
+		r.probes[key] = p
+		r.mu.Unlock()
+	}
+	sc, db := scannerConditions(c, "", p.info, p.err, maxAge, now)
+	return sc, db, nil
 }
 
 // ambiguousSources refuses allowedSources of different registries that
@@ -301,6 +410,9 @@ func referencesSecret(t *mirrorv1alpha1.ClusterMirrorTarget, name string) bool {
 	}
 	for _, c := range t.Spec.SourceCABundles {
 		names = append(names, c.SecretRef.Name)
+	}
+	if g := gateOf(t); g != nil && g.Scanner != nil && g.Scanner.CABundleSecretRef != nil {
+		names = append(names, g.Scanner.CABundleSecretRef.Name)
 	}
 	if p := t.Spec.Proxy; p != nil {
 		if p.CABundleSecretRef != nil {

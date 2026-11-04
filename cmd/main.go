@@ -170,15 +170,18 @@ func main() {
 		setupLog.Info("Vulnerability gate scanner configured", "image", trivyImage, "version", trivyVersion, "url", trivyURL)
 	}
 	var denied []string
+	var deniedPrefixes []netip.Prefix
 	for c := range strings.SplitSeq(deniedCIDRs, ",") {
 		if c = strings.TrimSpace(c); c == "" {
 			continue
 		}
-		if _, err := netip.ParsePrefix(c); err != nil {
+		p, err := netip.ParsePrefix(c)
+		if err != nil {
 			setupLog.Error(err, "Invalid --denied-cidrs entry", "cidr", c)
 			os.Exit(1)
 		}
 		denied = append(denied, c)
+		deniedPrefixes = append(deniedPrefixes, p)
 	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
@@ -290,10 +293,12 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ClusterMirrorTargetReconciler{
-		Recorder:  mgr.GetEventRecorder("tagwarden"),
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Namespace: operatorNamespace,
+		Recorder:    mgr.GetEventRecorder("tagwarden"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Namespace:   operatorNamespace,
+		Scanner:     controller.ScannerConfig{URL: trivyURL, Image: trivyImage, Version: trivyVersion},
+		DeniedCIDRs: deniedPrefixes,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "clustermirrortarget")
 		os.Exit(1)
