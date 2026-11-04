@@ -1,6 +1,6 @@
 # SBOM generation and enforcement for mirrored images
 
-Status: Proposed. Issue #69. Builds on the vulnerability gate (#21,
+Status: Approved (2026-11-04), step 1 implemented. Issue #69. Builds on the vulnerability gate (#21,
 `docs/design/vulnerability-gate.md`) and reuses its Trivy sidecar.
 
 ## Goal
@@ -468,7 +468,7 @@ Audit line, per tag:
   Accepted: a sync container holds the key while it runs, so a compromised
   sync image can sign anything; the same image already holds push rights.
 
-## Decisions to confirm
+## Decisions
 
 1. **Enum spelling.** The issue proposes `cyclonedx | spdx-json`. This
    design uses `CycloneDX | SPDX` (Kubernetes API conventions, like the
