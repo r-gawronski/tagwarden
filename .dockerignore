@@ -15,3 +15,7 @@
 
 # Embedded by internal/vuln (go:embed)
 !internal/vuln/report.tpl
+
+# Shipped in the image under /licenses
+!LICENSE
+!NOTICE

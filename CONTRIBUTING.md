@@ -30,6 +30,8 @@ make lint test chart-check vulncheck
 
 If you changed API types or markers, also run `make manifests generate fmt vet`.
 
+If you changed Go dependencies, also run `make notice`. CI fails when `NOTICE` is out of date.
+
 Commit any generated files that change. CI runs the same checks.
 
 ## End-to-end tests
