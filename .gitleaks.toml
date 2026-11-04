@@ -1,0 +1,8 @@
+# Default rules plus one allowlist. Path based on purpose: commit SHAs in a
+# .gitleaksignore stop matching whenever history is rewritten.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Published AWS SigV4 test vectors, not secrets"
+paths = ['''^internal/synccmd/aws_test\.go$''']

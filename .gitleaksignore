@@ -1,3 +1,0 @@
-# Published AWS SigV4 test vectors in internal/synccmd/aws_test.go (not secrets).
-b3ecc8017c2ea91753a61187c5ebd5be09fc0439:internal/synccmd/aws_test.go:generic-api-key:61
-771244f58446c4de21dbd0c888a01613e54d210b:internal/synccmd/aws_test.go:generic-api-key:61
