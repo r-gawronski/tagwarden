@@ -380,7 +380,7 @@ var _ = Describe("vulnerability gate status and pod Events", Ordered, func() {
 			{Tag: "2.0", Digest: hexDigest("2"), JudgedAt: &judgedAt}, {Tag: tag10, Digest: hexDigest("1"), JudgedAt: &judgedAt}}}))
 		Expect(meta.IsStatusConditionTrue(st.Conditions, ConditionSynced)).To(BeTrue())
 		Expect(meta.IsStatusConditionTrue(st.Conditions, ConditionVulnerabilityGate)).To(BeTrue())
-		Expect(recorder.Events(ns, gen.Name)).To(ContainElement(ContainSubstring("Warning " + reasonVulnerabilitiesFound)))
+		Eventually(func() []string { return recorder.Events(ns, gen.Name) }).Should(ContainElement(ContainSubstring("Warning " + reasonVulnerabilitiesFound)))
 
 		Eventually(podEvents(vulnPod)).Should(ContainSubstring("Warning " + reasonVulnerabilitiesFound + " " + image +
 			":1.0 has 1 Critical (" + testCVE + ", CVE-2026-2), mirrored anyway; see ArtifactMirror " + ns + "/" + gen.Name))

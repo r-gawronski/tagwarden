@@ -119,7 +119,7 @@ var _ = Describe("source Secrets of a ClusterMirrorTarget", func() {
 				HaveField("Message", ContainSubstring(message)),
 			))
 			expectNoSecrets(cond.Message)
-			Expect(recorder.Events("", name)).To(ContainElement(ContainSubstring("Warning " + reason)))
+			Eventually(func() []string { return recorder.Events("", name) }).Should(ContainElement(ContainSubstring("Warning " + reason)))
 			for _, e := range recorder.Events("", name) {
 				expectNoSecrets(e)
 			}

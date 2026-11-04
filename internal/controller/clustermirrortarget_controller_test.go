@@ -204,7 +204,7 @@ var _ = Describe("ClusterMirrorTarget Controller", func() {
 				HaveField("Reason", ReasonAmbiguousAllowedSources),
 				HaveField("Message", ContainSubstring(message)),
 			))
-			Expect(recorder.Events("", name)).To(ContainElement(ContainSubstring("Warning " + ReasonAmbiguousAllowedSources)))
+			Eventually(func() []string { return recorder.Events("", name) }).Should(ContainElement(ContainSubstring("Warning " + ReasonAmbiguousAllowedSources)))
 		},
 		Entry("port and dash", "tgt-ambiguous-port", []mirrorv1alpha1.RegistryHost{"reg.example.internal:5000", "reg.example.internal-5000"},
 			"reg.example.internal-5000"),

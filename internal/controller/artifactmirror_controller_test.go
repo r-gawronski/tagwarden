@@ -128,7 +128,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		createMirror(m)
 		Eventually(mirrorReady(m)).Should(And(
 			HaveField("Status", metav1.ConditionTrue), HaveField("Reason", ReasonReady)))
-		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Normal Created Created CronJob")))
+		Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Normal Created Created CronJob")))
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(m), m)).To(Succeed())
 		Expect(m.Finalizers).To(ContainElement(Finalizer))
 		Expect(m.Status.ObservedGeneration).To(Equal(m.Generation))
@@ -437,7 +437,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		Eventually(mirrorReady(m)).Should(And(
 			HaveField("Status", metav1.ConditionFalse), HaveField("Reason", ReasonOwnershipConflict),
 			HaveField("Message", ContainSubstring("elsewhere/owner"))))
-		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning " + ReasonOwnershipConflict)))
+		Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Warning " + ReasonOwnershipConflict)))
 		deleteAndWait(m)
 
 		got, err := cronJob(m)()
@@ -474,7 +474,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 				HaveField("Message", ContainSubstring(message))))
 			_, err := cronJob(m)()
 			Expect(notFound(err)).To(BeTrue())
-			Expect(recorder.Events(namespace, m.Name)).To(ContainElement(ContainSubstring("Warning " + reason)))
+			Eventually(func() []string { return recorder.Events(namespace, m.Name) }).Should(ContainElement(ContainSubstring("Warning " + reason)))
 		},
 		Entry("project not allowed for the namespace", teamB, func(m *mirrorv1alpha1.ArtifactMirror) {
 			m.Spec.Target.Project = teamA
@@ -574,7 +574,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 				HaveField("Status", metav1.ConditionFalse),
 				HaveField("Reason", ReasonRepositoryOverrideNotAllowed),
 				HaveField("Message", ContainSubstring("registry.k8s.io/pause"))))
-			Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning " + ReasonRepositoryOverrideNotAllowed)))
+			Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Warning " + ReasonRepositoryOverrideNotAllowed)))
 			_, err := cronJob(m)()
 			Expect(notFound(err)).To(BeTrue())
 		})
@@ -752,7 +752,7 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 		Expect(st.LastSuccessfulSyncTime.Time).To(BeTemporally("==", at))
 		Expect(st.Synced).To(Equal([]mirrorv1alpha1.SyncedTag{{Tag: v310, Digest: digest}, {Tag: "3.9", Digest: digest}}))
 		Expect(meta.IsStatusConditionTrue(st.Conditions, ConditionReady)).To(BeTrue())
-		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(HaveSuffix("Normal Synced copied 1, skipped 1, mutated 0, failed 0")))
+		Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(HaveSuffix("Normal Synced copied 1, skipped 1, mutated 0, failed 0")))
 	})
 
 	It("reports a truncated synced list", func() {
@@ -770,7 +770,7 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 			Expect(st.LastSyncTime.Time).To(BeTemporally("==", at))
 			Expect(st.LastSuccessfulSyncTime).To(Equal(success))
 			Expect(len(st.Synced)).To(BeNumerically("<=", maxSynced))
-			Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning " + reason)))
+			Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Warning " + reason)))
 		},
 		Entry("sync error", int32(1), `{"v":1,"failed":1,"errors":["`+v310+`: `+strings.Repeat("x", 300)+`"]}`,
 			ReasonSyncFailed, "failed 1; 1 errors, first: "+v310+": xxx"),

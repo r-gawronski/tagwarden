@@ -329,7 +329,7 @@ var _ = Describe("Scanner readiness", func() {
 		Eventually(targetCondition(t.Name, ConditionVulnerabilityDBReady)).Should(cond(metav1.ConditionTrue, ReasonReady, "vulnerability DB updated"))
 		Expect(targetReady(t.Name)).To(HaveField("Status", metav1.ConditionTrue))
 		Expect(f.tokens.Load()).To(BeZero())
-		Expect(recorder.Events("", t.Name)).To(ContainElement(ContainSubstring("Normal " + ConditionScannerReady)))
+		Eventually(func() []string { return recorder.Events("", t.Name) }).Should(ContainElement(ContainSubstring("Normal " + ConditionScannerReady)))
 	})
 
 	It("probes at most once per interval", func() {
@@ -354,7 +354,7 @@ var _ = Describe("Scanner readiness", func() {
 			var c *metav1.Condition
 			Eventually(func() *metav1.Condition { c = targetCondition(t.Name, typ)(); return c }).Should(cond(status, reason, message))
 			Expect(targetReady(t.Name)).To(HaveField("Status", metav1.ConditionTrue))
-			Expect(recorder.Events("", t.Name)).To(ContainElement(ContainSubstring("Warning " + reason)))
+			Eventually(func() []string { return recorder.Events("", t.Name) }).Should(ContainElement(ContainSubstring("Warning " + reason)))
 			Expect(f.tokens.Load()).To(BeZero())
 		},
 		Entry("wrong version", "scan-version", func(f *fakeTrivy) string { f.setVersion("0.75.0", time.Hour); return f.URL },

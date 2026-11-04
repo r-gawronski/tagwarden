@@ -151,7 +151,7 @@ var _ = Describe("sync-now", Ordered, func() {
 			HaveField("Name", cj.Name), HaveField("UID", cj.UID),
 			HaveField("Controller", HaveValue(BeTrue())), HaveField("BlockOwnerDeletion", HaveValue(BeTrue())))))
 		Expect(status(m)().LastSyncStartTime).NotTo(BeNil())
-		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Normal SyncRequested Created Job " +
+		Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Normal SyncRequested Created Job " +
 			operatorNamespace + "/" + job.Name)))
 
 		By("ignoring the same value")
@@ -167,7 +167,7 @@ var _ = Describe("sync-now", Ordered, func() {
 
 		Eventually(lastRequest(m)).Should(And(Not(BeNil()), HaveField("Result", mirrorv1alpha1.SyncRequestDeferred),
 			HaveField("Message", "Job "+operatorNamespace+"/"+running.Name+" is running")))
-		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Normal SyncDeferred Job")))
+		Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Normal SyncDeferred Job")))
 		Consistently(manualJobs(m), time.Second).Should(BeEmpty())
 
 		completeJob(running)
@@ -186,7 +186,7 @@ var _ = Describe("sync-now", Ordered, func() {
 			HaveField("Message", "minSyncInterval 5m0s of ClusterMirrorTarget "+syncNowTarget+" allows the next sync at "+next)))
 		Expect(status(m)().LastSyncStartTime.Time).To(BeTemporally("==", start))
 		Expect(manualJobs(m)()).To(BeEmpty())
-		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Normal SyncDeferred minSyncInterval")))
+		Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Normal SyncDeferred minSyncInterval")))
 
 		// RequeueAfter starts it without another change to the mirror.
 		Eventually(lastRequest(m), 15*time.Second).Should(HaveField("Result", mirrorv1alpha1.SyncRequestStarted))
@@ -233,7 +233,7 @@ var _ = Describe("sync-now", Ordered, func() {
 		msg := "value already used by Job " + operatorNamespace + "/" + first[0].Name + "; set a new value"
 		Eventually(lastRequest(m)).Should(And(HaveField("Value", "first"),
 			HaveField("Result", mirrorv1alpha1.SyncRequestRefused), HaveField("Message", msg)))
-		Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning SyncRefused " + msg)))
+		Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Warning SyncRefused " + msg)))
 		Expect(manualJobs(m)()).To(HaveLen(1))
 	})
 
@@ -248,7 +248,7 @@ var _ = Describe("sync-now", Ordered, func() {
 
 			Eventually(lastRequest(m)).Should(And(Not(BeNil()), HaveField("Value", "refused"),
 				HaveField("Result", mirrorv1alpha1.SyncRequestRefused), HaveField("Message", ContainSubstring(message))))
-			Expect(recorder.Events(teamA, m.Name)).To(ContainElement(ContainSubstring("Warning SyncRefused " + message)))
+			Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Warning SyncRefused " + message)))
 			Consistently(manualJobs(m), time.Second).Should(BeEmpty())
 		},
 		Entry("when the mirror is not Ready", func(m *mirrorv1alpha1.ArtifactMirror) {
