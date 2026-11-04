@@ -17,11 +17,13 @@ limitations under the License.
 package controller
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -31,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
 const (
@@ -404,6 +407,106 @@ var _ = Describe("reserved autoMirror project", func() {
 		})
 		Eventually(mirrorReady(gen)).Should(HaveField("Status", metav1.ConditionTrue))
 		Expect(recorder.Events(teamB, p.Name)).NotTo(ContainElement(ContainSubstring(reasonAlreadyMirrored)))
+	})
+})
+
+var _ = Describe("gated sync CronJob", func() {
+	It("renders the scanner sidecar for generated mirrors of a gated target only", func() {
+		const target = "gated-render"
+		DeferCleanup(func() {
+			deleteAndWait(&mirrorv1alpha1.ClusterMirrorTarget{ObjectMeta: metav1.ObjectMeta{Name: target}})
+		})
+		createReadyTarget(target, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.Projects = []mirrorv1alpha1.TargetProject{{Name: otherProject, NamespaceSelector: &metav1.LabelSelector{}}}
+			t.Spec.AutoMirror = &mirrorv1alpha1.AutoMirror{Enabled: true, Project: otherProject,
+				VulnerabilityGate: &mirrorv1alpha1.VulnerabilityGate{Enabled: true}}
+		})
+		gen := newMirror(teamB, generatedNameOf(k8sHost+"/pause"))
+		gen.Spec.TargetRef = target
+		gen.Spec.Target = mirrorv1alpha1.Target{Project: otherProject}
+		gen.Spec.Tags = mirrorv1alpha1.TagSelector{Tags: []string{v310}}
+		gen.Labels = map[string]string{mirrorv1alpha1.LabelGenerated: trueValue, mirrorv1alpha1.LabelAutoTarget: target}
+		createMirror(gen)
+
+		sidecarImage := func() string {
+			cj, err := cronJob(gen)()
+			if err != nil || len(cj.Spec.JobTemplate.Spec.Template.Spec.InitContainers) == 0 {
+				return ""
+			}
+			return cj.Spec.JobTemplate.Spec.Template.Spec.InitContainers[0].Image
+		}
+		Eventually(sidecarImage).Should(Equal(trivyImage))
+		cj, err := cronJob(gen)()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cj.Spec.JobTemplate.Spec.Template.Labels).To(HaveKeyWithValue(LabelScanner, ScannerTrivy))
+		specOf := func() syncspec.Spec {
+			var cm corev1.ConfigMap
+			if k8sClient.Get(ctx, objectKey(gen), &cm) != nil {
+				return syncspec.Spec{}
+			}
+			s, err := syncspec.Decode(strings.NewReader(cm.Data[specKey]))
+			if err != nil {
+				return syncspec.Spec{}
+			}
+			return s
+		}
+		Expect(specOf().Gate).NotTo(BeNil())
+
+		By("restoring a hand edit of the sidecar")
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			cj, err := cronJob(gen)()
+			if err != nil {
+				return err
+			}
+			cj.Spec.JobTemplate.Spec.Template.Spec.InitContainers[0].Image = "registry.example.internal/other@sha256:" + strings.Repeat("0", 64)
+			return k8sClient.Update(ctx, cj)
+		})).To(Succeed())
+		Eventually(sidecarImage).Should(Equal(trivyImage))
+
+		By("passing an exception for the mirror into the spec")
+		e := &mirrorv1alpha1.VulnerabilityException{
+			ObjectMeta: metav1.ObjectMeta{Name: "gated-render-pause"},
+			Spec: mirrorv1alpha1.VulnerabilityExceptionSpec{
+				TargetRef: target, Namespaces: []string{teamB}, Repository: k8sHost + "/pause",
+				Vulnerabilities: []string{testCVE}, Expires: metav1.NewTime(time.Now().Add(24 * time.Hour)),
+				ApprovedBy: "security@example.com", Reason: "not reachable in this image",
+			},
+		}
+		Expect(k8sClient.Create(ctx, e)).To(Succeed())
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, e))).To(Succeed()) })
+		Eventually(func() int {
+			if g := specOf().Gate; g != nil {
+				return len(g.Exceptions)
+			}
+			return -1
+		}).Should(Equal(1))
+
+		By("rendering a user mirror of the gated target without the sidecar")
+		user := newMirror(teamB, "gated-render-user")
+		user.Spec.TargetRef = target
+		user.Spec.Source = mirrorv1alpha1.Source{Registry: ghcrRegistry, Repository: "example/gated-render"}
+		user.Spec.Target = mirrorv1alpha1.Target{Project: otherProject}
+		user.Spec.Tags = mirrorv1alpha1.TagSelector{Tags: []string{v310}}
+		createMirror(user)
+		Eventually(cronJob(user)).Should(WithTransform(func(cj *batchv1.CronJob) int {
+			return len(cj.Spec.JobTemplate.Spec.Template.Spec.Containers)
+		}, Equal(1)))
+		cj, err = cronJob(user)()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cj.Spec.JobTemplate.Spec.Template.Spec.InitContainers).To(BeEmpty())
+		Expect(cj.Spec.JobTemplate.Spec.Template.Labels).NotTo(HaveKey(LabelScanner))
+
+		By("dropping the sidecar when the gate is turned off")
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var t mirrorv1alpha1.ClusterMirrorTarget
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: target}, &t); err != nil {
+				return err
+			}
+			t.Spec.AutoMirror.VulnerabilityGate.Enabled = false
+			return k8sClient.Update(ctx, &t)
+		})).To(Succeed())
+		Eventually(sidecarImage).Should(BeEmpty())
+		Expect(specOf().Gate).To(BeNil())
 	})
 })
 

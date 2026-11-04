@@ -115,10 +115,12 @@ func capMessage(s string) string {
 }
 
 // ScannerConfig is the Trivy server and client of the vulnerability gate.
-// The manager's --trivy-url, --trivy-image and --trivy-version flags fill
-// it for the in-chart server.
+// The manager's --trivy-url, --trivy-image, --trivy-version and
+// --trivy-token-secret flags fill it for the in-chart server. TokenSecret
+// names the token Secret in the operator namespace (key token); the
+// controller only references it in gated pods and never reads it.
 type ScannerConfig struct {
-	URL, Image, Version string
+	URL, Image, Version, TokenSecret string
 }
 
 // gateOf returns the vulnerability gate of t, or nil when it is off.

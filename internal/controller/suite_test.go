@@ -189,6 +189,7 @@ var _ = BeforeSuite(func() {
 		DeniedCIDRs:         []string{deniedCIDR},
 		ArgoCDTracking:      ArgoCDTrackingInherit,
 		ArgoCDInstanceLabel: "app.kubernetes.io/instance",
+		Scanner:             testScanner,
 	}).SetupWithManager(mgr)).To(Succeed())
 	Expect((&AutoMirrorReconciler{
 		Client:    mgr.GetClient(),

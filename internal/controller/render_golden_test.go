@@ -18,6 +18,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"os"
@@ -26,6 +27,8 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 )
@@ -46,10 +49,9 @@ func TestUngatedRenderGolden(t *testing.T) {
 	}
 	generated := func(m *mirrorv1alpha1.ArtifactMirror) {
 		m.Namespace = teamA
-		m.Spec.Source = mirrorv1alpha1.Source{Registry: k8sHost, Repository: "pause"}
 		m.Spec.Target = mirrorv1alpha1.Target{Project: teamA}
 		m.Name = generatedNameOf(canonicalSource(m.Spec.Source))
-		m.Labels = map[string]string{mirrorv1alpha1.LabelGenerated: trueValue, mirrorv1alpha1.LabelAutoTarget: "default"}
+		m.Labels = map[string]string{mirrorv1alpha1.LabelGenerated: trueValue, mirrorv1alpha1.LabelAutoTarget: m.Spec.TargetRef}
 	}
 	for _, tc := range []struct {
 		name   string
@@ -65,7 +67,8 @@ func TestUngatedRenderGolden(t *testing.T) {
 		{name: "user-on-gated-target", target: gatedOn},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tg, m := validTarget("default"), validMirror("render")
+			m := validMirror("render")
+			tg := validTarget(m.Spec.TargetRef)
 			if tc.target != nil {
 				tc.target(tg)
 			}
@@ -83,7 +86,7 @@ func TestUngatedRenderGolden(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			want, err := os.ReadFile(file)
+			want, err := os.ReadFile(file) //nolint:gosec // fixed test data path
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -98,7 +101,13 @@ func TestUngatedRenderGolden(t *testing.T) {
 // does for a mirror without the gate.
 func renderUngated(t *testing.T, tg *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (*batchv1.CronJob, *corev1.ConfigMap) {
 	t.Helper()
-	spec, err := json.MarshalIndent(syncSpec(tg, m, []string{deniedCIDR}), "", "  ")
+	s := syncSpec(tg, m, []string{deniedCIDR})
+	r := &ArtifactMirrorReconciler{Client: fake.NewClientBuilder().WithScheme(goldenScheme(t)).Build(), Scanner: testScanner}
+	sc, msg, err := r.gate(context.Background(), tg, m, &s)
+	if err != nil || msg != "" || sc != nil || s.Gate != nil {
+		t.Fatalf("mirror is gated: %v %q", err, msg)
+	}
+	spec, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +116,14 @@ func renderUngated(t *testing.T, tg *mirrorv1alpha1.ClusterMirrorTarget, m *mirr
 	renderConfigMap(cm, m, spec)
 	cj := &batchv1.CronJob{}
 	cj.Name = objectName(m)
-	renderCronJob(cj, tg, m, syncImage, spec, nil, nil)
+	renderCronJob(cj, tg, m, syncImage, spec, nil, nil, nil)
 	return cj, cm
+}
+
+func goldenScheme(t *testing.T) *runtime.Scheme {
+	s := runtime.NewScheme()
+	if err := mirrorv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
