@@ -178,6 +178,10 @@ trivy:
     digest: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
+  ## How long the scanner sidecar of a gated sync Job may fail to start (image
+  ## pull error, bad config, crash loop) before the Job is deleted and the
+  ## failure reported. Rendered as --scanner-start-timeout.
+  scannerStartTimeout: 5m
   ## One replica only: scans need one cache. The schema rejects more.
   replicas: 1
   ## Vulnerability DB in the target registry, never the internet.

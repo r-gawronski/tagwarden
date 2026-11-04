@@ -175,6 +175,7 @@ func gateHelm(trivyOn bool, extra ...string) {
 		"--set", "trivy.db.caBundleSecretRef.key=ca.crt",
 		"--set-json", "trivy.networkPolicy.registryEgress="+string(egress),
 		"--set", "trivy.persistence.size=5Gi",
+		"--set", "trivy.scannerStartTimeout=60s",
 		"--force-conflicts", "--wait", "--timeout", "10m")
 	args = append(args, extra...)
 	_, err = utils.Run(exec.Command("helm", args...))
@@ -332,9 +333,12 @@ func awaitGatedRun(ns string, img gateImage) *mirrorv1alpha1.ArtifactMirror {
 }
 
 // podEvents returns the Events recorded for a pod, by reason.
-func podEvents(ns, pod string) map[string][]corev1.Event {
+func podEvents(ns, pod string) map[string][]corev1.Event { return objectEvents(ns, "Pod", pod) }
+
+// objectEvents returns the Events recorded for an object, by reason.
+func objectEvents(ns, kind, name string) map[string][]corev1.Event {
 	out, err := utils.Run(exec.Command("kubectl", "get", "events", "-n", ns, "-o", "json",
-		"--field-selector", "involvedObject.kind=Pod,involvedObject.name="+pod))
+		"--field-selector", "involvedObject.kind="+kind+",involvedObject.name="+name))
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	var list corev1.EventList
 	ExpectWithOffset(1, json.Unmarshal([]byte(out), &list)).To(Succeed())

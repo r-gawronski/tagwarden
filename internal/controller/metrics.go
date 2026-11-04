@@ -29,4 +29,11 @@ var gateUnscanned = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Help: "1 while a ClusterMirrorTarget has the vulnerability gate enabled but no usable scanner configuration; its generated mirrors are copied unscanned (onScanError Report) or not at all (Block).",
 }, []string{"target"})
 
-func init() { metrics.Registry.MustRegister(gateUnscanned) }
+// scannerStartFailures counts sync Jobs deleted because their scanner
+// sidecar did not start, by the waiting reason of the sidecar.
+var scannerStartFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "tagwarden_scanner_start_failures_total",
+	Help: "Gated sync Jobs deleted because the scanner sidecar did not start (image pull failure, bad config, crash loop), by target and waiting reason. Nothing is copied by such a run.",
+}, []string{"target", "reason"})
+
+func init() { metrics.Registry.MustRegister(gateUnscanned, scannerStartFailures) }
