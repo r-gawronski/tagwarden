@@ -99,7 +99,7 @@ func TestSidecarScript(t *testing.T) {
 			want := []string{"image", "--server", "http://trivy.ns.svc:4954", "--token-header", "Trivy-Token",
 				"--input", filepath.Join(dir, "layout") + "@sha256:" + good, "--scanners", "vuln",
 				"--skip-db-update", "--skip-java-db-update", "--skip-version-check", "--disable-telemetry",
-				"--timeout", "10m0s"}
+				"--timeout", "10m0s", "--config", "/dev/null", "--ignorefile", "/dev/null"}
 			for i, w := range want {
 				if i >= len(lines) || lines[i] != w {
 					t.Fatalf("args %q, want prefix %q", lines, want)

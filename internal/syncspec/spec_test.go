@@ -250,6 +250,9 @@ func TestParseReportV2(t *testing.T) {
 		"unknown reason":    entry(`,"scanError":"Oops"`),
 		"bad db time":       entry(`,"dbUpdatedAt":"yesterday"`),
 		"bad tag":           strings.Replace(entry(""), `"tag":"v1"`, `"tag":"../x"`, 1),
+		"no scannedAt":      strings.Replace(entry(""), `,"scannedAt":"2026-11-03T10:00:00Z"`, "", 1),
+		"zero scannedAt":    strings.Replace(entry(""), "2026-11-03T10:00:00Z", "0001-01-01T00:00:00Z", 1),
+		"future scannedAt":  strings.Replace(entry(""), "2026-11-03T10:00:00Z", time.Now().Add(time.Hour).UTC().Format(time.RFC3339), 1),
 	}
 	for name, msg := range bad {
 		if _, err := ParseReport(msg); err == nil {
@@ -341,6 +344,7 @@ func TestGateFingerprint(t *testing.T) {
 		"exception gone":      func(g *Gate) { g.Exceptions = g.Exceptions[:1] },
 		"exception IDs":       func(g *Gate) { g.Exceptions[0].Vulnerabilities = []string{"CVE-1"} },
 		"expiry moved":        func(g *Gate) { g.Exceptions[0].Expires = metav1.NewTime(now.Add(3 * time.Hour)) },
+		"java DB per job":     func(g *Gate) { g.Scanner.JavaDB = v1alpha1.JavaDBPerJob },
 	}
 	for name, mod := range differ {
 		g := base()

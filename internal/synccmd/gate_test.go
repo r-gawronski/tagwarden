@@ -218,6 +218,7 @@ func TestEncodeReportKeepsFindings(t *testing.T) {
 		r.TagFindings = append(r.TagFindings, syncspec.TagFinding{
 			Tag: fmt.Sprintf("v1.0.%d", i), Digest: "sha256:" + strings.Repeat("c", 64), Verdict: v1alpha1.VerdictFindings,
 			Outcome: v1alpha1.OutcomeBlocked, TopIDs: []string{"CVE-2026-00001", "CVE-2026-00002", "CVE-2026-00003"},
+			ScannedAt: time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC),
 		})
 	}
 	b := encode(r)
