@@ -228,6 +228,7 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 		synced := rep.Synced
 		if len(synced) > maxSynced {
 			synced, rep.Truncated = synced[:maxSynced], true
+			rep.Synced = synced
 		}
 		m.Status.Synced = make([]mirrorv1alpha1.SyncedTag, 0, len(synced))
 		for _, s := range synced {
@@ -238,7 +239,7 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 		}
 		var ownedCut bool
 		if !rescan {
-			m.Status.Owned, ownedCut = mergeOwned(m.Status.Owned, m.Status.Synced, toOwned(rep.Pruned), toOwned(rep.Dropped))
+			m.Status.Owned, ownedCut = mergeOwned(m.Status.Owned, rep)
 		}
 		if rescan && cond.Status != metav1.ConditionTrue {
 			cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + "rescan failed: " + summary(rep)

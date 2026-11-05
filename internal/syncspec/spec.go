@@ -510,6 +510,10 @@ const (
 type SyncedTag struct {
 	Tag    string `json:"tag"`
 	Digest string `json:"digest"`
+	// Copied is set in Report.Synced for a tag this run copied or
+	// overwrote. A skipped tag was already on the target, so the mirror
+	// cannot show it put the tag there and does not own it.
+	Copied bool `json:"copied,omitempty"`
 }
 
 // Report is the termination message of a sync Job.

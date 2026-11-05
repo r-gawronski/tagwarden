@@ -546,9 +546,13 @@ func summarize(res sync.Result) report {
 		Synced: []syncedTag{},
 		Errors: res.Errors,
 	}
+	copied := map[string]bool{}
+	for _, a := range res.Copied {
+		copied[a.Tag] = true
+	}
 	for _, tag := range res.Selected {
 		if d, ok := digests[tag]; ok {
-			r.Synced = append(r.Synced, syncedTag{Tag: tag, Digest: d})
+			r.Synced = append(r.Synced, syncedTag{Tag: tag, Digest: d, Copied: copied[tag]})
 		}
 	}
 	for _, a := range res.Pruned {

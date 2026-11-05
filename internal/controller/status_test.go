@@ -377,7 +377,7 @@ func TestRecordJobOwned(t *testing.T) {
 		var ev pending
 		recordJob(m, job, finished(job), termination(t, code, rep), false, &ev)
 	}
-	run("", syncspec.ExitOK, &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{{Tag: "2", Digest: dig2}}})
+	run("", syncspec.ExitOK, &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{{Tag: "2", Digest: dig2, Copied: true}, {Tag: "skipped", Digest: dig2}}})
 	want := []mirrorv1alpha1.SyncedTag{{Tag: "2", Digest: dig2}, {Tag: "1", Digest: dig1}}
 	if !slices.Equal(m.Status.Owned, want) {
 		t.Fatalf("owned %v, want %v", m.Status.Owned, want)
@@ -408,7 +408,7 @@ func TestRecordJobPruned(t *testing.T) {
 
 	t.Run("pruned and dropped tags leave the record", func(t *testing.T) {
 		m := mirror(true)
-		ev := run(m, "", &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{st("4", dig2)}, Pruned: []syncspec.SyncedTag{st("1", dig1)},
+		ev := run(m, "", &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{{Tag: "4", Digest: dig2, Copied: true}}, Pruned: []syncspec.SyncedTag{st("1", dig1)},
 			Dropped: []syncspec.SyncedTag{st("2", dig2), st("gone", dig1)}})
 		want := []mirrorv1alpha1.SyncedTag{{Tag: "4", Digest: dig2}, {Tag: "3", Digest: dig1}}
 		if !slices.Equal(m.Status.Owned, want) {

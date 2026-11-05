@@ -20,24 +20,35 @@ import (
 	"slices"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
 // maxOwned caps status.owned, as the CRD schema does.
 const maxOwned = 200
 
 // mergeOwned returns the record of tags a mirror put on the target after a
-// sync: the run's synced tags (the run's digest wins), then the earlier
-// entries that are still on the target, each in its earlier order, minus the
-// tags the run pruned and the tags it found gone or moved. Past maxOwned the
-// end of the list is cut, which holds the oldest versions, and truncated is
-// true. A cut tag is never pruned: it fails safe.
-func mergeOwned(owned, synced, pruned, absent []mirrorv1alpha1.SyncedTag) (out []mirrorv1alpha1.SyncedTag, truncated bool) {
+// sync: the tags the run copied or overwrote (the run's digest wins), then
+// the earlier entries that are still on the target, each in its earlier
+// order, minus the tags the run pruned and the tags it found gone or moved.
+// A tag the run only skipped was on the target already, so it never joins
+// the record and never changes a recorded digest. Past maxOwned the end of the list is cut, which holds the oldest
+// versions, and truncated is true. A cut tag is never pruned: it fails safe.
+func mergeOwned(owned []mirrorv1alpha1.SyncedTag, rep syncspec.Report) (out []mirrorv1alpha1.SyncedTag, truncated bool) {
 	drop := map[string]bool{}
-	for _, s := range slices.Concat(pruned, absent) {
-		drop[s.Tag] = true
+	for _, p := range rep.Pruned {
+		drop[p.Tag] = true
+	}
+	for _, d := range rep.Dropped {
+		drop[d.Tag] = true
+	}
+	var copied []mirrorv1alpha1.SyncedTag
+	for _, s := range rep.Synced {
+		if s.Copied {
+			copied = append(copied, mirrorv1alpha1.SyncedTag{Tag: s.Tag, Digest: s.Digest})
+		}
 	}
 	seen := map[string]bool{}
-	for _, s := range slices.Concat(synced, owned) {
+	for _, s := range slices.Concat(copied, owned) {
 		if drop[s.Tag] || seen[s.Tag] {
 			continue
 		}

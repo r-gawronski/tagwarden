@@ -930,6 +930,21 @@ func TestSelectionReport(t *testing.T) {
 	}
 }
 
+func TestSyncedReportMarksCopied(t *testing.T) {
+	a := func(tag string) sync.Artifact {
+		return sync.Artifact{Tag: tag, Digest: "sha256:" + strings.Repeat("a", 64)}
+	}
+	res := sync.Result{
+		Selected: []string{"new", "same", "kept"},
+		Copied:   []sync.Artifact{a("new")},
+		Skipped:  []sync.Artifact{a("same"), a("kept")},
+	}
+	got, err := syncspec.ParseReport(string(encode(summarize(res))))
+	if err != nil || len(got.Synced) != 3 || !got.Synced[0].Copied || got.Synced[1].Copied || got.Synced[2].Copied {
+		t.Fatalf("%+v, %v", got.Synced, err)
+	}
+}
+
 func TestPrunedReport(t *testing.T) {
 	d := "sha256:" + strings.Repeat("a", 64)
 	res := sync.Result{

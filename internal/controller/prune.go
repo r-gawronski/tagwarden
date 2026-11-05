@@ -88,15 +88,6 @@ func checkPruned(m *mirrorv1alpha1.ArtifactMirror, rep syncspec.Report) error {
 	return nil
 }
 
-// toOwned converts report entries to the status type.
-func toOwned(in []syncspec.SyncedTag) []mirrorv1alpha1.SyncedTag {
-	out := make([]mirrorv1alpha1.SyncedTag, 0, len(in))
-	for _, s := range in {
-		out = append(out, mirrorv1alpha1.SyncedTag{Tag: s.Tag, Digest: s.Digest})
-	}
-	return out
-}
-
 // prunedEvents queues one Normal Event per pruned tag, at most
 // maxGateEvents.
 func prunedEvents(ev *pending, pruned []syncspec.SyncedTag) {
