@@ -97,6 +97,7 @@ digest changes, and the key is cleared when the finding goes away.
 
 ## Not done
 
-- Pruning tags that no pod uses (phase 4).
+- Pruning tags that no pod uses. Prune (threat model T13) only removes
+  tags a mirror created and no longer selects.
 - Digest-only refs (needs digest mirroring).
 - Ephemeral containers; only containers and init containers are read.

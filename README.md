@@ -125,6 +125,27 @@ spec:
     keepLatest: 5
 ```
 
+Tags that a mirror no longer selects can be pruned. Pruning is opt-in
+and only deletes tags that the mirror created (see
+[install, Prune](docs/install.md#prune-tags-a-mirror-no-longer-selects)):
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata:
+  name: ingress-nginx
+  namespace: team-net
+spec:
+  targetRef: registry
+  schedule: "0 3 * * *"
+  source: {registry: registry.k8s.io, repository: ingress-nginx/controller}
+  target: {project: mirror}
+  tags:
+    semverRange: ">=1.11.0"
+    keepLatest: 3
+    prune: true                      # delete tags dropped from the selection
+```
+
 Artifacts land at `<registry>/<project>/<source registry>/<source
 repository>`, for example
 `registry.example.internal/mirror/registry.k8s.io/ingress-nginx/controller:v1.11.3`.

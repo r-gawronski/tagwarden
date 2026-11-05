@@ -785,6 +785,7 @@ Untag.
   pull. A Harbor 404 (tag gone or moved to another digest) is reported as
   `UntagRefused`; other failures as `UntagFailed`. Either way the tag
   stays. Without `registryFlavor`, Untag on Harbor reports `UntagFailed`.
+  Prune on Harbor needs the same settings.
 - Use Harbor's own scanning as a second layer. It also covers
   hand-written mirrors and images mirrored under `Report`: scan on push, a
   daily "scan all" on the mirror projects, "prevent vulnerable images from
@@ -840,6 +841,36 @@ target nor from the chart):
 If the scanner sidecar cannot start (image pull error, crash loop), the Job
 is deleted after `trivy.scannerStartTimeout`, nothing is copied, and
 `tagwarden_scanner_start_failures_total` increases.
+
+## Prune tags a mirror no longer selects
+
+Prune is opt-in: `spec.tags.prune: true` on an `ArtifactMirror`. It is off
+by default. With it, a sync deletes the tags that the mirror created and
+no longer selects, for example after `keepLatest` moved on.
+
+- **Only recorded tags.** The controller records each tag that a mirror
+  copies in `status.owned`. Only those tags are candidates. Tags that were
+  on the target before the mirror recorded them (pushed before the upgrade,
+  or by hand) are not in `status.owned` and are never pruned. There is no
+  backfill. `status.owned` keeps up to 200 tags; the oldest are dropped from
+  the record, so they are never pruned.
+- **Tags only.** Prune deletes the tag, never the digest. The manifest
+  stays on the registry until garbage collection removes untagged
+  artifacts. Run it on Harbor with "Delete untagged artifacts" (Administration,
+  Clean Up, Garbage Collection). Other registries have their own rules.
+- **Harbor.** Set `registryFlavor: Harbor` on the `ClusterMirrorTarget`, as
+  for Untag. The robot account needs the "delete tag" permission on the
+  mirror projects, besides push and pull.
+- **Skipped runs.** A run prunes nothing when a copy failed or was blocked
+  by the gate, when the selection is empty, or when the listing failed. If
+  another mirror of the same target repository selects tags by pattern,
+  prune does nothing and the Synced message says so. Tags named in
+  `spec.tags.tags` are never pruned.
+- **Check.** `status.owned` lists the recorded tags. The Synced message
+  includes `pruned N`, and each deleted tag gets a Normal `TagPruned`
+  Event.
+
+Example and the full field list: [features.md, Prune](features.md#prune).
 
 ## Tenant limits
 

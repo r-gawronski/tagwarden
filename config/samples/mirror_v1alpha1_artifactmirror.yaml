@@ -19,6 +19,7 @@ spec:
     include:
       - ^\d+\.\d+$
     keepLatest: 3
+    prune: true   # <- delete tags this mirror created and no longer selects
   requiredPlatforms:
     - linux/amd64
     - linux/arm64
