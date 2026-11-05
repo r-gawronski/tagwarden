@@ -31,8 +31,15 @@ import (
 
 var errAny = errors.New("any error")
 
-// robotUser is a Harbor robot account name; "$" must survive basic auth.
-const robotUser = "robot$push"
+// robotUser and robotPass are test Harbor robot credentials; "$" must
+// survive basic auth.
+const (
+	robotUser = "robot$push"
+	robotPass = "s3cret"
+)
+
+// digest is the artifact the tests delete a tag from.
+var digest = "sha256:" + strings.Repeat("ab", 32)
 
 // harborServer starts a TLS server and returns a transport that sends every
 // request for example.com to it. ggcr picks http for loopback addresses, so
@@ -50,12 +57,11 @@ func harborServer(t *testing.T, h http.HandlerFunc) http.RoundTripper {
 }
 
 func TestHarborDeleteTag(t *testing.T) {
-	digest := "sha256:" + strings.Repeat("ab", 32)
 	repo, err := name.NewRepository("example.com/mirror/docker.io/library/nginx")
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth := authn.FromConfig(authn.AuthConfig{Username: robotUser, Password: "s3cret"})
+	auth := authn.FromConfig(authn.AuthConfig{Username: robotUser, Password: robotPass})
 	for _, tc := range []struct {
 		name   string
 		status int
@@ -90,7 +96,7 @@ func TestHarborDeleteTag(t *testing.T) {
 				t.Fatalf("err = %v, want a non-sentinel error", err)
 			}
 			if err != nil {
-				for _, s := range []string{"s3cret", "hunter2"} {
+				for _, s := range []string{robotPass, "hunter2"} {
 					if strings.Contains(err.Error(), s) {
 						t.Errorf("error %q leaks %q", err, s)
 					}
@@ -103,7 +109,7 @@ func TestHarborDeleteTag(t *testing.T) {
 			if method != http.MethodDelete || path != wantPath {
 				t.Errorf("request = %s %s, want DELETE %s", method, path, wantPath)
 			}
-			if user != robotUser || pass != "s3cret" {
+			if user != robotUser || pass != robotPass {
 				t.Errorf("basic auth = %q/%q", user, pass)
 			}
 		})
@@ -111,7 +117,6 @@ func TestHarborDeleteTag(t *testing.T) {
 }
 
 func TestHarborDeleteTagRejectsBadInput(t *testing.T) {
-	digest := "sha256:" + strings.Repeat("ab", 32)
 	for _, tc := range []struct {
 		name string
 		repo string
@@ -141,8 +146,7 @@ func TestHarborDeleteTagRejectsBadInput(t *testing.T) {
 // ggcr's Scheme() guesses http for private hosts. The delete must still use
 // TLS, or it sends the credentials in clear text.
 func TestHarborDeleteTagUsesHTTPSForPrivateHosts(t *testing.T) {
-	digest := "sha256:" + strings.Repeat("ab", 32)
-	auth := authn.FromConfig(authn.AuthConfig{Username: robotUser, Password: "s3cret"})
+	auth := authn.FromConfig(authn.AuthConfig{Username: robotUser, Password: robotPass})
 	for _, host := range []string{"10.20.0.5", "harbor.local", "localhost:8443"} {
 		t.Run(host, func(t *testing.T) {
 			repo, err := name.NewRepository(host + "/mirror/docker.io/library/nginx")
