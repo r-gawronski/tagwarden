@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -358,4 +359,118 @@ func testutilCount(ns string) int {
 		}
 	}
 	return n
+}
+
+const (
+	dig1 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	dig2 = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+)
+
+// A sync records its tags in status.owned, also with prune off; a re-scan
+// and an unreadable report leave the record alone.
+func TestRecordJobOwned(t *testing.T) {
+	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	m := &mirrorv1alpha1.ArtifactMirror{}
+	m.Status.Owned = []mirrorv1alpha1.SyncedTag{{Tag: "1", Digest: dig1}}
+	run := func(trigger string, code int32, rep *syncspec.Report) {
+		job := finishedJobAt("j", trigger, t0)
+		var ev pending
+		recordJob(m, job, finished(job), termination(t, code, rep), false, &ev)
+	}
+	run("", syncspec.ExitOK, &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{{Tag: "2", Digest: dig2, Copied: true}, {Tag: "skipped", Digest: dig2}}})
+	want := []mirrorv1alpha1.SyncedTag{{Tag: "2", Digest: dig2}, {Tag: "1", Digest: dig1}}
+	if !slices.Equal(m.Status.Owned, want) {
+		t.Fatalf("owned %v, want %v", m.Status.Owned, want)
+	}
+	run(TriggerRescan, syncspec.ExitOK, &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{{Tag: "3", Digest: dig1}}})
+	run("", syncspec.ExitSyncFailed, &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Failed: 1})
+	if !slices.Equal(m.Status.Owned, want) {
+		t.Errorf("owned %v, want %v", m.Status.Owned, want)
+	}
+}
+
+func TestRecordJobPruned(t *testing.T) {
+	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	owned := []mirrorv1alpha1.SyncedTag{{Tag: "1", Digest: dig1}, {Tag: "2", Digest: dig2}, {Tag: "3", Digest: dig1}}
+	mirror := func(prune bool) *mirrorv1alpha1.ArtifactMirror {
+		m := &mirrorv1alpha1.ArtifactMirror{}
+		m.Spec.Tags = mirrorv1alpha1.TagSelector{Prune: prune, Tags: []string{"named"}}
+		m.Status.Owned = slices.Clone(owned)
+		return m
+	}
+	st := func(tag, d string) syncspec.SyncedTag { return syncspec.SyncedTag{Tag: tag, Digest: d} }
+	run := func(m *mirrorv1alpha1.ArtifactMirror, trigger string, rep *syncspec.Report) pending {
+		job := finishedJobAt("j", trigger, t0)
+		var ev pending
+		recordJob(m, job, finished(job), termination(t, syncspec.ExitOK, rep), false, &ev)
+		return ev
+	}
+
+	t.Run("pruned and dropped tags leave the record", func(t *testing.T) {
+		m := mirror(true)
+		ev := run(m, "", &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{{Tag: "4", Digest: dig2, Copied: true}}, Pruned: []syncspec.SyncedTag{st("1", dig1)},
+			Dropped: []syncspec.SyncedTag{st("2", dig2), st("gone", dig1)}})
+		want := []mirrorv1alpha1.SyncedTag{{Tag: "4", Digest: dig2}, {Tag: "3", Digest: dig1}}
+		if !slices.Equal(m.Status.Owned, want) {
+			t.Errorf("owned %v, want %v", m.Status.Owned, want)
+		}
+		c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced)
+		if c.Status != metav1.ConditionTrue || !strings.Contains(c.Message, "pruned 1") {
+			t.Errorf("Synced %+v", c)
+		}
+		if len(ev) != 2 || ev[1].reason != reasonTagPruned || ev[1].typ != corev1.EventTypeNormal || !strings.Contains(ev[1].note, dig1) {
+			t.Errorf("events %+v", ev)
+		}
+	})
+	t.Run("no pruned tags, no counter", func(t *testing.T) {
+		m := mirror(true)
+		ev := run(m, "", &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}})
+		if c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced); strings.Contains(c.Message, "pruned") || len(ev) != 1 {
+			t.Errorf("Synced %+v, events %+v", c, ev)
+		}
+	})
+	t.Run("events are capped", func(t *testing.T) {
+		m := mirror(true)
+		pruned := make([]syncspec.SyncedTag, 0, maxGateEvents+5)
+		m.Status.Owned = nil
+		for i := range maxGateEvents + 5 {
+			s := st(fmt.Sprint("t", i), dig1)
+			pruned = append(pruned, s)
+			m.Status.Owned = append(m.Status.Owned, mirrorv1alpha1.SyncedTag{Tag: s.Tag, Digest: s.Digest})
+		}
+		if ev := run(m, "", &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Pruned: pruned}); len(ev) != 1+maxGateEvents {
+			t.Errorf("%d events", len(ev))
+		}
+	})
+
+	// A report that prunes what the controller did not offer is not trusted
+	// at all (threat model T12).
+	for name, tc := range map[string]struct {
+		m   *mirrorv1alpha1.ArtifactMirror
+		rep *syncspec.Report
+	}{
+		"tag not owned": {mirror(true), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Pruned: []syncspec.SyncedTag{st("other", dig1)}}},
+		"prune off":     {mirror(false), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Pruned: []syncspec.SyncedTag{st("1", dig1)}}},
+		"tag named in the spec": {func() *mirrorv1alpha1.ArtifactMirror {
+			m := mirror(true)
+			m.Status.Owned = append(m.Status.Owned, mirrorv1alpha1.SyncedTag{Tag: "named", Digest: dig1})
+			return m
+		}(), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Pruned: []syncspec.SyncedTag{st("named", dig1)}}},
+		"digest differs from the record": {mirror(true), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Pruned: []syncspec.SyncedTag{st("1", dig2)}}},
+		"tag also synced":                {mirror(true), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{st("1", dig1)}, Pruned: []syncspec.SyncedTag{st("1", dig1)}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := slices.Clone(tc.m.Status.Owned)
+			ev := run(tc.m, "", tc.rep)
+			c := meta.FindStatusCondition(tc.m.Status.Conditions, ConditionSynced)
+			if c.Reason != ReasonCrashed || c.Status != metav1.ConditionFalse || !slices.Equal(tc.m.Status.Owned, before) || tc.m.Status.Synced != nil {
+				t.Errorf("Synced %+v, owned %v", c, tc.m.Status.Owned)
+			}
+			for _, e := range ev {
+				if e.reason == reasonTagPruned {
+					t.Errorf("event %+v", e)
+				}
+			}
+		})
+	}
 }

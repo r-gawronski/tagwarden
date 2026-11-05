@@ -300,6 +300,13 @@ type Spec struct {
 	// GCP is required when a registry uses AuthGCPWorkloadIdentity.
 	GCP *GCP `json:"gcp,omitempty"`
 
+	// Prunable lists the tags the Job may delete from the target when the
+	// selection no longer includes them, each with the digest the mirror
+	// recorded. The controller sets it only with tags.prune on. Prune only
+	// takes tags in this list and only while they still point at the
+	// recorded digest.
+	Prunable []SyncedTag `json:"prunable,omitempty"`
+
 	// Gate is set for a gated generated mirror only. Without it the Job
 	// runs exactly as an ungated one.
 	Gate *Gate `json:"gate,omitempty"`
@@ -366,6 +373,14 @@ func (s *Spec) validate() error {
 	}
 	if len(s.AllowedSources) == 0 || slices.Contains(s.AllowedSources, "") {
 		return errors.New("allowedSources: at least one non-empty host is required")
+	}
+	if len(s.Prunable) > MaxPrunable {
+		return fmt.Errorf("prunable: more than %d entries", MaxPrunable)
+	}
+	for _, p := range s.Prunable {
+		if !tagPattern.MatchString(p.Tag) || !digestPattern.MatchString(p.Digest) {
+			return errors.New("prunable: invalid entry")
+		}
 	}
 	if err := s.validateAuth(); err != nil {
 		return err
@@ -495,6 +510,10 @@ const (
 type SyncedTag struct {
 	Tag    string `json:"tag"`
 	Digest string `json:"digest"`
+	// Copied is set in Report.Synced for a tag this run copied or
+	// overwrote. A skipped tag was already on the target, so the mirror
+	// cannot show it put the tag there and does not own it.
+	Copied bool `json:"copied,omitempty"`
 }
 
 // Report is the termination message of a sync Job.
@@ -541,10 +560,21 @@ type Report struct {
 	// RescanAction.
 	Rescan bool `json:"rescan,omitempty"`
 
+	// Pruned lists the Spec.Prunable tags the Job deleted from the target.
+	// Dropped lists the ones it found gone or moved and left alone; the
+	// controller stops tracking them. PrunedTruncated means the lists were
+	// cut to fit the message: the cut tags are checked again next run.
+	Pruned          []SyncedTag `json:"pruned,omitempty"`
+	Dropped         []SyncedTag `json:"dropped,omitempty"`
+	PrunedTruncated bool        `json:"prunedTruncated,omitempty"`
+
 	// Selection says what the tag selection did. Nil in a re-scan and from
 	// Jobs that predate it; the controller then judges nothing from it.
 	Selection *Selection `json:"selection,omitempty"`
 }
+
+// MaxPrunable caps Spec.Prunable, as status.owned.
+const MaxPrunable = 200
 
 // MaxMissingTags caps Selection.MissingTags.
 const MaxMissingTags = 5
@@ -618,26 +648,11 @@ func ParseReport(msg string) (Report, error) {
 			return Report{}, errors.New("report: invalid synced entry")
 		}
 	}
-	if sel := r.Selection; sel != nil {
-		if min(sel.Listed, sel.Filtered, sel.NotSemver, sel.Prerelease, sel.OutOfRange, sel.Trimmed, sel.Selected, sel.Missing) < 0 {
-			return Report{}, errors.New("report: negative count")
-		}
-		if len(sel.MissingTags) > MaxMissingTags {
-			return Report{}, errors.New("report: invalid selection")
-		}
-		for _, t := range sel.MissingTags {
-			if !tagPattern.MatchString(t) {
-				return Report{}, errors.New("report: invalid selection")
-			}
-		}
+	if err := validateSelection(r.Selection); err != nil {
+		return Report{}, err
 	}
-	for _, s := range r.Judged {
-		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
-			return Report{}, errors.New("report: invalid judged entry")
-		}
-	}
-	if r.JudgedFingerprint != "" && !fingerprintPattern.MatchString(r.JudgedFingerprint) {
-		return Report{}, errors.New("report: invalid judged fingerprint")
+	if err := validatePruneFields(r); err != nil {
+		return Report{}, err
 	}
 	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || r.JudgedFingerprint != "" || r.Rescan) {
 		return Report{}, errors.New("report: gate fields in version 1")
@@ -653,6 +668,45 @@ func ParseReport(msg string) (Report, error) {
 		}
 	}
 	return r, nil
+}
+
+func validateSelection(sel *Selection) error {
+	if sel == nil {
+		return nil
+	}
+	if min(sel.Listed, sel.Filtered, sel.NotSemver, sel.Prerelease, sel.OutOfRange, sel.Trimmed, sel.Selected, sel.Missing) < 0 {
+		return errors.New("report: negative count")
+	}
+	if len(sel.MissingTags) > MaxMissingTags {
+		return errors.New("report: invalid selection")
+	}
+	for _, t := range sel.MissingTags {
+		if !tagPattern.MatchString(t) {
+			return errors.New("report: invalid selection")
+		}
+	}
+
+	return nil
+}
+
+func validatePruneFields(r Report) error {
+	if len(r.Pruned) > MaxPrunable || len(r.Dropped) > MaxPrunable || r.Rescan && len(r.Pruned)+len(r.Dropped) > 0 {
+		return errors.New("report: invalid pruned entries")
+	}
+	for _, s := range slices.Concat(r.Pruned, r.Dropped) {
+		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
+			return errors.New("report: invalid pruned entry")
+		}
+	}
+	for _, s := range r.Judged {
+		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
+			return errors.New("report: invalid judged entry")
+		}
+	}
+	if r.JudgedFingerprint != "" && !fingerprintPattern.MatchString(r.JudgedFingerprint) {
+		return errors.New("report: invalid judged fingerprint")
+	}
+	return nil
 }
 
 var clusterServiceName = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc)(\.cluster\.local)?$`)

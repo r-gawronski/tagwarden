@@ -118,6 +118,9 @@ func recordJob(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batchv1
 		eventType = corev1.EventTypeNormal
 	}
 	ev.add(eventType, cond.Reason, action, cond.Message)
+	if rep != nil && !rescan {
+		prunedEvents(ev, rep.Pruned)
+	}
 	if rep != nil && !rescan && rep.Selection != nil {
 		sel := rep.Selection
 		selectedTags.WithLabelValues(m.Namespace, m.Name).Set(float64(sel.Selected))
@@ -184,7 +187,9 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 	var rep syncspec.Report
 	repErr := fmt.Errorf("no sync container result: %s", done.Reason)
 	if term != nil {
-		rep, repErr = syncspec.ParseReport(term.Message)
+		if rep, repErr = syncspec.ParseReport(term.Message); repErr == nil {
+			repErr = checkPruned(m, rep)
+		}
 	}
 	switch {
 	case term == nil || term.ExitCode == exitCrashed || repErr != nil:
@@ -219,30 +224,44 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 	default:
 		cond.Reason = ReasonSyncFailed
 	}
-	if repErr == nil {
-		synced := rep.Synced
-		if len(synced) > maxSynced {
-			synced, rep.Truncated = synced[:maxSynced], true
-		}
-		m.Status.Synced = make([]mirrorv1alpha1.SyncedTag, 0, len(synced))
-		for _, s := range synced {
-			m.Status.Synced = append(m.Status.Synced, mirrorv1alpha1.SyncedTag{Tag: s.Tag, Digest: s.Digest})
-		}
-		if rep.Truncated && cond.Status == metav1.ConditionTrue {
-			cond.Reason = ReasonTruncated
-		}
-		if rescan && cond.Status != metav1.ConditionTrue {
-			cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + "rescan failed: " + summary(rep)
-			return cond, &rep
-		}
-		msg := summary(rep)
-		if sel := rep.Selection; !rescan && sel != nil && (sel.Selected == 0 || sel.Missing > 0) {
-			msg = selectionNote(sel) + "; " + msg
-		}
-		cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + msg
+	if repErr != nil {
+		return cond, nil
+	}
+	return applyReport(m, cond, rep, rescan)
+}
+
+// applyReport records the synced and owned tags of a parsed report on the
+// mirror and completes the condition message.
+func applyReport(m *mirrorv1alpha1.ArtifactMirror, cond metav1.Condition, rep syncspec.Report, rescan bool) (metav1.Condition, *syncspec.Report) {
+	synced := rep.Synced
+	if len(synced) > maxSynced {
+		synced, rep.Truncated = synced[:maxSynced], true
+		rep.Synced = synced
+	}
+	m.Status.Synced = make([]mirrorv1alpha1.SyncedTag, 0, len(synced))
+	for _, s := range synced {
+		m.Status.Synced = append(m.Status.Synced, mirrorv1alpha1.SyncedTag{Tag: s.Tag, Digest: s.Digest})
+	}
+	if rep.Truncated && cond.Status == metav1.ConditionTrue {
+		cond.Reason = ReasonTruncated
+	}
+	var ownedCut bool
+	if !rescan {
+		m.Status.Owned, ownedCut = mergeOwned(m.Status.Owned, rep)
+	}
+	if rescan && cond.Status != metav1.ConditionTrue {
+		cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + "rescan failed: " + summary(rep)
 		return cond, &rep
 	}
-	return cond, nil
+	msg := summary(rep)
+	if sel := rep.Selection; !rescan && sel != nil && (sel.Selected == 0 || sel.Missing > 0) {
+		msg = selectionNote(sel) + "; " + msg
+	}
+	if ownedCut {
+		msg += fmt.Sprintf("; owned list truncated to %d tags, the oldest are never pruned", maxOwned)
+	}
+	cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + msg
+	return cond, &rep
 }
 
 // finished returns the Complete or Failed condition of a finished Job.
@@ -283,6 +302,9 @@ func (r *ArtifactMirrorReconciler) termination(ctx context.Context, job *batchv1
 // trusted.
 func summary(r syncspec.Report) string {
 	s := fmt.Sprintf("copied %d, skipped %d, mutated %d, failed %d", r.Copied, r.Skipped, r.Mutated, r.Failed)
+	if len(r.Pruned) > 0 {
+		s += fmt.Sprintf(", pruned %d", len(r.Pruned))
+	}
 	if r.Truncated {
 		s += fmt.Sprintf("; synced list truncated to %d tags", min(len(r.Synced), maxSynced))
 	}

@@ -479,7 +479,7 @@ var _ = Describe("API validation", func() {
 		}),
 		Entry("GCP push to a non-GAR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			useGCP(o)
-			o.Spec.Registry = "other.example.internal"
+			o.Spec.Registry = otherRegistry
 		}),
 		Entry("GCP push to an ECR registry", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			useGCP(o)

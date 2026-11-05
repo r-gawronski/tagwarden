@@ -79,6 +79,10 @@ type Request struct {
 	// that, such as Harbor; it returns registry.ErrTagNotFound when the
 	// registry answers that the tag is not there.
 	DeleteTag func(ctx context.Context, tag, digest string) error
+	// Prunable lists the target tags Run may delete once the selection no
+	// longer includes them, with the digest each must still have. Empty
+	// prunes nothing; Rescan ignores it.
+	Prunable []Artifact
 }
 
 // Artifact is one tag and the digest it resolved to. For a mutated tag
@@ -105,7 +109,7 @@ type Artifact struct {
 // Result lists what happened to each selected tag. Overwritten mutated tags
 // are in both Mutated and Copied. An up-to-date tag is reported Failed when
 // its referrers cannot be listed or copied; the image itself is untouched. A tag deleted upstream is not selected, so
-// its target tag stays untouched; prune and reporting come in phase 4.
+// its target tag stays untouched unless it is in Request.Prunable.
 type Result struct {
 	// Selected lists the selected tags in the order tags.Select returns
 	// them, newest version first.
@@ -117,7 +121,12 @@ type Result struct {
 	Blocked []Artifact
 	// Untagged lists the tags a re-scan deleted from the target.
 	Untagged []Artifact
-	Errors   []string
+	// Pruned lists the Prunable tags Run deleted from the target.
+	Pruned []Artifact
+	// Dropped lists the Prunable tags Run found gone from the target or
+	// pointing at another digest, and left alone.
+	Dropped []Artifact
+	Errors  []string
 	// Gate is the scanner check of a gated run, syncspec.GateOK or a scan
 	// error reason; empty when nothing was scanned.
 	Gate string
@@ -131,6 +140,9 @@ type syncer struct {
 	src, dst  *remote.Puller
 	pusher    *remote.Pusher
 	gate      *gateState
+	// listed is the source tag listing of the run; nil when the policy
+	// lists only explicit tags.
+	listed []string
 }
 
 // Run lists the source tags, selects them with r.Policy and copies each one
@@ -174,6 +186,7 @@ func Run(ctx context.Context, r Request) (Result, error) {
 			_ = s.gate.root.Close()
 		}
 	}
+	s.prune(ctx, &res, mutated)
 	var errs []error
 	if err := blockedError(&res, res.Blocked); err != nil {
 		errs = append(errs, err)
@@ -253,6 +266,7 @@ func (s *syncer) selectTags(ctx context.Context) ([]string, tags.Stats, error) {
 		if err != nil {
 			return nil, tags.Stats{}, err
 		}
+		s.listed = all
 		return tags.Explain(all, p)
 	}
 	selected, st, err := tags.Explain(p.Tags, p)

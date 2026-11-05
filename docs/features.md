@@ -25,6 +25,7 @@ feature; the other lines are the minimum the object needs.
 | [Image mirror](#image-mirror) | team | on | `ArtifactMirror` |
 | [Helm OCI chart mirror](#helm-oci-chart-mirror) | team | off | ArtifactMirror `spec.type: HelmOCI` |
 | [Tag selection](#tag-selection) | team | required | ArtifactMirror `spec.tags` |
+| [Prune](#prune) | team | off | ArtifactMirror `spec.tags.prune` |
 | [Prereleases](#prereleases) | team | off | ArtifactMirror `spec.tags.allowPrerelease` |
 | [Required platforms](#required-platforms) | team | off | ArtifactMirror `spec.requiredPlatforms` |
 | [Suspend](#suspend) | team | off | ArtifactMirror `spec.suspend` |
@@ -130,6 +131,42 @@ Check: an empty selection sets `Synced=False` with reason
 tag gives a `TagNotFound` Event. Alert on
 `tagwarden_mirror_selected_tags == 0`. More:
 [README, When nothing is selected](../README.md#when-nothing-is-selected).
+
+### Prune
+
+Owner: team. Off: set `spec.tags.prune: true` on an `ArtifactMirror`.
+Prune deletes the tags the mirror created and no longer selects.
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: ingress-nginx, namespace: team-net}
+spec:
+  targetRef: registry
+  schedule: "@daily"
+  source: {registry: registry.k8s.io, repository: ingress-nginx/controller}
+  target: {project: mirror}
+  tags:
+    semverRange: ">=1.11.0"
+    keepLatest: 3
+    prune: true                     # <- delete tags this mirror created and no longer selects
+```
+
+Only tags recorded in `status.owned` are candidates: the tags a sync
+copied or overwrote. Tags pushed before the mirror recorded them, or by
+hand, are never pruned, also when the sync skipped them. Prune deletes the
+tag, not the digest: free the disk with registry garbage collection of
+untagged artifacts. A prune is skipped for the whole run when a copy
+failed or was blocked, when the selection is empty, or when another mirror
+of the same target repository selects tags by pattern; the Synced message
+then says `prune skipped: another mirror of the same target repository
+selects tags by pattern`. Tags named in `spec.tags.tags` are never pruned.
+
+Check: `kubectl -n team-net get artifactmirror ingress-nginx -o jsonpath='{.status.owned}'`
+lists the recorded tags. The Synced message includes `pruned N` after a
+run that deleted N tags, and each deleted tag gets a Normal `TagPruned`
+Event. More: [install, Prune](install.md#prune-tags-a-mirror-no-longer-selects),
+[design](design/prune.md).
 
 ### Prereleases
 

@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -36,6 +38,14 @@ import (
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
+)
+
+const (
+	mixedCaseRegistry = "Registry.Example.Internal:8443"
+	selfUID           = "self"
+	otherRegistry     = "other.example.internal"
+	tag30             = "3.0"
+	tag31             = "3.1"
 )
 
 func TestNextRescan(t *testing.T) {
@@ -66,8 +76,8 @@ func TestUntaggable(t *testing.T) {
 	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Action: mirrorv1alpha1.GateActionBlock,
 		OnVulnerableTag: mirrorv1alpha1.OnVulnerableTagUntag})
 	// Same registry as validTarget's, in another spelling.
-	tg.Spec.Registry = "Registry.Example.Internal:8443"
-	m.UID = "self"
+	tg.Spec.Registry = mixedCaseRegistry
+	m.UID = selfUID
 	m.Spec.Tags.Tags = []string{v310, tag39, "4.0"}
 	// "old" is no longer selected; 4.0 was never recorded.
 	m.Status.Synced = []mirrorv1alpha1.SyncedTag{{Tag: v310}, {Tag: tag39}, {Tag: "old"}}
@@ -78,7 +88,7 @@ func TestUntaggable(t *testing.T) {
 	}
 	other := validTarget("same-registry")
 	elsewhere := validTarget("elsewhere")
-	elsewhere.Spec.Registry = "other.example.internal"
+	elsewhere.Spec.Registry = otherRegistry
 	deleting := peer("deleting", tg.Name, mirrorv1alpha1.TagSelector{Tags: []string{v310}})
 	deleting.DeletionTimestamp, deleting.Finalizers = &metav1.Time{Time: time.Now()}, []string{Finalizer}
 	deletingOther := peer("deleting-other", "same-registry", mirrorv1alpha1.TagSelector{Tags: []string{tag39}})
@@ -366,3 +376,134 @@ var _ = Describe("re-scan", Ordered, func() {
 		Expect(status().LastRescan).To(BeNil())
 	})
 })
+
+func TestHeldTags(t *testing.T) {
+	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Action: mirrorv1alpha1.GateActionBlock})
+	tg.Spec.Registry = mixedCaseRegistry
+	m.UID = selfUID
+	m.Spec.Tags = mirrorv1alpha1.TagSelector{Include: []string{"^3"}}
+	peer := func(ns, target string, sel mirrorv1alpha1.TagSelector) *mirrorv1alpha1.ArtifactMirror {
+		o := m.DeepCopy()
+		o.Namespace, o.UID, o.Spec.TargetRef, o.Spec.Tags, o.Status = ns, types.UID(ns), target, sel, mirrorv1alpha1.ArtifactMirrorStatus{}
+		return o
+	}
+	same := validTarget("same-registry")
+	elsewhere := validTarget("elsewhere")
+	elsewhere.Spec.Registry = otherRegistry
+	gone := peer("gone", tg.Name, mirrorv1alpha1.TagSelector{Tags: []string{"gone"}})
+	gone.DeletionTimestamp, gone.Finalizers = &metav1.Time{Time: time.Now()}, []string{Finalizer}
+	explicit := func(tags ...string) mirrorv1alpha1.TagSelector { return mirrorv1alpha1.TagSelector{Tags: tags} }
+
+	for _, tc := range []struct {
+		name  string
+		peers []client.Object
+		held  []string
+		all   bool
+	}{
+		{name: "alone"},
+		{name: "explicit tags of a peer on the target", peers: []client.Object{peer(teamB, tg.Name, explicit("a", "b"))}, held: []string{"a", "b"}},
+		{name: "peer through another target on the same registry", peers: []client.Object{peer(teamB, same.Name, explicit("a"))}, held: []string{"a"}},
+		{name: "peer on another registry holds nothing", peers: []client.Object{peer(teamB, elsewhere.Name, explicit("a"))}},
+		{name: "deleted peer holds nothing", peers: []client.Object{gone}},
+		{name: "peer with include holds all", peers: []client.Object{peer(teamB, tg.Name, mirrorv1alpha1.TagSelector{Include: []string{"^3"}})}, all: true},
+		{name: "peer with semverRange holds all", peers: []client.Object{peer(teamB, tg.Name, mirrorv1alpha1.TagSelector{SemverRange: ">=1.0.0"})}, all: true},
+		{name: "peer with keepLatest holds all", peers: []client.Object{peer(teamB, tg.Name, mirrorv1alpha1.TagSelector{KeepLatest: new(int32(2))})}, all: true},
+		{name: "a peer with patterns beats explicit peers", peers: []client.Object{peer(teamB, tg.Name, explicit("a")),
+			peer("ns-c", tg.Name, mirrorv1alpha1.TagSelector{Include: []string{"x"}})}, all: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(goldenScheme(t)).
+				WithIndex(&mirrorv1alpha1.ArtifactMirror{}, indexTargetKey, func(o client.Object) []string {
+					return []string{targetKey(o.(*mirrorv1alpha1.ArtifactMirror))}
+				}).
+				WithObjects(append([]client.Object{tg, same, elsewhere, m.DeepCopy()}, tc.peers...)...).Build()
+			held, all, err := (&ArtifactMirrorReconciler{Client: c}).heldTags(context.Background(), tg, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if all != tc.all {
+				t.Errorf("all %v, want %v", all, tc.all)
+			}
+			if !tc.all && len(held) != len(tc.held) {
+				t.Errorf("held %v, want %v", held, tc.held)
+			}
+			for _, h := range tc.held {
+				if !held[h] {
+					t.Errorf("held %v lacks %s", held, h)
+				}
+			}
+		})
+	}
+}
+
+func TestPrunable(t *testing.T) {
+	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Action: mirrorv1alpha1.GateActionBlock})
+	m.UID = selfUID
+	m.Spec.Tags = mirrorv1alpha1.TagSelector{Include: []string{"^3"}, Prune: true}
+	m.Status.Owned = []mirrorv1alpha1.SyncedTag{{Tag: "3.2", Digest: dig1}, {Tag: tag31, Digest: dig2}, {Tag: tag30, Digest: dig1}}
+	peer := m.DeepCopy()
+	peer.Namespace, peer.UID, peer.Status = teamB, "peer", mirrorv1alpha1.ArtifactMirrorStatus{}
+	peer.Spec.Tags = mirrorv1alpha1.TagSelector{Tags: []string{"3.1"}}
+
+	prunable := func(m *mirrorv1alpha1.ArtifactMirror, objs ...client.Object) ([]syncspec.SyncedTag, bool) {
+		t.Helper()
+		c := fake.NewClientBuilder().WithScheme(goldenScheme(t)).
+			WithIndex(&mirrorv1alpha1.ArtifactMirror{}, indexTargetKey, func(o client.Object) []string {
+				return []string{targetKey(o.(*mirrorv1alpha1.ArtifactMirror))}
+			}).WithObjects(append([]client.Object{tg, m.DeepCopy()}, objs...)...).Build()
+		got, held, err := (&ArtifactMirrorReconciler{Client: c}).prunable(context.Background(), tg, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got, held
+	}
+	all := []syncspec.SyncedTag{{Tag: "3.2", Digest: dig1}, {Tag: tag31, Digest: dig2}, {Tag: tag30, Digest: dig1}}
+	if got, held := prunable(m); !slices.Equal(got, all) || held {
+		t.Errorf("owned: %v %v", got, held)
+	}
+	if got, _ := prunable(m, peer); !slices.Equal(got, []syncspec.SyncedTag{all[0], all[2]}) {
+		t.Errorf("peer holds 3.1: %v", got)
+	}
+	patterns := peer.DeepCopy()
+	patterns.Spec.Tags = mirrorv1alpha1.TagSelector{KeepLatest: new(int32(3))}
+	if got, held := prunable(m, patterns); got != nil || !held {
+		t.Errorf("pattern peer: %v %v", got, held)
+	}
+	// Tags named in spec.tags.tags are never pruned.
+	named := m.DeepCopy()
+	named.Spec.Tags.Tags = []string{tag30}
+	if got, _ := prunable(named); !slices.Equal(got, all[:2]) {
+		t.Errorf("named tag: %v", got)
+	}
+	off := m.DeepCopy()
+	off.Spec.Tags.Prune = false
+	susp := m.DeepCopy()
+	susp.Spec.Suspend = true
+	for name, m := range map[string]*mirrorv1alpha1.ArtifactMirror{"prune off": off, "suspended": susp} {
+		if got, held := prunable(m, patterns); got != nil || held {
+			t.Errorf("%s: %v %v", name, got, held)
+		}
+	}
+
+	// The spec carries the list, and the Job accepts it; without prune it is absent.
+	s := syncSpec(tg, m, nil)
+	s.Prunable = all
+	b, _ := json.Marshal(s)
+	if d, err := syncspec.Decode(bytes.NewReader(b)); err != nil || len(d.Prunable) != 3 {
+		t.Errorf("decode: %v %v", err, d.Prunable)
+	}
+	if b, _ := json.Marshal(syncSpec(tg, m, nil)); strings.Contains(string(b), "prunable") {
+		t.Errorf("spec without candidates: %s", b)
+	}
+}
+
+func TestNotePruneHeld(t *testing.T) {
+	m := &mirrorv1alpha1.ArtifactMirror{}
+	notePruneHeld(m)
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{Type: ConditionSynced, Status: metav1.ConditionTrue, Reason: ReasonSynced, Message: "copied 1"})
+	notePruneHeld(m)
+	notePruneHeld(m)
+	if c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced); c.Message != "copied 1; "+pruneHeldNote {
+		t.Errorf("message %q", c.Message)
+	}
+}

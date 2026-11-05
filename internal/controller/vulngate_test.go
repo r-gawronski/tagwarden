@@ -513,7 +513,7 @@ var _ = Describe("gated sync CronJob", func() {
 func TestRegistryKey(t *testing.T) {
 	for _, tc := range []struct{ a, b mirrorv1alpha1.RegistryHost }{
 		{"reg.example.internal", "REG.example.internal:443"},
-		{"registry.example.internal:8443", "Registry.Example.Internal:8443"},
+		{"registry.example.internal:8443", mixedCaseRegistry},
 		{"[::1]", "[::1]:443"},
 	} {
 		if registryKey(tc.a) != registryKey(tc.b) {

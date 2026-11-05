@@ -29,6 +29,8 @@ import (
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
+const caseBadTag = "bad tag"
+
 const (
 	scannerVersion = "0.76.1"
 	nextMinor      = "0.77.0"
@@ -197,6 +199,36 @@ func TestDecodeTargetFlavor(t *testing.T) {
 	}
 }
 
+func TestDecodePrunable(t *testing.T) {
+	const dg = `"sha256:` + "1111111111111111111111111111111111111111111111111111111111111111" + `"`
+	entry := func(tag, digest string) string { return `{"tag": "` + tag + `", "digest": ` + digest + `}` }
+	many := make([]string, MaxPrunable+1)
+	for i := range many {
+		many[i] = entry("v1", dg)
+	}
+	cases := map[string]struct{ list, wantErr string }{
+		"valid":      {`[` + entry("v1.0", dg) + `, ` + entry("v0.9", dg) + `]`, ""},
+		"empty":      {`[]`, ""},
+		caseBadTag:   {`[` + entry("-bad", dg) + `]`, "prunable: invalid entry"},
+		"bad digest": {`[` + entry("v1", `"latest"`) + `]`, "prunable: invalid entry"},
+		"too many":   {`[` + strings.Join(many, ",") + `]`, "prunable: more than"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, err := Decode(strings.NewReader(strings.Replace(valid, maxTags, maxTags+` "prunable": `+tc.list+`,`, 1)))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v, %+v, want %q", err, s.Prunable, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestAllowedSource(t *testing.T) {
 	cases := []struct {
 		host    string
@@ -232,12 +264,36 @@ func TestParseReport(t *testing.T) {
 		"no version":   `{"copied":1}`,
 		"new version":  `{"v":3}`,
 		"negative":     `{"v":1,"failed":-1}`,
-		"bad tag":      `{"v":1,"synced":[{"tag":"../x","digest":"` + digest + `"}]}`,
+		caseBadTag:     `{"v":1,"synced":[{"tag":"../x","digest":"` + digest + `"}]}`,
 		"bad digest":   `{"v":1,"synced":[{"tag":"v1","digest":"sha256:abc"}]}`,
 		"wrong type":   `{"v":1,"synced":"v1"}`,
 		"trailing obj": `{"v":1}{"v":1}`,
 	}
 	for name, msg := range bad {
+		if _, err := ParseReport(msg); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}
+
+func TestParseReportPruned(t *testing.T) {
+	d := "sha256:" + strings.Repeat("a", 64)
+	entry := `{"tag":"v1","digest":"` + d + `"}`
+	r, err := ParseReport(`{"v":1,"synced":[],"pruned":[` + entry + `],"dropped":[` + entry + `],"prunedTruncated":true}`)
+	if err != nil || len(r.Pruned) != 1 || len(r.Dropped) != 1 || !r.PrunedTruncated {
+		t.Fatalf("report %+v, err %v", r, err)
+	}
+	many := strings.TrimSuffix(strings.Repeat(entry+",", MaxPrunable+1), ",")
+	for name, msg := range map[string]string{
+		"bad pruned tag":      `{"v":1,"pruned":[{"tag":"../x","digest":"` + d + `"}]}`,
+		"bad pruned digest":   `{"v":1,"pruned":[{"tag":"v1","digest":"latest"}]}`,
+		"bad dropped tag":     `{"v":1,"dropped":[{"tag":"-x","digest":"` + d + `"}]}`,
+		"bad dropped digest":  `{"v":1,"dropped":[{"tag":"v1","digest":"sha256:abc"}]}`,
+		"too many pruned":     `{"v":1,"pruned":[` + many + `]}`,
+		"too many dropped":    `{"v":1,"dropped":[` + many + `]}`,
+		"pruned in a rescan":  `{"v":2,"rescan":true,"pruned":[` + entry + `]}`,
+		"dropped in a rescan": `{"v":2,"rescan":true,"dropped":[` + entry + `]}`,
+	} {
 		if _, err := ParseReport(msg); err == nil {
 			t.Errorf("%s: want error", name)
 		}
@@ -274,7 +330,7 @@ func TestParseReportV2(t *testing.T) {
 		"error w/o reason":  strings.Replace(entry(""), `"Findings"`, `"ScanError"`, 1),
 		"unknown reason":    entry(`,"scanError":"Oops"`),
 		"bad db time":       entry(`,"dbUpdatedAt":"yesterday"`),
-		"bad tag":           strings.Replace(entry(""), `"tag":"v1"`, `"tag":"../x"`, 1),
+		caseBadTag:          strings.Replace(entry(""), `"tag":"v1"`, `"tag":"../x"`, 1),
 		"no scannedAt":      strings.Replace(entry(""), `,"scannedAt":"2026-11-03T10:00:00Z"`, "", 1),
 		"zero scannedAt":    strings.Replace(entry(""), "2026-11-03T10:00:00Z", "0001-01-01T00:00:00Z", 1),
 		"future scannedAt":  strings.Replace(entry(""), "2026-11-03T10:00:00Z", time.Now().Add(time.Hour).UTC().Format(time.RFC3339), 1),

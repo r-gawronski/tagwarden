@@ -98,15 +98,32 @@ func (r *ArtifactMirrorReconciler) gate(ctx context.Context, t *mirrorv1alpha1.C
 
 // untaggable returns the tags a re-scan of m may delete under Untag, by
 // the prune rules of threat model T13: only tags m selects and recorded
-// on the target (status.synced), and none that another mirror of the same
-// target repository selects, through any target on the same registry. A
-// mirror with tag patterns may select any tag, so it holds them all. With
-// Untag the action is Block, so the project is reserved for generated
-// mirrors, which select explicit tags only.
+// on the target (status.synced), and none that another mirror holds
+// (heldTags). With Untag the action is Block, so the project is reserved
+// for generated mirrors, which select explicit tags only.
 func (r *ArtifactMirrorReconciler) untaggable(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) ([]string, error) {
+	held, all, err := r.heldTags(ctx, t, m)
+	if err != nil || all {
+		return nil, err
+	}
+	var out []string
+	for _, s := range m.Status.Synced {
+		if !held[s.Tag] && slices.Contains(m.Spec.Tags.Tags, s.Tag) {
+			out = append(out, s.Tag)
+		}
+	}
+	return out, nil
+}
+
+// heldTags returns the tags that another mirror of the same target
+// repository selects, through any target on the same registry, and so
+// must not be deleted for m (threat model T13, T17). Mirrors being deleted
+// hold nothing. A mirror with tag patterns may select any tag, so it holds
+// them all: all is then true and held is not complete.
+func (r *ArtifactMirrorReconciler) heldTags(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (held map[string]bool, all bool, err error) {
 	var targets mirrorv1alpha1.ClusterMirrorTargetList
 	if err := r.List(ctx, &targets); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var others []mirrorv1alpha1.ArtifactMirror
 	for _, o := range targets.Items {
@@ -116,29 +133,23 @@ func (r *ArtifactMirrorReconciler) untaggable(ctx context.Context, t *mirrorv1al
 		var list mirrorv1alpha1.ArtifactMirrorList
 		key := o.Name + "/" + string(m.Spec.Target.Project) + "/" + targetPath(m)
 		if err := r.List(ctx, &list, client.MatchingFields{indexTargetKey: key}); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		others = append(others, list.Items...)
 	}
-	held := map[string]bool{}
+	held = map[string]bool{}
 	for _, o := range others {
 		if o.UID == m.UID || !o.DeletionTimestamp.IsZero() {
 			continue
 		}
 		if p := tagPolicy(o.Spec.Tags); len(p.Include) > 0 || p.SemverRange != "" || p.KeepLatest > 0 {
-			return nil, nil
+			return nil, true, nil
 		}
 		for _, t := range o.Spec.Tags.Tags {
 			held[t] = true
 		}
 	}
-	var out []string
-	for _, s := range m.Status.Synced {
-		if !held[s.Tag] && slices.Contains(m.Spec.Tags.Tags, s.Tag) {
-			out = append(out, s.Tag)
-		}
-	}
-	return out, nil
+	return held, false, nil
 }
 
 // activeExceptions returns the exceptions that apply to m at now, sorted by
