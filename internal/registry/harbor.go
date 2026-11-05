@@ -29,8 +29,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 )
 
-// ErrTagNotFound means Harbor has no such tag on that digest: the tag is gone
-// or now points at another artifact.
+// ErrTagNotFound means Harbor answered 404: the tag, artifact, repository
+// or project was not found.
 var ErrTagNotFound = errors.New("harbor: tag not found on digest")
 
 // HarborDeleteTag returns a function that removes one tag from one digest
@@ -49,7 +49,7 @@ func HarborDeleteTag(rt http.RoundTripper, auth authn.Authenticator, repo name.R
 		if path == "" {
 			return fmt.Errorf("harbor: repository %q has no path after the project", repo.RepositoryStr())
 		}
-		cfg, err := auth.Authorization()
+		cfg, err := authn.Authorization(ctx, auth)
 		if err != nil {
 			return errors.New("harbor: delete tag: cannot read credentials")
 		}

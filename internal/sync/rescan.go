@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/registry"
 	"github.com/r-gawronski/tagwarden/internal/tags"
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
@@ -106,7 +107,8 @@ func (s *syncer) rescanTag(ctx context.Context, tag string, res *Result) error {
 // untag applies onVulnerableTag to a tag with findings. It deletes the
 // tag only under Untag, only when Untaggable lists it, and only while the
 // tag still points at the scanned digest. A refused delete keeps the tag,
-// as under Report, and is listed in res.Errors.
+// as under Report, and is listed in res.Errors. A delete that finds no
+// tag is refused.
 func (s *syncer) untag(ctx context.Context, a Artifact, res *Result) v1alpha1.VulnerableTagAction {
 	g := s.gate
 	switch {
@@ -120,7 +122,9 @@ func (s *syncer) untag(ctx context.Context, a Artifact, res *Result) v1alpha1.Vu
 	if d, err := resolve(ctx, s.dst, ref); err != nil || d.Digest.String() != a.Digest {
 		return v1alpha1.VulnerableUntagRefused
 	}
-	if err := s.pusher.Delete(ctx, ref); err != nil {
+	if err := s.deleteTag(ctx, a.Tag, a.Digest); errors.Is(err, registry.ErrTagNotFound) {
+		return v1alpha1.VulnerableUntagRefused
+	} else if err != nil {
 		res.Errors = append(res.Errors, a.Tag+": untag failed, kept: "+short(err))
 		return v1alpha1.VulnerableUntagFailed
 	}

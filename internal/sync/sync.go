@@ -74,6 +74,11 @@ type Request struct {
 	MaxArtifactSize int64
 	// Gate scans tags before they are copied. Nil copies without a scan.
 	Gate *Gate
+	// DeleteTag deletes a target tag from one digest. Nil uses the OCI
+	// distribution tag delete. synccmd sets it for registries that refuse
+	// that, such as Harbor; it returns registry.ErrTagNotFound when the
+	// registry answers that the tag is not there.
+	DeleteTag func(ctx context.Context, tag, digest string) error
 }
 
 // Artifact is one tag and the digest it resolved to. For a mutated tag
@@ -226,6 +231,15 @@ func newSyncer(r Request) (*syncer, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// deleteTag deletes tag, which the caller resolved to digest, from the
+// target.
+func (s *syncer) deleteTag(ctx context.Context, tag, digest string) error {
+	if s.req.DeleteTag != nil {
+		return s.req.DeleteTag(ctx, tag, digest)
+	}
+	return s.pusher.Delete(ctx, s.req.Target.Tag(tag))
 }
 
 // selectTags picks the tags to sync. A policy with only explicit tags

@@ -19,6 +19,8 @@ package sync
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -26,6 +28,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/registry"
 	"github.com/r-gawronski/tagwarden/internal/tags"
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
@@ -37,13 +40,35 @@ func TestRescan(t *testing.T) {
 		untag      bool
 		untaggable []string
 		noDelete   bool
-		want       v1alpha1.VulnerableTagAction
-		gone       bool
+		// deleter, when set, becomes Request.DeleteTag.
+		deleter func(dst *testRegistry) func(ctx context.Context, tag, digest string) error
+		want    v1alpha1.VulnerableTagAction
+		gone    bool
 	}{
 		{name: "report keeps the tag", want: v1alpha1.VulnerableKept},
 		{name: "untag deletes an untaggable tag", untag: true, untaggable: []string{v100}, want: v1alpha1.VulnerableUntagged, gone: true},
 		{name: "untag refuses a tag the rules keep", untag: true, untaggable: []string{cleanTag}, want: v1alpha1.VulnerableUntagRefused},
 		{name: "untag falls back without tag delete", untag: true, untaggable: []string{v100}, noDelete: true, want: v1alpha1.VulnerableUntagFailed},
+		{name: "untag uses the target deleter", untag: true, untaggable: []string{v100}, noDelete: true,
+			deleter: func(dst *testRegistry) func(context.Context, string, string) error {
+				return func(_ context.Context, tag, _ string) error {
+					// Delete on the registry itself, past the noDelete hook.
+					rec := httptest.NewRecorder()
+					dst.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v2/"+dst.repo.RepositoryStr()+"/manifests/"+tag, nil))
+					if rec.Code != http.StatusAccepted {
+						return errors.New(rec.Result().Status)
+					}
+					return nil
+				}
+			}, want: v1alpha1.VulnerableUntagged, gone: true},
+		{name: "untag refuses a tag the deleter does not find", untag: true, untaggable: []string{v100}, noDelete: true,
+			deleter: func(*testRegistry) func(context.Context, string, string) error {
+				return func(context.Context, string, string) error { return registry.ErrTagNotFound }
+			}, want: v1alpha1.VulnerableUntagRefused},
+		{name: "untag reports a deleter failure", untag: true, untaggable: []string{v100}, noDelete: true,
+			deleter: func(*testRegistry) func(context.Context, string, string) error {
+				return func(context.Context, string, string) error { return errors.New("HTTP 500") }
+			}, want: v1alpha1.VulnerableUntagFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The source is empty: a re-scan reads only the target.
@@ -64,10 +89,21 @@ func TestRescan(t *testing.T) {
 			}
 			req := Request{Source: src.repo, Target: dst.repo, Gate: e.gate,
 				Policy: tags.Policy{Tags: []string{v100, cleanTag, missing}}}
+			var deleted []string
+			if tc.deleter != nil {
+				del := tc.deleter(dst)
+				req.DeleteTag = func(ctx context.Context, tag, digest string) error {
+					deleted = append(deleted, tag, digest)
+					return del(ctx, tag, digest)
+				}
+			}
 
 			res, err := Rescan(context.Background(), req)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.deleter != nil && !slices.Equal(deleted, []string{v100, vulnDigest.String()}) {
+				t.Fatalf("deleter got %v", deleted)
 			}
 			if got := e.sidecar.requests(); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values([]string{vulnDigest.Hex, cleanDigest.Hex}))) {
 				t.Fatalf("scanned %v", got)
