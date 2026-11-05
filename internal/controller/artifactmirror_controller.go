@@ -238,6 +238,10 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	}
 
 	s := syncSpec(&t, m, r.DeniedCIDRs)
+	pruneHeld := false
+	if s.Prunable, pruneHeld, err = r.prunable(ctx, &t, m); err != nil {
+		return ctrl.Result{}, err
+	}
 	sc, msg, err := r.gate(ctx, &t, m, &s)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -307,6 +311,9 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	r.setReady(m, metav1.ConditionTrue, ReasonReady, fmt.Sprintf("CronJob %s/%s mirrors to %s", key.Namespace, key.Name, targetRepo(&t, m)))
 	if err := r.syncStatus(ctx, m, gated, ev, applied); err != nil {
 		return ctrl.Result{}, err
+	}
+	if pruneHeld {
+		notePruneHeld(m)
 	}
 	return r.syncRequestAndWatch(ctx, &t, m, cj, sc != nil, ev)
 }

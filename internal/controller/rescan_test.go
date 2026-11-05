@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -423,5 +425,77 @@ func TestHeldTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPrunable(t *testing.T) {
+	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Action: mirrorv1alpha1.GateActionBlock})
+	m.UID = "self"
+	m.Spec.Tags = mirrorv1alpha1.TagSelector{Include: []string{"^3"}, Prune: true}
+	m.Status.Owned = []mirrorv1alpha1.SyncedTag{{Tag: "3.2", Digest: dig1}, {Tag: "3.1", Digest: dig2}, {Tag: "3.0", Digest: dig1}}
+	peer := m.DeepCopy()
+	peer.Namespace, peer.UID, peer.Status = teamB, "peer", mirrorv1alpha1.ArtifactMirrorStatus{}
+	peer.Spec.Tags = mirrorv1alpha1.TagSelector{Tags: []string{"3.1"}}
+
+	prunable := func(m *mirrorv1alpha1.ArtifactMirror, objs ...client.Object) ([]syncspec.SyncedTag, bool) {
+		t.Helper()
+		c := fake.NewClientBuilder().WithScheme(goldenScheme(t)).
+			WithIndex(&mirrorv1alpha1.ArtifactMirror{}, indexTargetKey, func(o client.Object) []string {
+				return []string{targetKey(o.(*mirrorv1alpha1.ArtifactMirror))}
+			}).WithObjects(append([]client.Object{tg, m.DeepCopy()}, objs...)...).Build()
+		got, held, err := (&ArtifactMirrorReconciler{Client: c}).prunable(context.Background(), tg, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got, held
+	}
+	all := []syncspec.SyncedTag{{Tag: "3.2", Digest: dig1}, {Tag: "3.1", Digest: dig2}, {Tag: "3.0", Digest: dig1}}
+	if got, held := prunable(m); !slices.Equal(got, all) || held {
+		t.Errorf("owned: %v %v", got, held)
+	}
+	if got, _ := prunable(m, peer); !slices.Equal(got, []syncspec.SyncedTag{all[0], all[2]}) {
+		t.Errorf("peer holds 3.1: %v", got)
+	}
+	patterns := peer.DeepCopy()
+	patterns.Spec.Tags = mirrorv1alpha1.TagSelector{KeepLatest: new(int32(3))}
+	if got, held := prunable(m, patterns); got != nil || !held {
+		t.Errorf("pattern peer: %v %v", got, held)
+	}
+	// Tags named in spec.tags.tags are never pruned.
+	named := m.DeepCopy()
+	named.Spec.Tags.Tags = []string{"3.0"}
+	if got, _ := prunable(named); !slices.Equal(got, all[:2]) {
+		t.Errorf("named tag: %v", got)
+	}
+	off := m.DeepCopy()
+	off.Spec.Tags.Prune = false
+	susp := m.DeepCopy()
+	susp.Spec.Suspend = true
+	for name, m := range map[string]*mirrorv1alpha1.ArtifactMirror{"prune off": off, "suspended": susp} {
+		if got, held := prunable(m, patterns); got != nil || held {
+			t.Errorf("%s: %v %v", name, got, held)
+		}
+	}
+
+	// The spec carries the list, and the Job accepts it; without prune it is absent.
+	s := syncSpec(tg, m, nil)
+	s.Prunable = all
+	b, _ := json.Marshal(s)
+	if d, err := syncspec.Decode(bytes.NewReader(b)); err != nil || len(d.Prunable) != 3 {
+		t.Errorf("decode: %v %v", err, d.Prunable)
+	}
+	if b, _ := json.Marshal(syncSpec(tg, m, nil)); strings.Contains(string(b), "prunable") {
+		t.Errorf("spec without candidates: %s", b)
+	}
+}
+
+func TestNotePruneHeld(t *testing.T) {
+	m := &mirrorv1alpha1.ArtifactMirror{}
+	notePruneHeld(m)
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{Type: ConditionSynced, Status: metav1.ConditionTrue, Reason: ReasonSynced, Message: "copied 1"})
+	notePruneHeld(m)
+	notePruneHeld(m)
+	if c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced); c.Message != "copied 1; "+pruneHeldNote {
+		t.Errorf("message %q", c.Message)
 	}
 }

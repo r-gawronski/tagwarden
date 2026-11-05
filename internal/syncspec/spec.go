@@ -300,6 +300,13 @@ type Spec struct {
 	// GCP is required when a registry uses AuthGCPWorkloadIdentity.
 	GCP *GCP `json:"gcp,omitempty"`
 
+	// Prunable lists the tags the Job may delete from the target when the
+	// selection no longer includes them, each with the digest the mirror
+	// recorded. The controller sets it only with tags.prune on. Prune only
+	// takes tags in this list and only while they still point at the
+	// recorded digest.
+	Prunable []SyncedTag `json:"prunable,omitempty"`
+
 	// Gate is set for a gated generated mirror only. Without it the Job
 	// runs exactly as an ungated one.
 	Gate *Gate `json:"gate,omitempty"`
@@ -366,6 +373,14 @@ func (s *Spec) validate() error {
 	}
 	if len(s.AllowedSources) == 0 || slices.Contains(s.AllowedSources, "") {
 		return errors.New("allowedSources: at least one non-empty host is required")
+	}
+	if len(s.Prunable) > MaxPrunable {
+		return fmt.Errorf("prunable: more than %d entries", MaxPrunable)
+	}
+	for _, p := range s.Prunable {
+		if !tagPattern.MatchString(p.Tag) || !digestPattern.MatchString(p.Digest) {
+			return errors.New("prunable: invalid entry")
+		}
 	}
 	if err := s.validateAuth(); err != nil {
 		return err
@@ -545,6 +560,9 @@ type Report struct {
 	// Jobs that predate it; the controller then judges nothing from it.
 	Selection *Selection `json:"selection,omitempty"`
 }
+
+// MaxPrunable caps Spec.Prunable, as status.owned.
+const MaxPrunable = 200
 
 // MaxMissingTags caps Selection.MissingTags.
 const MaxMissingTags = 5

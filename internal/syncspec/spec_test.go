@@ -197,6 +197,36 @@ func TestDecodeTargetFlavor(t *testing.T) {
 	}
 }
 
+func TestDecodePrunable(t *testing.T) {
+	const dg = `"sha256:` + "1111111111111111111111111111111111111111111111111111111111111111" + `"`
+	entry := func(tag, digest string) string { return `{"tag": "` + tag + `", "digest": ` + digest + `}` }
+	many := make([]string, MaxPrunable+1)
+	for i := range many {
+		many[i] = entry("v1", dg)
+	}
+	cases := map[string]struct{ list, wantErr string }{
+		"valid":      {`[` + entry("v1.0", dg) + `, ` + entry("v0.9", dg) + `]`, ""},
+		"empty":      {`[]`, ""},
+		"bad tag":    {`[` + entry("-bad", dg) + `]`, "prunable: invalid entry"},
+		"bad digest": {`[` + entry("v1", `"latest"`) + `]`, "prunable: invalid entry"},
+		"too many":   {`[` + strings.Join(many, ",") + `]`, "prunable: more than"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, err := Decode(strings.NewReader(strings.Replace(valid, maxTags, maxTags+` "prunable": `+tc.list+`,`, 1)))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v, %+v, want %q", err, s.Prunable, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestAllowedSource(t *testing.T) {
 	cases := []struct {
 		host    string
