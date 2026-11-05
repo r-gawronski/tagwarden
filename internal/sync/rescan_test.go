@@ -44,6 +44,9 @@ func TestRescan(t *testing.T) {
 		deleter func(dst *testRegistry) func(ctx context.Context, tag, digest string) error
 		want    v1alpha1.VulnerableTagAction
 		gone    bool
+		// wantErr is the one entry res.Errors must hold; UntagFailed
+		// implies "untag failed".
+		wantErr string
 	}{
 		{name: "report keeps the tag", want: v1alpha1.VulnerableKept},
 		{name: "untag deletes an untaggable tag", untag: true, untaggable: []string{v100}, want: v1alpha1.VulnerableUntagged, gone: true},
@@ -64,7 +67,7 @@ func TestRescan(t *testing.T) {
 		{name: "untag refuses a tag the deleter does not find", untag: true, untaggable: []string{v100}, noDelete: true,
 			deleter: func(*testRegistry) func(context.Context, string, string) error {
 				return func(context.Context, string, string) error { return registry.ErrTagNotFound }
-			}, want: v1alpha1.VulnerableUntagRefused},
+			}, want: v1alpha1.VulnerableUntagRefused, wantErr: "untag refused"},
 		{name: "untag reports a deleter failure", untag: true, untaggable: []string{v100}, noDelete: true,
 			deleter: func(*testRegistry) func(context.Context, string, string) error {
 				return func(context.Context, string, string) error { return errors.New("HTTP 500") }
@@ -133,8 +136,12 @@ func TestRescan(t *testing.T) {
 			if got := tagsOf(res.Skipped); slices.Contains(got, missing) || !slices.Contains(got, cleanTag) {
 				t.Fatalf("skipped %v", got)
 			}
-			if failed := tc.want == v1alpha1.VulnerableUntagFailed; failed != (len(res.Errors) == 1 && strings.Contains(res.Errors[0], "untag failed")) {
-				t.Fatalf("errors %v", res.Errors)
+			wantErr := tc.wantErr
+			if tc.want == v1alpha1.VulnerableUntagFailed {
+				wantErr = "untag failed"
+			}
+			if wantErr == "" && len(res.Errors) != 0 || wantErr != "" && (len(res.Errors) != 1 || !strings.Contains(res.Errors[0], wantErr)) {
+				t.Fatalf("errors %v, want one with %q", res.Errors, wantErr)
 			}
 		})
 	}

@@ -108,7 +108,7 @@ func (s *syncer) rescanTag(ctx context.Context, tag string, res *Result) error {
 // tag only under Untag, only when Untaggable lists it, and only while the
 // tag still points at the scanned digest. A refused delete keeps the tag,
 // as under Report, and is listed in res.Errors. A delete that finds no
-// tag is refused.
+// tag is refused and listed in res.Errors.
 func (s *syncer) untag(ctx context.Context, a Artifact, res *Result) v1alpha1.VulnerableTagAction {
 	g := s.gate
 	switch {
@@ -123,6 +123,9 @@ func (s *syncer) untag(ctx context.Context, a Artifact, res *Result) v1alpha1.Vu
 		return v1alpha1.VulnerableUntagRefused
 	}
 	if err := s.deleteTag(ctx, a.Tag, a.Digest); errors.Is(err, registry.ErrTagNotFound) {
+		// Say why: a wrong Harbor project split or an API that is not
+		// served also answers 404.
+		res.Errors = append(res.Errors, a.Tag+": untag refused: "+short(err))
 		return v1alpha1.VulnerableUntagRefused
 	} else if err != nil {
 		res.Errors = append(res.Errors, a.Tag+": untag failed, kept: "+short(err))
