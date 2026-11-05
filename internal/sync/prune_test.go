@@ -164,6 +164,35 @@ func TestPruneSkipsTheStep(t *testing.T) {
 	}
 }
 
+// A listing that is valid but lacks the newest tags must not prune them.
+func TestPruneKeepsTagsAPartialListingHides(t *testing.T) {
+	_, dst, req, _ := pruneFixture(t, regOpts{})
+	partial := newRegistry(t, regOpts{})
+	push(t, partial.repo, v100, image(t))
+	push(t, partial.repo, "v1.0.1", image(t))
+	req.Source = partial.repo
+	for _, tag := range []string{v120, v130} {
+		d, _ := headDigest(t, dst.repo.Tag(tag))
+		req.Prunable = append(req.Prunable, Artifact{Tag: tag, Digest: d})
+	}
+	res, err := Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run: %v (%+v)", err, res)
+	}
+	if len(res.Pruned) != 1 || res.Pruned[0].Tag != v110 {
+		t.Errorf("pruned %+v, want only %s", res.Pruned, v110)
+	}
+	got := targetTags(t, dst)
+	for _, tag := range []string{v120, v130} {
+		if !slices.Contains(got, tag) {
+			t.Errorf("%s was pruned: %v", tag, got)
+		}
+	}
+	if len(res.Errors) != 2 || !strings.HasPrefix(res.Errors[0], v120+": prune kept") {
+		t.Errorf("errors %v", res.Errors)
+	}
+}
+
 func TestPruneFailedDeleteIsKept(t *testing.T) {
 	_, dst, req, owned := pruneFixture(t, regOpts{noDelete: true})
 	res, err := Run(context.Background(), req)

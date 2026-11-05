@@ -140,6 +140,9 @@ type syncer struct {
 	src, dst  *remote.Puller
 	pusher    *remote.Pusher
 	gate      *gateState
+	// listed is the source tag listing of the run; nil when the policy
+	// lists only explicit tags.
+	listed []string
 }
 
 // Run lists the source tags, selects them with r.Policy and copies each one
@@ -263,6 +266,7 @@ func (s *syncer) selectTags(ctx context.Context) ([]string, tags.Stats, error) {
 		if err != nil {
 			return nil, tags.Stats{}, err
 		}
+		s.listed = all
 		return tags.Explain(all, p)
 	}
 	selected, st, err := tags.Explain(p.Tags, p)

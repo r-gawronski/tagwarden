@@ -22,6 +22,7 @@ import (
 	"slices"
 
 	"github.com/r-gawronski/tagwarden/internal/registry"
+	"github.com/r-gawronski/tagwarden/internal/tags"
 )
 
 // prune deletes the target tags in Request.Prunable that the selection no
@@ -34,9 +35,23 @@ import (
 // The whole step is skipped unless the run was clean: the selection must
 // not be empty, and no tag may have failed, been blocked or been refused as
 // mutated. A bad upstream answer must not empty the target. A tag that is
-// in the selection, or that the policy names, is never pruned.
+// in the selection, or that the policy names, is never pruned. Neither is
+// a tag the selection would pick had the source listed it, so a valid but
+// incomplete listing cannot prune the newest tags; it is kept and reported
+// in res.Errors.
 func (s *syncer) prune(ctx context.Context, res *Result, mutated bool) {
 	if len(s.req.Prunable) == 0 || len(res.Selected) == 0 || len(res.Failed) > 0 || len(res.Blocked) > 0 || mutated {
+		return
+	}
+	// Select again over the listing plus the prunable tags it lacks.
+	all := slices.Clone(s.listed)
+	for _, p := range s.req.Prunable {
+		if !slices.Contains(all, p.Tag) {
+			all = append(all, p.Tag)
+		}
+	}
+	would, _, err := tags.Explain(all, s.req.Policy)
+	if err != nil {
 		return
 	}
 	for _, p := range s.req.Prunable {
@@ -44,6 +59,10 @@ func (s *syncer) prune(ctx context.Context, res *Result, mutated bool) {
 			return
 		}
 		if slices.Contains(res.Selected, p.Tag) || slices.Contains(s.req.Policy.Tags, p.Tag) {
+			continue
+		}
+		if slices.Contains(would, p.Tag) {
+			res.Errors = append(res.Errors, p.Tag+": prune kept, the selection would include it if the source listed it")
 			continue
 		}
 		d, err := resolve(ctx, s.dst, s.req.Target.Tag(p.Tag))

@@ -196,3 +196,22 @@ func TestRescanFailsOnScanError(t *testing.T) {
 		t.Fatalf("err %v, result %+v", err, res)
 	}
 }
+
+// A re-scan never prunes, also when the request lists prunable tags.
+func TestRescanIgnoresPrunable(t *testing.T) {
+	src, dst := newRegistry(t, regOpts{}), newRegistry(t, regOpts{})
+	d := push(t, dst.repo, v100, image(t))
+	push(t, dst.repo, v110, image(t))
+	e := newGate(t, vuln.Policy{Action: vuln.Block}, func(string) (string, string) { return clean, "0" })
+	req := Request{Source: src.repo, Target: dst.repo, Gate: e.gate, Policy: tags.Policy{Tags: []string{v100}},
+		Prunable: []Artifact{{Tag: v110, Digest: d.String()}}}
+	req.DeleteTag = func(context.Context, string, string) error { t.Error("delete called"); return nil }
+	writes := dst.writes.Load()
+	res, err := Rescan(context.Background(), req)
+	if err != nil || len(res.Pruned) != 0 || len(res.Dropped) != 0 {
+		t.Fatalf("%v: pruned %+v dropped %+v", err, res.Pruned, res.Dropped)
+	}
+	if got := targetTags(t, dst); !slices.Equal(got, []string{v100, v110}) || dst.writes.Load() != writes {
+		t.Errorf("target tags %v", got)
+	}
+}
