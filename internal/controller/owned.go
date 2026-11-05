@@ -30,16 +30,21 @@ const maxOwned = 200
 // sync: the tags the run copied or overwrote (the run's digest wins), then
 // the earlier entries that are still on the target, each in its earlier
 // order, minus the tags the run pruned and the tags it found gone or moved.
-// A tag the run only skipped was on the target already, so it never joins
-// the record and never changes a recorded digest. Past maxOwned the end of the list is cut, which holds the oldest
-// versions, and truncated is true. A cut tag is never pruned: it fails safe.
+// A dropped entry counts only when it matches a recorded tag and digest and
+// the run did not sync the tag. A tag the run only skipped was on the target
+// already, so it never joins the record and never changes a recorded digest.
+// Past maxOwned the end of the list is cut, which holds the oldest versions,
+// and truncated is true. A cut tag is never pruned: it fails safe.
 func mergeOwned(owned []mirrorv1alpha1.SyncedTag, rep syncspec.Report) (out []mirrorv1alpha1.SyncedTag, truncated bool) {
 	drop := map[string]bool{}
 	for _, p := range rep.Pruned {
 		drop[p.Tag] = true
 	}
 	for _, d := range rep.Dropped {
-		drop[d.Tag] = true
+		if !slices.ContainsFunc(rep.Synced, func(s syncspec.SyncedTag) bool { return s.Tag == d.Tag }) &&
+			slices.Contains(owned, mirrorv1alpha1.SyncedTag{Tag: d.Tag, Digest: d.Digest}) {
+			drop[d.Tag] = true
+		}
 	}
 	var copied []mirrorv1alpha1.SyncedTag
 	for _, s := range rep.Synced {

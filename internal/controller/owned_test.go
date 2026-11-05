@@ -46,6 +46,9 @@ func TestMergeOwned(t *testing.T) {
 		{name: "pruned tags leave", owned: L{st("1", "a"), st("2", "b")}, synced: R{cp("3", "c")}, pruned: R{sk("1", "a")},
 			want: L{st("3", "c"), st("2", "b")}},
 		{name: "tags gone or moved leave", owned: L{st("1", "a"), st("2", "b")}, absent: R{sk("2", "b")}, want: L{st("1", "a")}},
+		{name: "a dropped tag the run synced stays", owned: L{st("1", "a")}, synced: R{sk("1", "a")}, absent: R{sk("1", "a")}, want: L{st("1", "a")}},
+		{name: "a dropped tag with another digest stays", owned: L{st("1", "a")}, absent: R{sk("1", "other")}, want: L{st("1", "a")}},
+		{name: "a dropped tag that is not recorded changes nothing", owned: L{st("1", "a")}, absent: R{sk("x", "a")}, want: L{st("1", "a")}},
 		{name: "nothing synced keeps the record", owned: L{st("1", "a")}, want: L{st("1", "a")}},
 		{name: "empty", want: nil},
 	} {

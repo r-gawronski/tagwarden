@@ -70,16 +70,17 @@ const reasonTagPruned = "TagPruned"
 
 // checkPruned refuses a report that prunes what the controller did not
 // offer (threat model T12): prune must be on, and every pruned tag must be
-// in status.owned, not named in spec.tags.tags and not in the run's own
-// synced list. It runs before the report is applied, so owned still holds
-// what the Job was sent. A re-scan prunes nothing; ParseReport refuses it.
-// Dropped tags are only forgotten, so unknown ones do no harm.
+// in status.owned with the same digest, not named in spec.tags.tags and not
+// in the run's own synced list. It runs before the report is applied, so
+// owned still holds what the Job was sent. A re-scan prunes nothing;
+// ParseReport refuses it. Dropped tags are only forgotten, and mergeOwned
+// ignores any that do not match the record.
 func checkPruned(m *mirrorv1alpha1.ArtifactMirror, rep syncspec.Report) error {
 	for _, p := range rep.Pruned {
 		switch {
 		case !m.Spec.Tags.Prune:
 			return errors.New("report: pruned tags with prune off")
-		case !slices.ContainsFunc(m.Status.Owned, func(o mirrorv1alpha1.SyncedTag) bool { return o.Tag == p.Tag }),
+		case !slices.Contains(m.Status.Owned, mirrorv1alpha1.SyncedTag{Tag: p.Tag, Digest: p.Digest}),
 			slices.Contains(m.Spec.Tags.Tags, p.Tag),
 			slices.ContainsFunc(rep.Synced, func(s syncspec.SyncedTag) bool { return s.Tag == p.Tag }):
 			return errors.New("report: pruned a tag that was not offered")

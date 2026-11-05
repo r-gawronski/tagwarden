@@ -456,7 +456,8 @@ func TestRecordJobPruned(t *testing.T) {
 			m.Status.Owned = append(m.Status.Owned, mirrorv1alpha1.SyncedTag{Tag: "named", Digest: dig1})
 			return m
 		}(), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Pruned: []syncspec.SyncedTag{st("named", dig1)}}},
-		"tag also synced": {mirror(true), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{st("1", dig1)}, Pruned: []syncspec.SyncedTag{st("1", dig1)}}},
+		"digest differs from the record": {mirror(true), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Pruned: []syncspec.SyncedTag{st("1", dig2)}}},
+		"tag also synced":                {mirror(true), &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{st("1", dig1)}, Pruned: []syncspec.SyncedTag{st("1", dig1)}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := slices.Clone(tc.m.Status.Owned)
