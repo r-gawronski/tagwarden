@@ -386,14 +386,8 @@ func (s *Spec) validate() error {
 			return fmt.Errorf("unknown registry auth %q", a)
 		}
 	}
-	switch s.TargetFlavor {
-	case "":
-	case FlavorHarbor:
-		if s.TargetAuth != "" {
-			return errors.New("targetFlavor Harbor: needs the target Secret credentials")
-		}
-	default:
-		return fmt.Errorf("unknown targetFlavor %q", s.TargetFlavor)
+	if err := s.validateFlavor(); err != nil {
+		return err
 	}
 	if s.Azure != nil {
 		if err := s.Azure.validate(); err != nil {
@@ -731,6 +725,21 @@ func (f TagFinding) validate(rescan bool) error {
 	case !slices.Contains([]v1alpha1.VulnerableTagAction{v1alpha1.VulnerableKept, v1alpha1.VulnerableUntagged,
 		v1alpha1.VulnerableUntagFailed, v1alpha1.VulnerableUntagRefused}, f.RescanAction):
 		return errors.New("rescanAction")
+	}
+	return nil
+}
+
+// validateFlavor checks TargetFlavor. Harbor tag deletes use basic auth
+// from the target Secret, so cloud TargetAuth is refused.
+func (s *Spec) validateFlavor() error {
+	switch s.TargetFlavor {
+	case "":
+	case FlavorHarbor:
+		if s.TargetAuth != "" {
+			return errors.New("targetFlavor Harbor: needs the target Secret credentials")
+		}
+	default:
+		return fmt.Errorf("unknown targetFlavor %q", s.TargetFlavor)
 	}
 	return nil
 }

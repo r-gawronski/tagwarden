@@ -31,6 +31,9 @@ import (
 
 var errAny = errors.New("any error")
 
+// robotUser is a Harbor robot account name; "$" must survive basic auth.
+const robotUser = "robot$push"
+
 // harborServer starts a TLS server and returns a transport that sends every
 // request for example.com to it. ggcr picks http for loopback addresses, so
 // the repository uses example.com (a SAN of the httptest certificate) to keep
@@ -52,7 +55,7 @@ func TestHarborDeleteTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth := authn.FromConfig(authn.AuthConfig{Username: "robot$push", Password: "s3cret"})
+	auth := authn.FromConfig(authn.AuthConfig{Username: robotUser, Password: "s3cret"})
 	for _, tc := range []struct {
 		name   string
 		status int
@@ -100,7 +103,7 @@ func TestHarborDeleteTag(t *testing.T) {
 			if method != http.MethodDelete || path != wantPath {
 				t.Errorf("request = %s %s, want DELETE %s", method, path, wantPath)
 			}
-			if user != "robot$push" || pass != "s3cret" {
+			if user != robotUser || pass != "s3cret" {
 				t.Errorf("basic auth = %q/%q", user, pass)
 			}
 		})
@@ -114,7 +117,7 @@ func TestHarborDeleteTagRejectsBadInput(t *testing.T) {
 		repo string
 		auth authn.Authenticator
 	}{
-		{name: "missing password", repo: "example.com/mirror/nginx", auth: authn.FromConfig(authn.AuthConfig{Username: "robot$push"})},
+		{name: "missing password", repo: "example.com/mirror/nginx", auth: authn.FromConfig(authn.AuthConfig{Username: robotUser})},
 		{name: "anonymous", repo: "example.com/mirror/nginx", auth: authn.Anonymous},
 		{name: "no path after project", repo: "example.com/mirror", auth: authn.FromConfig(authn.AuthConfig{Username: "u", Password: "p"})},
 	} {
@@ -139,7 +142,7 @@ func TestHarborDeleteTagRejectsBadInput(t *testing.T) {
 // TLS, or it sends the credentials in clear text.
 func TestHarborDeleteTagUsesHTTPSForPrivateHosts(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("ab", 32)
-	auth := authn.FromConfig(authn.AuthConfig{Username: "robot$push", Password: "s3cret"})
+	auth := authn.FromConfig(authn.AuthConfig{Username: robotUser, Password: "s3cret"})
 	for _, host := range []string{"10.20.0.5", "harbor.local", "localhost:8443"} {
 		t.Run(host, func(t *testing.T) {
 			repo, err := name.NewRepository(host + "/mirror/docker.io/library/nginx")

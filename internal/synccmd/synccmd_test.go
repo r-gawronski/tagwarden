@@ -764,7 +764,7 @@ func TestRunSourceCA(t *testing.T) {
 	}
 
 	e.opts.sourceCA = filepath.Join(e.dir, "source-ca.crt")
-	e.write(t, e.opts.sourceCA, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})))
+	e.write(t, e.opts.sourceCA, string(pem.EncodeToMemory(&pem.Block{Type: certPEM, Bytes: srv.Certificate().Raw})))
 	code, out, msg = e.run(t)
 	if code != syncspec.ExitOK || !strings.Contains(msg, `"copied":1`) {
 		t.Fatalf("with CA: exit %d: %s\n%s", code, msg, out)
@@ -954,7 +954,7 @@ func TestLoadHarborDeleteTag(t *testing.T) {
 
 	// The Harbor API is https only; trust the test server as the target CA.
 	e.opts.targetCA = filepath.Join(e.dir, "ca.crt")
-	e.write(t, e.opts.targetCA, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})))
+	e.write(t, e.opts.targetCA, string(pem.EncodeToMemory(&pem.Block{Type: certPEM, Bytes: srv.Certificate().Raw})))
 	e.writeSpec(t, src.String(), `"targetFlavor":"Harbor",`+extra)
 	_, req, err = load(context.Background(), e.spec, e.opts, func(k string) string { return e.vars[k] })
 	if err != nil || req.DeleteTag == nil {
