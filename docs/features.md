@@ -14,33 +14,37 @@ Owners:
 - **team**: a tenant team, in an `ArtifactMirror` in its namespace.
 - **security**: the security team, in a `VulnerabilityException`.
 
+The first line of every example names what it goes into: `# ClusterMirrorTarget`,
+`# ArtifactMirror`, `# Helm chart values.yaml` or a full object with `kind`.
+Examples show only the fields of the feature; merge them into your object.
+
 ## Index
 
 | Feature | Owner | Default | Where |
 | --- | --- | --- | --- |
 | [Image mirror](#image-mirror) | team | on | `ArtifactMirror` |
-| [Helm OCI chart mirror](#helm-oci-chart-mirror) | team | off | `spec.type: HelmOCI` |
-| [Tag selection](#tag-selection) | team | required | `spec.tags` |
-| [Prereleases](#prereleases) | team | off | `spec.tags.allowPrerelease` |
-| [Required platforms](#required-platforms) | team | off | `spec.requiredPlatforms` |
-| [Suspend](#suspend) | team | off | `spec.suspend` |
-| [Sync now](#sync-now) | team | off | annotation `tagwarden.dev/sync-now` |
-| [Custom target path](#custom-target-path) | platform + team | off | `allowRepositoryOverride`, `target.repository` |
-| [Projects and namespace access](#projects-and-namespace-access) | platform | required | `spec.projects` |
-| [Allowed sources](#allowed-sources) | platform | required | `spec.allowedSources` |
-| [Limits](#limits) | platform | on, with defaults | `spec.limits` |
-| [Moving tags](#moving-tags) | platform | `Fail` | `spec.policy.onTagMutation` |
-| [Proxy](#proxy) | platform | off | `spec.proxy` |
-| [Target CA and mTLS](#target-ca-and-mtls) | platform | off | `caBundleSecretRef`, `clientCertSecretRef` |
-| [Push credentials](#push-credentials) | platform | required | `credentialsSecretRef` or `auth` |
-| [Private sources](#private-sources) | platform | anonymous | `sourceCredentials`, `sourceCABundles` |
-| [Cloud workload identity](#cloud-workload-identity) | platform | off | `auth`, `workloadIdentity` |
-| [Harbor tag delete](#harbor-tag-delete) | platform | off | `spec.registryFlavor: Harbor` |
+| [Helm OCI chart mirror](#helm-oci-chart-mirror) | team | off | ArtifactMirror `spec.type: HelmOCI` |
+| [Tag selection](#tag-selection) | team | required | ArtifactMirror `spec.tags` |
+| [Prereleases](#prereleases) | team | off | ArtifactMirror `spec.tags.allowPrerelease` |
+| [Required platforms](#required-platforms) | team | off | ArtifactMirror `spec.requiredPlatforms` |
+| [Suspend](#suspend) | team | off | ArtifactMirror `spec.suspend` |
+| [Sync now](#sync-now) | team | off | ArtifactMirror annotation `tagwarden.dev/sync-now` |
+| [Custom target path](#custom-target-path) | platform + team | off | ClusterMirrorTarget `allowRepositoryOverride`, ArtifactMirror `target.repository` |
+| [Projects and namespace access](#projects-and-namespace-access) | platform | required | ClusterMirrorTarget `spec.projects` |
+| [Allowed sources](#allowed-sources) | platform | required | ClusterMirrorTarget `spec.allowedSources` |
+| [Limits](#limits) | platform | on, with defaults | ClusterMirrorTarget `spec.limits` |
+| [Moving tags](#moving-tags) | platform | `Fail` | ClusterMirrorTarget `spec.policy.onTagMutation` |
+| [Proxy](#proxy) | platform | off | ClusterMirrorTarget `spec.proxy` |
+| [Target CA and mTLS](#target-ca-and-mtls) | platform | off | ClusterMirrorTarget `caBundleSecretRef`, `clientCertSecretRef` |
+| [Push credentials](#push-credentials) | platform | required | ClusterMirrorTarget `credentialsSecretRef` or `auth` |
+| [Private sources](#private-sources) | platform | anonymous | ClusterMirrorTarget `sourceCredentials`, `sourceCABundles` |
+| [Cloud workload identity](#cloud-workload-identity) | platform | off | ClusterMirrorTarget `auth`, `workloadIdentity` |
+| [Harbor tag delete](#harbor-tag-delete) | platform | off | ClusterMirrorTarget `spec.registryFlavor: Harbor` |
 | [Denied CIDRs](#denied-cidrs) | platform | empty | chart `deniedCIDRs` |
 | [Network policies](#network-policies) | platform | off | your own NetworkPolicy, chart `networkPolicy` |
-| [Auto-mirror](#auto-mirror) | platform + team | off | `spec.autoMirror`, pod annotation |
-| [Vulnerability gate](#vulnerability-gate) | platform | off | `spec.autoMirror.vulnerabilityGate`, chart `trivy` |
-| [Re-scan and untag](#re-scan-and-untag) | platform | off | `rescanInterval`, `onVulnerableTag` |
+| [Auto-mirror](#auto-mirror) | platform + team | off | ClusterMirrorTarget `spec.autoMirror`, pod annotation `tagwarden.dev/auto-mirror` |
+| [Vulnerability gate](#vulnerability-gate) | platform | off | ClusterMirrorTarget `spec.autoMirror.vulnerabilityGate`, chart `trivy` |
+| [Re-scan and untag](#re-scan-and-untag) | platform | off | ClusterMirrorTarget `vulnerabilityGate.rescanInterval`, `onVulnerableTag` |
 | [Vulnerability exceptions](#vulnerability-exceptions) | security | none | `VulnerabilityException` |
 | [Signatures and referrers](#signatures-and-referrers) | - | always on | - |
 | [Metrics](#metrics) | platform | on | chart `metrics`, `prometheus` |
@@ -81,6 +85,7 @@ repository>`. More: [README, Examples](../README.md#examples).
 Owner: team. Off; set `spec.type: HelmOCI`.
 
 ```yaml
+# ArtifactMirror
 spec:
   type: HelmOCI
   source: {registry: ghcr.io, repository: prometheus-community/charts/kube-prometheus-stack}
@@ -96,6 +101,7 @@ Owner: team. Required: set at least one of `include`, `semverRange`,
 `keepLatest` or `tags`.
 
 ```yaml
+# ArtifactMirror
 spec:
   tags:
     include: ['^v\d+\.\d+\.\d+$']   # RE2, not anchored: use ^...$
@@ -120,6 +126,7 @@ tag gives a `TagNotFound` Event. Alert on
 Owner: team. Off: `semverRange` and `keepLatest` drop prereleases.
 
 ```yaml
+# ArtifactMirror
 spec:
   tags:
     semverRange: ">=1.11.0-0"
@@ -131,6 +138,7 @@ spec:
 Owner: team. Off.
 
 ```yaml
+# ArtifactMirror
 spec:
   requiredPlatforms: [linux/amd64, linux/arm64]   # os/arch[/variant]
 ```
@@ -143,6 +151,7 @@ index is always copied, so digests and signatures stay valid.
 Owner: team. Off.
 
 ```yaml
+# ArtifactMirror
 spec:
   suspend: true
 ```
@@ -191,6 +200,7 @@ that sets `target.repository` is refused.
 Owner: platform. Required: at least one project.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   projects:
     - name: mirror
@@ -207,6 +217,7 @@ namespace. Two mirrors cannot write different sources to the same path.
 Owner: platform. Required.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   allowedSources: [registry.k8s.io, ghcr.io, quay.io, docker.io]
 ```
@@ -227,6 +238,7 @@ Owner: platform. On with defaults; `spec.limits` overrides them.
 | `maxArtifactSize` | no limit | |
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   limits:
     minSyncInterval: 6h
@@ -243,6 +255,7 @@ Owner: platform. Default `Fail`: the target tag stays and the mutation
 is reported.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   policy:
     onTagMutation: Overwrite        # Fail | Overwrite | Ignore
@@ -255,6 +268,7 @@ spec:
 Owner: platform. Off: sync Jobs connect directly.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   proxy:
     httpsProxy: http://proxy.example.internal:3128   # no credentials in the URL
@@ -270,6 +284,7 @@ Sync pods get the label `tagwarden.dev/egress: proxy`.
 Owner: platform. Off: system roots, no client certificate.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   caBundleSecretRef: {name: registry-ca, key: ca.crt}
   clientCertSecretRef: {name: registry-client}       # kubernetes.io/tls
@@ -286,6 +301,7 @@ kubectl -n tagwarden-system create secret docker-registry registry-push \
 ```
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   credentialsSecretRef: {name: registry-push}
 ```
@@ -298,6 +314,7 @@ condition reports missing or unreadable Secrets.
 Owner: platform. Default: anonymous pull with system roots.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   sourceCredentials:                # kubernetes.io/dockerconfigjson
     - registry: ghcr.io
@@ -316,6 +333,7 @@ Owner: platform. Off. Push to or pull from Azure Container Registry,
 Amazon ECR or Google Artifact Registry without a static Secret.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   auth:
     awsWorkloadIdentity: {}         # or azureWorkloadIdentity, gcpWorkloadIdentity
@@ -338,6 +356,7 @@ Owner: platform. Off: tag delete uses OCI distribution, which Harbor
 refuses.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   registryFlavor: Harbor
 ```
@@ -353,7 +372,7 @@ service CIDRs; sync Jobs refuse sources that resolve into these ranges,
 on top of the built-in loopback, link-local and cloud metadata checks.
 
 ```yaml
-# values.yaml
+# Helm chart values.yaml
 deniedCIDRs: [10.244.0.0/16, 10.96.0.0/12]
 ```
 
@@ -398,6 +417,7 @@ a Trivy server: the chart deploys one with `trivy.enabled: true`, with
 its database taken from your registry.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   autoMirror:
     enabled: true
@@ -424,6 +444,7 @@ when the gate has no usable scanner. Full setup:
 Owner: platform. Off.
 
 ```yaml
+# ClusterMirrorTarget
 spec:
   autoMirror:
     vulnerabilityGate:
@@ -482,7 +503,7 @@ Collect it with your log pipeline.
 Owner: platform. On, HTTPS with authn and authz on port 8443.
 
 ```yaml
-# values.yaml
+# Helm chart values.yaml
 metrics: {enabled: true, port: 8443, secure: true}
 prometheus:
   enabled: true                     # Prometheus Operator ServiceMonitor
@@ -499,7 +520,7 @@ Owner: platform. Off. A **Sync now** button and health checks come from
 an `argocd-cm` snippet. Sync Jobs show in the app tree with:
 
 ```yaml
-# values.yaml
+# Helm chart values.yaml
 argocd:
   tracking: inherit
 ```
