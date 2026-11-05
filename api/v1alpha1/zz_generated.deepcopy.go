@@ -163,6 +163,11 @@ func (in *ArtifactMirrorStatus) DeepCopyInto(out *ArtifactMirrorStatus) {
 		*out = make([]SyncedTag, len(*in))
 		copy(*out, *in)
 	}
+	if in.Owned != nil {
+		in, out := &in.Owned, &out.Owned
+		*out = make([]SyncedTag, len(*in))
+		copy(*out, *in)
+	}
 	if in.Findings != nil {
 		in, out := &in.Findings, &out.Findings
 		*out = make([]VulnerabilityFinding, len(*in))

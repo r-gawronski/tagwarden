@@ -120,6 +120,13 @@ type TagSelector struct {
 	// +listType=set
 	// +optional
 	Tags []string `json:"tags,omitempty"`
+
+	// prune deletes the tags this mirror created on the target (status.owned)
+	// once the selection no longer includes them. Only the tag goes, never
+	// the digest. Tags another mirror of the same target repository selects
+	// stay, and so do tags the mirror did not create. Off by default.
+	// +optional
+	Prune bool `json:"prune,omitempty"`
 }
 
 // ArtifactMirrorSpec defines what to mirror, where and when.
@@ -452,6 +459,17 @@ type ArtifactMirrorStatus struct {
 	// +listType=atomic
 	// +optional
 	Synced []SyncedTag `json:"synced,omitempty"`
+
+	// owned lists the tags this mirror put on the target and the digest
+	// each had when it did. Prune deletes only these. It is kept with
+	// spec.tags.prune off, so turning prune on later covers the tags the
+	// mirror created meanwhile. The controller keeps at most 200 entries;
+	// when it is cut, the oldest versions are no longer recorded and are
+	// never pruned.
+	// +kubebuilder:validation:MaxItems=200
+	// +listType=atomic
+	// +optional
+	Owned []SyncedTag `json:"owned,omitempty"`
 
 	// findings lists the tags of a generated mirror that the vulnerability
 	// gate found vulnerable or could not judge, at most 20.

@@ -150,6 +150,13 @@ spec:
                     maximum: 100
                     minimum: 1
                     type: integer
+                  prune:
+                    description: |-
+                      prune deletes the tags this mirror created on the target (status.owned)
+                      once the selection no longer includes them. Only the tag goes, never
+                      the digest. Tags another mirror of the same target repository selects
+                      stay, and so do tags the mirror did not create. Off by default.
+                    type: boolean
                   semverRange:
                     description: |-
                       semverRange keeps semver tags within the constraint, for example ">=1.10.0 <2.0.0".
@@ -500,6 +507,31 @@ spec:
                   refers to.
                 format: int64
                 type: integer
+              owned:
+                description: |-
+                  owned lists the tags this mirror put on the target and the digest
+                  each had when it did. Prune deletes only these. It is kept with
+                  spec.tags.prune off, so turning prune on later covers the tags the
+                  mirror created meanwhile. The controller keeps at most 200 entries;
+                  when it is cut, the oldest versions are no longer recorded and are
+                  never pruned.
+                items:
+                  description: SyncedTag records a mirrored tag and its digest.
+                  properties:
+                    digest:
+                      description: digest is the manifest digest the tag was copied
+                        by.
+                      type: string
+                    tag:
+                      description: tag is the mirrored tag.
+                      type: string
+                  required:
+                  - digest
+                  - tag
+                  type: object
+                maxItems: 200
+                type: array
+                x-kubernetes-list-type: atomic
               synced:
                 description: |-
                   synced lists the mirrored tags and their digests, newest first. The
