@@ -777,9 +777,14 @@ Untag.
 
 ### 7. Harbor
 
-- Harbor refuses tag DELETE on `/v2`, so Untag reports `UntagFailed` and
-  the tag stays, as under `Report`. A digest-scoped delete is tracked in
-  issue #71.
+- Harbor refuses tag DELETE on `/v2`. Set `registryFlavor: Harbor` on the
+  `ClusterMirrorTarget` and the Jobs delete the tag through the Harbor API
+  instead, scoped to the digest they resolved. It needs
+  `credentialsSecretRef` (no workload identity). The robot account needs
+  the "delete tag" permission on the mirror projects, besides push and
+  pull. A Harbor 404 (tag gone or moved to another digest) is reported as
+  `UntagRefused`; other failures as `UntagFailed`. Either way the tag
+  stays. Without `registryFlavor`, Untag on Harbor reports `UntagFailed`.
 - Use Harbor's own scanning as a second layer. It also covers
   hand-written mirrors and images mirrored under `Report`: scan on push, a
   daily "scan all" on the mirror projects, "prevent vulnerable images from

@@ -114,7 +114,7 @@ import (
 
 // ErrTagNotFound means the registry has no such tag on the digest: it was
 // deleted already or moved to another digest.
-var ErrTagNotFound = errors.New("tag not found on digest")
+var ErrTagNotFound = errors.New("harbor: not found")
 
 // HarborDeleteTag returns a function that deletes a tag from one digest of
 // repo through the Harbor API. Harbor refuses tag DELETE on /v2. The call
