@@ -683,6 +683,15 @@ spec:
                 x-kubernetes-validations:
                 - message: must be host[:port] without a scheme, credentials or path
                   rule: self.matches(r'^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|\[[0-9a-fA-F:.]+\])(:[0-9]{1,5})?$')
+              registryFlavor:
+                description: |-
+                  registryFlavor turns on registry-specific calls. Harbor deletes tags
+                  (Untag) through the Harbor API, because Harbor refuses tag delete on
+                  /v2; the credentials then need Harbor's delete tag permission. Empty
+                  means OCI distribution.
+                enum:
+                - Harbor
+                type: string
               sourceCABundles:
                 description: |-
                   sourceCABundles lists extra root CAs per source registry, for
@@ -933,6 +942,8 @@ spec:
                 + ''/'')'
             - message: set exactly one of credentialsSecretRef or auth
               rule: has(self.credentialsSecretRef) != has(self.auth)
+            - message: registryFlavor Harbor needs credentialsSecretRef
+              rule: '!has(self.registryFlavor) || has(self.credentialsSecretRef)'
             - message: auth.azureWorkloadIdentity needs an Azure Container Registry
                 host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)
               rule: '!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r''^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$'')'

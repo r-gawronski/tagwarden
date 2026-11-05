@@ -240,6 +240,7 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 		DeniedCIDRs:       denied,
 	}
 	s.TargetAuth, s.SourceAuth = cloudAuth(t, m)
+	s.TargetFlavor = string(t.Spec.RegistryFlavor)
 	uses := func(p string) bool { return s.TargetAuth == p || s.SourceAuth == p }
 	// A target that uses cloud auth without its identity is not Ready.
 	wi := t.Spec.WorkloadIdentity

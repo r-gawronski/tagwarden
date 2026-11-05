@@ -160,6 +160,9 @@ var _ = Describe("API validation", func() {
 			Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
 		},
 		Entry("full example", func(*mirrorv1alpha1.ClusterMirrorTarget) {}),
+		Entry("Harbor with credentialsSecretRef", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.RegistryFlavor = mirrorv1alpha1.RegistryFlavorHarbor
+		}),
 		Entry("registry with port 443", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.Registry = "registry-1.docker.io:443"
 		}),
@@ -261,6 +264,15 @@ var _ = Describe("API validation", func() {
 		}),
 	)
 
+	It("rejects registryFlavor Harbor with workload identity auth", func() {
+		obj := validTarget("harbor-auth")
+		useAzure(obj)
+		obj.Spec.RegistryFlavor = mirrorv1alpha1.RegistryFlavorHarbor
+		err := k8sClient.Create(ctx, obj)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid, got %v", err)
+		Expect(err.Error()).To(ContainSubstring("registryFlavor Harbor needs credentialsSecretRef"))
+	})
+
 	DescribeTable("rejects an invalid ClusterMirrorTarget",
 		func(mutate func(*mirrorv1alpha1.ClusterMirrorTarget)) {
 			obj := validTarget("invalid-target")
@@ -329,6 +341,9 @@ var _ = Describe("API validation", func() {
 		Entry("negative maxArtifactSize", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			size := resource.MustParse("-1Gi")
 			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxArtifactSize: &size}
+		}),
+		Entry("unknown registry flavor", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.RegistryFlavor = "Quay"
 		}),
 		Entry("no push credentials", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.CredentialsSecretRef = nil
