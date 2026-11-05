@@ -27,8 +27,12 @@ Two PRs, in this order:
   sync package picks the OCI or the Harbor path. Untag moves onto it.
 - **Permissions.** The robot account needs Harbor's "delete tag" permission
   on the project. `docs/install.md` says so next to the Untag notes.
-- **Tests.** `httptest` server checks method, path, encoding and auth; a
-  404 on the tag is success (already gone); other errors keep the tag.
+- **Not found.** A 404 means the tag is not on that digest (gone or
+  moved). The deleter returns `ErrTagNotFound`; Untag reports it as
+  `UntagRefused`, prune drops the tag from `owned`. Other errors keep the
+  tag.
+- **Tests.** `httptest` server checks method, path, encoding and auth,
+  and that errors carry no credentials or server text.
 
 ## PR 2: prune
 
