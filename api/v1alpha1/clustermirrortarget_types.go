@@ -619,11 +619,20 @@ type ScannerSpec struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// RegistryFlavor names a registry that needs its own API for an operation
+// OCI distribution does not offer.
+// +kubebuilder:validation:Enum=Harbor
+type RegistryFlavor string
+
+// RegistryFlavorHarbor deletes tags through the Harbor API.
+const RegistryFlavorHarbor RegistryFlavor = "Harbor"
+
 // ClusterMirrorTargetSpec defines the target registry and what tenants may mirror into it.
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.exists(p, p.name == self.autoMirror.project)",message="autoMirror.project must be listed in projects"
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.all(p, p.name != self.autoMirror.project || !has(p.allowRepositoryOverride) || !p.allowRepositoryOverride)",message="autoMirror.project must not allow repository overrides, so node pulls through a path rewrite stay bound to one source"
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || !has(self.autoMirror.vulnerabilityGate) || !has(self.autoMirror.vulnerabilityGate.scanner) || !has(self.autoMirror.vulnerabilityGate.scanner.javaDBRepository) || self.autoMirror.vulnerabilityGate.scanner.javaDBRepository.startsWith(self.registry + '/')",message="autoMirror.vulnerabilityGate.scanner.javaDBRepository must be in spec.registry"
 // +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
+// +kubebuilder:validation:XValidation:rule="!has(self.registryFlavor) || has(self.credentialsSecretRef)",message="registryFlavor Harbor needs credentialsSecretRef"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.awsWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(:443)?$')`,message="auth.awsWorkloadIdentity needs an Amazon ECR private registry host (<account>.dkr.ecr.<region>.amazonaws.com)"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.gcpWorkloadIdentity) || self.registry.lowerAscii().matches(r'^([a-z0-9]+(-[a-z0-9]+)*-docker\.pkg\.dev|((us|eu|asia)\.)?gcr\.io)(:443)?$')`,message="auth.gcpWorkloadIdentity needs a Google Artifact Registry host (<location>-docker.pkg.dev, gcr.io, us.gcr.io, eu.gcr.io or asia.gcr.io)"
@@ -642,6 +651,13 @@ type ClusterMirrorTargetSpec struct {
 	// instead of credentialsSecretRef.
 	// +optional
 	Auth *RegistryAuth `json:"auth,omitempty"`
+
+	// registryFlavor turns on registry-specific calls. Harbor deletes tags
+	// (Untag) through the Harbor API, because Harbor refuses tag delete on
+	// /v2; the credentials then need Harbor's delete tag permission. Empty
+	// means OCI distribution.
+	// +optional
+	RegistryFlavor RegistryFlavor `json:"registryFlavor,omitempty"`
 
 	// workloadIdentity is the cloud identity used by auth and by
 	// sourceCredentials entries that name a cloud provider. Required when

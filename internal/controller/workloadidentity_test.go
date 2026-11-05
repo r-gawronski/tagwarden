@@ -152,6 +152,17 @@ var _ = Describe("Workload identity in a sync CronJob", func() {
 		}).Should(Succeed())
 	})
 
+	It("renders the target registry flavor", func() {
+		const name = "tgt-harbor"
+		t := createReadyTarget(name, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.RegistryFlavor = mirrorv1alpha1.RegistryFlavorHarbor
+		})
+		DeferCleanup(k8sClient.Delete, ctx, t)
+		m := mirrorOf(name, "harbor", k8sHost)
+		podOf(m)
+		Expect(specOf(m).TargetFlavor).To(Equal(syncspec.FlavorHarbor))
+	})
+
 	It("is not Ready when Azure auth has no Azure identity", func() {
 		const name = "tgt-wi-missing"
 		for _, s := range targetSecrets(name) {

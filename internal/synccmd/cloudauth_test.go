@@ -139,7 +139,7 @@ func (f *azureFakes) azureEnv(t *testing.T, e *env, source name.Repository, auth
 	e.write(t, e.opts.azureToken, saToken+"\n")
 	// httptest TLS servers share one certificate.
 	e.opts.proxyCA = filepath.Join(e.dir, "proxy-ca.crt")
-	e.write(t, e.opts.proxyCA, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.entra.Certificate().Raw})))
+	e.write(t, e.opts.proxyCA, string(pem.EncodeToMemory(&pem.Block{Type: certPEM, Bytes: f.entra.Certificate().Raw})))
 	e.writeSpec(t, source.String(), fmt.Sprintf(`"allowedSources":[%s],%q:%q,
 		"azure":{"clientID":%q,"tenantID":%q,"authorityHost":%q}`,
 		strconv.Quote(source.RegistryStr()), auth, syncspec.AuthAzureWorkloadIdentity,

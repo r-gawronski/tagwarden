@@ -7,6 +7,8 @@ metadata:
   name: default
 spec:
   registry: registry.example.internal
+  # Harbor only: delete tags through the Harbor API. Needs credentialsSecretRef.
+  # registryFlavor: Harbor
   # Secrets live in the operator namespace.
   credentialsSecretRef:
     name: registry-push

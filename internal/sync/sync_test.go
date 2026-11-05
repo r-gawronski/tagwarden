@@ -55,8 +55,10 @@ const (
 
 // testRegistry is an in-process registry that counts write requests.
 type testRegistry struct {
-	repo   name.Repository
-	writes atomic.Int32
+	repo name.Repository
+	// handler serves the registry without the test hooks.
+	handler http.Handler
+	writes  atomic.Int32
 	// manifestGets counts GET requests for manifests.
 	manifestGets atomic.Int32
 	// tagLists counts GET requests for /tags/list.
@@ -155,7 +157,7 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.repo = repo
+	r.repo, r.handler = repo, h
 	return r
 }
 

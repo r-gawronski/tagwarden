@@ -174,6 +174,29 @@ func TestDecodeRejects(t *testing.T) {
 	}
 }
 
+func TestDecodeTargetFlavor(t *testing.T) {
+	cases := map[string]struct{ add, wantErr string }{
+		"harbor with secret": {`"targetFlavor": "Harbor",`, ""},
+		"unknown flavor":     {`"targetFlavor": "Quay",`, `unknown targetFlavor "Quay"`},
+		"harbor with azure": {`"targetFlavor": "Harbor", ` + azure(zeroGUID, `"https://login.microsoftonline.com/"`),
+			"targetFlavor Harbor: needs the target Secret credentials"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, err := Decode(strings.NewReader(strings.Replace(valid, maxTags, maxTags+" "+tc.add, 1)))
+			if tc.wantErr == "" {
+				if err != nil || s.TargetFlavor != FlavorHarbor {
+					t.Fatalf("got %v, %v", s, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestAllowedSource(t *testing.T) {
 	cases := []struct {
 		host    string
