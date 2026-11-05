@@ -359,3 +359,31 @@ func testutilCount(ns string) int {
 	}
 	return n
 }
+
+const (
+	dig1 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	dig2 = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+)
+
+// A sync records its tags in status.owned, also with prune off; a re-scan
+// and an unreadable report leave the record alone.
+func TestRecordJobOwned(t *testing.T) {
+	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	m := &mirrorv1alpha1.ArtifactMirror{}
+	m.Status.Owned = []mirrorv1alpha1.SyncedTag{{Tag: "1", Digest: dig1}}
+	run := func(trigger string, code int32, rep *syncspec.Report) {
+		job := finishedJobAt("j", trigger, t0)
+		var ev pending
+		recordJob(m, job, finished(job), termination(t, code, rep), false, &ev)
+	}
+	run("", syncspec.ExitOK, &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{{Tag: "2", Digest: dig2}}})
+	want := []mirrorv1alpha1.SyncedTag{{Tag: "2", Digest: dig2}, {Tag: "1", Digest: dig1}}
+	if !slices.Equal(m.Status.Owned, want) {
+		t.Fatalf("owned %v, want %v", m.Status.Owned, want)
+	}
+	run(TriggerRescan, syncspec.ExitOK, &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{{Tag: "3", Digest: dig1}}})
+	run("", syncspec.ExitSyncFailed, &syncspec.Report{V: 1, Synced: []syncspec.SyncedTag{}, Failed: 1})
+	if !slices.Equal(m.Status.Owned, want) {
+		t.Errorf("owned %v, want %v", m.Status.Owned, want)
+	}
+}

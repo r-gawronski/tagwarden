@@ -231,6 +231,10 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 		if rep.Truncated && cond.Status == metav1.ConditionTrue {
 			cond.Reason = ReasonTruncated
 		}
+		var ownedCut bool
+		if !rescan {
+			m.Status.Owned, ownedCut = mergeOwned(m.Status.Owned, m.Status.Synced, nil, nil)
+		}
 		if rescan && cond.Status != metav1.ConditionTrue {
 			cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + "rescan failed: " + summary(rep)
 			return cond, &rep
@@ -238,6 +242,9 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 		msg := summary(rep)
 		if sel := rep.Selection; !rescan && sel != nil && (sel.Selected == 0 || sel.Missing > 0) {
 			msg = selectionNote(sel) + "; " + msg
+		}
+		if ownedCut {
+			msg += fmt.Sprintf("; owned list truncated to %d tags, the oldest are never pruned", maxOwned)
 		}
 		cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + msg
 		return cond, &rep
