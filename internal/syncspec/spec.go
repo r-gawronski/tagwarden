@@ -367,6 +367,24 @@ func (s *Spec) validate() error {
 	if len(s.AllowedSources) == 0 || slices.Contains(s.AllowedSources, "") {
 		return errors.New("allowedSources: at least one non-empty host is required")
 	}
+	if err := s.validateAuth(); err != nil {
+		return err
+	}
+	if err := s.validateFlavor(); err != nil {
+		return err
+	}
+	for _, c := range s.DeniedCIDRs {
+		p, err := netip.ParsePrefix(c)
+		if err != nil {
+			return fmt.Errorf("deniedCIDRs: %w", err)
+		}
+		s.DeniedPrefixes = append(s.DeniedPrefixes, p)
+	}
+	return nil
+}
+
+// validateAuth checks the registry auth modes and their cloud settings.
+func (s *Spec) validateAuth() error {
 	for _, a := range []string{s.TargetAuth, s.SourceAuth} {
 		switch a {
 		case "":
@@ -386,9 +404,6 @@ func (s *Spec) validate() error {
 			return fmt.Errorf("unknown registry auth %q", a)
 		}
 	}
-	if err := s.validateFlavor(); err != nil {
-		return err
-	}
 	if s.Azure != nil {
 		if err := s.Azure.validate(); err != nil {
 			return fmt.Errorf("azure: %w", err)
@@ -403,13 +418,6 @@ func (s *Spec) validate() error {
 		if err := s.GCP.validate(); err != nil {
 			return fmt.Errorf("gcp: %w", err)
 		}
-	}
-	for _, c := range s.DeniedCIDRs {
-		p, err := netip.ParsePrefix(c)
-		if err != nil {
-			return fmt.Errorf("deniedCIDRs: %w", err)
-		}
-		s.DeniedPrefixes = append(s.DeniedPrefixes, p)
 	}
 	return nil
 }
