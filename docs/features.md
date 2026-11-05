@@ -14,33 +14,37 @@ Owners:
 - **team**: a tenant team, in an `ArtifactMirror` in its namespace.
 - **security**: the security team, in a `VulnerabilityException`.
 
+Examples are full objects with `apiVersion` and `kind`, or start with
+`# Helm chart values.yaml`. A `# <-` comment marks the lines of the
+feature; the other lines are the minimum the object needs.
+
 ## Index
 
 | Feature | Owner | Default | Where |
 | --- | --- | --- | --- |
 | [Image mirror](#image-mirror) | team | on | `ArtifactMirror` |
-| [Helm OCI chart mirror](#helm-oci-chart-mirror) | team | off | `spec.type: HelmOCI` |
-| [Tag selection](#tag-selection) | team | required | `spec.tags` |
-| [Prereleases](#prereleases) | team | off | `spec.tags.allowPrerelease` |
-| [Required platforms](#required-platforms) | team | off | `spec.requiredPlatforms` |
-| [Suspend](#suspend) | team | off | `spec.suspend` |
-| [Sync now](#sync-now) | team | off | annotation `tagwarden.dev/sync-now` |
-| [Custom target path](#custom-target-path) | platform + team | off | `allowRepositoryOverride`, `target.repository` |
-| [Projects and namespace access](#projects-and-namespace-access) | platform | required | `spec.projects` |
-| [Allowed sources](#allowed-sources) | platform | required | `spec.allowedSources` |
-| [Limits](#limits) | platform | on, with defaults | `spec.limits` |
-| [Moving tags](#moving-tags) | platform | `Fail` | `spec.policy.onTagMutation` |
-| [Proxy](#proxy) | platform | off | `spec.proxy` |
-| [Target CA and mTLS](#target-ca-and-mtls) | platform | off | `caBundleSecretRef`, `clientCertSecretRef` |
-| [Push credentials](#push-credentials) | platform | required | `credentialsSecretRef` or `auth` |
-| [Private sources](#private-sources) | platform | anonymous | `sourceCredentials`, `sourceCABundles` |
-| [Cloud workload identity](#cloud-workload-identity) | platform | off | `auth`, `workloadIdentity` |
-| [Harbor tag delete](#harbor-tag-delete) | platform | off | `spec.registryFlavor: Harbor` |
+| [Helm OCI chart mirror](#helm-oci-chart-mirror) | team | off | ArtifactMirror `spec.type: HelmOCI` |
+| [Tag selection](#tag-selection) | team | required | ArtifactMirror `spec.tags` |
+| [Prereleases](#prereleases) | team | off | ArtifactMirror `spec.tags.allowPrerelease` |
+| [Required platforms](#required-platforms) | team | off | ArtifactMirror `spec.requiredPlatforms` |
+| [Suspend](#suspend) | team | off | ArtifactMirror `spec.suspend` |
+| [Sync now](#sync-now) | team | off | ArtifactMirror annotation `tagwarden.dev/sync-now` |
+| [Custom target path](#custom-target-path) | platform + team | off | ClusterMirrorTarget `allowRepositoryOverride`, ArtifactMirror `target.repository` |
+| [Projects and namespace access](#projects-and-namespace-access) | platform | required | ClusterMirrorTarget `spec.projects` |
+| [Allowed sources](#allowed-sources) | platform | required | ClusterMirrorTarget `spec.allowedSources` |
+| [Limits](#limits) | platform | on, with defaults | ClusterMirrorTarget `spec.limits` |
+| [Moving tags](#moving-tags) | platform | `Fail` | ClusterMirrorTarget `spec.policy.onTagMutation` |
+| [Proxy](#proxy) | platform | off | ClusterMirrorTarget `spec.proxy` |
+| [Target CA and mTLS](#target-ca-and-mtls) | platform | off | ClusterMirrorTarget `caBundleSecretRef`, `clientCertSecretRef` |
+| [Push credentials](#push-credentials) | platform | required | ClusterMirrorTarget `credentialsSecretRef` or `auth` |
+| [Private sources](#private-sources) | platform | anonymous | ClusterMirrorTarget `sourceCredentials`, `sourceCABundles` |
+| [Cloud workload identity](#cloud-workload-identity) | platform | off | ClusterMirrorTarget `auth`, `workloadIdentity` |
+| [Harbor tag delete](#harbor-tag-delete) | platform | off | ClusterMirrorTarget `spec.registryFlavor: Harbor` |
 | [Denied CIDRs](#denied-cidrs) | platform | empty | chart `deniedCIDRs` |
 | [Network policies](#network-policies) | platform | off | your own NetworkPolicy, chart `networkPolicy` |
-| [Auto-mirror](#auto-mirror) | platform + team | off | `spec.autoMirror`, pod annotation |
-| [Vulnerability gate](#vulnerability-gate) | platform | off | `spec.autoMirror.vulnerabilityGate`, chart `trivy` |
-| [Re-scan and untag](#re-scan-and-untag) | platform | off | `rescanInterval`, `onVulnerableTag` |
+| [Auto-mirror](#auto-mirror) | platform + team | off | ClusterMirrorTarget `spec.autoMirror`, pod annotation `tagwarden.dev/auto-mirror` |
+| [Vulnerability gate](#vulnerability-gate) | platform | off | ClusterMirrorTarget `spec.autoMirror.vulnerabilityGate`, chart `trivy` |
+| [Re-scan and untag](#re-scan-and-untag) | platform | off | ClusterMirrorTarget `vulnerabilityGate.rescanInterval`, `onVulnerableTag` |
 | [Vulnerability exceptions](#vulnerability-exceptions) | security | none | `VulnerabilityException` |
 | [Signatures and referrers](#signatures-and-referrers) | - | always on | - |
 | [Metrics](#metrics) | platform | on | chart `metrics`, `prometheus` |
@@ -57,7 +61,7 @@ Owner: team. On for every `ArtifactMirror`; `spec.type` defaults to
 
 ```yaml
 apiVersion: mirror.tagwarden.dev/v1alpha1
-kind: ArtifactMirror
+kind: ArtifactMirror                # <- one per upstream repository
 metadata: {name: nginx, namespace: team-web}
 spec:
   targetRef: registry               # a ClusterMirrorTarget
@@ -81,8 +85,13 @@ repository>`. More: [README, Examples](../README.md#examples).
 Owner: team. Off; set `spec.type: HelmOCI`.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: kube-prometheus-stack, namespace: team-obs}
 spec:
-  type: HelmOCI
+  targetRef: registry
+  schedule: "@daily"
+  type: HelmOCI                     # <- Helm chart in an OCI registry
   source: {registry: ghcr.io, repository: prometheus-community/charts/kube-prometheus-stack}
   target: {project: mirror}
   tags: {semverRange: ">=75.0.0", keepLatest: 5}
@@ -96,13 +105,20 @@ Owner: team. Required: set at least one of `include`, `semverRange`,
 `keepLatest` or `tags`.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: ingress-nginx, namespace: team-net}
 spec:
+  targetRef: registry
+  schedule: "@daily"
+  source: {registry: registry.k8s.io, repository: ingress-nginx/controller}
+  target: {project: mirror}
   tags:
-    include: ['^v\d+\.\d+\.\d+$']   # RE2, not anchored: use ^...$
-    exclude: ['-debug$']
-    semverRange: ">=1.11.0 <2.0.0"
-    keepLatest: 3                   # N highest semver tags after filtering
-    tags: [v1.10.4]                 # exact tags, bypass all filters
+    include: ['^v\d+\.\d+\.\d+$']   # <- RE2, not anchored: use ^...$
+    exclude: ['-debug$']            # <- drop matching tags
+    semverRange: ">=1.11.0 <2.0.0"  # <- semver constraint
+    keepLatest: 3                   # <- N highest semver tags after filtering
+    tags: [v1.10.4]                 # <- exact tags, bypass all filters
 ```
 
 `include`, `semverRange` and `keepLatest` list the whole source; a source
@@ -120,10 +136,17 @@ tag gives a `TagNotFound` Event. Alert on
 Owner: team. Off: `semverRange` and `keepLatest` drop prereleases.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: ingress-nginx, namespace: team-net}
 spec:
+  targetRef: registry
+  schedule: "@daily"
+  source: {registry: registry.k8s.io, repository: ingress-nginx/controller}
+  target: {project: mirror}
   tags:
     semverRange: ">=1.11.0-0"
-    allowPrerelease: true           # needed even when the range names a prerelease
+    allowPrerelease: true           # <- keep prereleases, also when the range names one
 ```
 
 ### Required platforms
@@ -131,8 +154,16 @@ spec:
 Owner: team. Off.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: ingress-nginx, namespace: team-net}
 spec:
-  requiredPlatforms: [linux/amd64, linux/arm64]   # os/arch[/variant]
+  targetRef: registry
+  schedule: "@daily"
+  source: {registry: registry.k8s.io, repository: ingress-nginx/controller}
+  target: {project: mirror}
+  tags: {keepLatest: 3}
+  requiredPlatforms: [linux/amd64, linux/arm64]   # <- os/arch[/variant]
 ```
 
 A tag that lacks a listed platform fails and is not copied. The whole
@@ -143,8 +174,16 @@ index is always copied, so digests and signatures stay valid.
 Owner: team. Off.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: nginx, namespace: team-web}
 spec:
-  suspend: true
+  targetRef: registry
+  schedule: "@daily"
+  source: {registry: docker.io, repository: library/nginx}
+  target: {project: mirror}
+  tags: {keepLatest: 3}
+  suspend: true                     # <- no new scheduled syncs
 ```
 
 The CronJob is suspended. Sync now requests are refused while suspended.
@@ -169,16 +208,29 @@ Owner: platform opens it, team uses it. Off: mirrors use the default
 path.
 
 ```yaml
-# ClusterMirrorTarget
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [registry.k8s.io]
   projects:
     - name: team-net
       namespaceSelector: {matchLabels: {example.com/team: net}}
-      allowRepositoryOverride: true
+      allowRepositoryOverride: true # <- mirrors in this project may pick a path
 ---
-# ArtifactMirror
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: ingress-nginx, namespace: team-net}
 spec:
-  target: {project: team-net, repository: ingress/controller}
+  targetRef: registry
+  schedule: "@daily"
+  source: {registry: registry.k8s.io, repository: ingress-nginx/controller}
+  target:
+    project: team-net
+    repository: ingress/controller  # <- path inside the project
+  tags: {keepLatest: 3}
 ```
 
 Enable it only for a project owned by one team. Without it, a mirror
@@ -191,8 +243,14 @@ that sets `target.repository` is refused.
 Owner: platform. Required: at least one project.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
-  projects:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:                         # <- where mirrors may push, and from which namespaces
     - name: mirror
       namespaceSelector: {}         # every namespace
     - name: team-net
@@ -207,8 +265,15 @@ namespace. Two mirrors cannot write different sources to the same path.
 Owner: platform. Required.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
-  allowedSources: [registry.k8s.io, ghcr.io, quay.io, docker.io]
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [registry.k8s.io, ghcr.io, quay.io, docker.io]   # <- upstreams mirrors may use
+  projects:
+    - {name: mirror, namespaceSelector: {}}
 ```
 
 A mirror with any other source registry is refused.
@@ -227,8 +292,16 @@ Owner: platform. On with defaults; `spec.limits` overrides them.
 | `maxArtifactSize` | no limit | |
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
-  limits:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
+  limits:                           # <- absent fields keep their defaults
     minSyncInterval: 6h
     maxArtifactSize: 5Gi
 ```
@@ -243,9 +316,17 @@ Owner: platform. Default `Fail`: the target tag stays and the mutation
 is reported.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
   policy:
-    onTagMutation: Overwrite        # Fail | Overwrite | Ignore
+    onTagMutation: Overwrite        # <- Fail (default) | Overwrite | Ignore
 ```
 
 ## Network and credentials
@@ -255,8 +336,16 @@ spec:
 Owner: platform. Off: sync Jobs connect directly.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
-  proxy:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
+  proxy:                            # <- upstream traffic goes through the proxy
     httpsProxy: http://proxy.example.internal:3128   # no credentials in the URL
     noProxy: [registry.example.internal]
     credentialsSecretRef: {name: proxy-credentials}  # kubernetes.io/basic-auth
@@ -270,9 +359,17 @@ Sync pods get the label `tagwarden.dev/egress: proxy`.
 Owner: platform. Off: system roots, no client certificate.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
-  caBundleSecretRef: {name: registry-ca, key: ca.crt}
-  clientCertSecretRef: {name: registry-client}       # kubernetes.io/tls
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
+  caBundleSecretRef: {name: registry-ca, key: ca.crt}  # <- CA of the target registry
+  clientCertSecretRef: {name: registry-client}         # <- mTLS, kubernetes.io/tls
 ```
 
 ### Push credentials
@@ -286,8 +383,15 @@ kubectl -n tagwarden-system create secret docker-registry registry-push \
 ```
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
-  credentialsSecretRef: {name: registry-push}
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}   # <- kubernetes.io/dockerconfigjson
+  allowedSources: [docker.io]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
 ```
 
 Secrets live in the operator namespace. Check: the target's `Ready`
@@ -298,11 +402,19 @@ condition reports missing or unreadable Secrets.
 Owner: platform. Default: anonymous pull with system roots.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
-  sourceCredentials:                # kubernetes.io/dockerconfigjson
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [ghcr.io, registry.corp.example.internal]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
+  sourceCredentials:                # <- pull credentials, kubernetes.io/dockerconfigjson
     - registry: ghcr.io
       secretRef: {name: ghcr-pull}
-  sourceCABundles:
+  sourceCABundles:                  # <- extra root CAs per source
     - registry: registry.corp.example.internal
       secretRef: {name: corp-registry-ca, key: ca.crt}
 ```
@@ -316,15 +428,22 @@ Owner: platform. Off. Push to or pull from Azure Container Registry,
 Amazon ECR or Google Artifact Registry without a static Secret.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
+  registry: 123456789012.dkr.ecr.eu-west-1.amazonaws.com
   auth:
-    awsWorkloadIdentity: {}         # or azureWorkloadIdentity, gcpWorkloadIdentity
-  workloadIdentity:
+    awsWorkloadIdentity: {}         # <- push with IRSA; or azureWorkloadIdentity, gcpWorkloadIdentity
+  workloadIdentity:                 # <- the identity the sync pods use
     serviceAccountName: tagwarden-sync-aws
-    aws: {roleARN: arn:aws:iam::123456789012:role/tagwarden-sync, region: eu-west-1}
+    aws: {roleARN: "arn:aws:iam::123456789012:role/tagwarden-sync", region: eu-west-1}
+  allowedSources: [public.ecr.aws, 123456789012.dkr.ecr.eu-west-1.amazonaws.com]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
   sourceCredentials:
     - registry: 123456789012.dkr.ecr.eu-west-1.amazonaws.com
-      awsWorkloadIdentity: {}
+      awsWorkloadIdentity: {}       # <- pull with the same identity
 ```
 
 The cloud side (identity, federation, roles) is in the install guide:
@@ -338,8 +457,16 @@ Owner: platform. Off: tag delete uses OCI distribution, which Harbor
 refuses.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
-  registryFlavor: Harbor
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
+  registryFlavor: Harbor            # <- delete tags through the Harbor API
 ```
 
 Used by [re-scan and untag](#re-scan-and-untag). The push credentials
@@ -353,8 +480,8 @@ service CIDRs; sync Jobs refuse sources that resolve into these ranges,
 on top of the built-in loopback, link-local and cloud metadata checks.
 
 ```yaml
-# values.yaml
-deniedCIDRs: [10.244.0.0/16, 10.96.0.0/12]
+# Helm chart values.yaml
+deniedCIDRs: [10.244.0.0/16, 10.96.0.0/12]   # <- pod and service CIDRs
 ```
 
 ### Network policies
@@ -372,18 +499,31 @@ and, with Trivy, for the Trivy server. More:
 Owner: platform enables it per target, teams annotate pods. Off.
 
 ```yaml
-# ClusterMirrorTarget
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io, ghcr.io]
+  projects:
+    - {name: shared, namespaceSelector: {}}
   autoMirror:
-    enabled: true
+    enabled: true                   # <- turns auto-mirror on for this target
     project: shared                 # listed in projects, no allowRepositoryOverride
     schedule: "0 */6 * * *"         # default
     maxMirrorsPerNamespace: 20      # default, up to 200
 ---
-# Pod or pod template
+apiVersion: v1
+kind: Pod
 metadata:
+  name: web
+  namespace: team-web
   annotations:
-    tagwarden.dev/auto-mirror: default   # ClusterMirrorTarget name
+    tagwarden.dev/auto-mirror: registry   # <- ClusterMirrorTarget name
+spec:
+  containers:
+    - {name: web, image: "docker.io/library/nginx:1.31.7"}
 ```
 
 Check: generated mirrors are labeled `tagwarden.dev/generated=true`; the
@@ -398,12 +538,20 @@ a Trivy server: the chart deploys one with `trivy.enabled: true`, with
 its database taken from your registry.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:
+    - {name: shared, namespaceSelector: {}}
   autoMirror:
     enabled: true
     project: shared
     vulnerabilityGate:
-      enabled: true
+      enabled: true                 # <- scan generated mirrors with Trivy
       action: Report                # Report (default) | Block
       severity: Critical            # default
       onScanError: Report           # default; Report | Block
@@ -424,12 +572,23 @@ when the gate has no usable scanner. Full setup:
 Owner: platform. Off.
 
 ```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
 spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:
+    - {name: shared, namespaceSelector: {}}
   autoMirror:
+    enabled: true
+    project: shared
     vulnerabilityGate:
+      enabled: true
       action: Block                 # Untag needs Block
-      rescanInterval: 24h           # at least 1h
-      onVulnerableTag: Untag        # default Report
+      rescanInterval: 24h           # <- re-scan mirrored tags, at least 1h
+      onVulnerableTag: Untag        # <- delete vulnerable tags; default Report
 ```
 
 Findings go to `status.vulnerable`. Untag deletes the tag, not the
@@ -447,11 +606,11 @@ apiVersion: mirror.tagwarden.dev/v1alpha1
 kind: VulnerabilityException
 metadata: {name: nginx-cve}         # cluster-scoped
 spec:
-  targetRef: default
+  targetRef: registry
   namespaces: [team-web]
   repository: docker.io/library/nginx
-  vulnerabilities: [CVE-2026-12345]
-  expires: "2026-12-31T00:00:00Z"
+  vulnerabilities: [CVE-2026-12345] # <- accepted IDs; empty accepts every finding of the digests
+  expires: "2026-12-31T00:00:00Z"   # <- at most maxExceptionDuration after creation
   approvedBy: security-team
   reason: Not reachable in our configuration.
 ```
@@ -482,10 +641,10 @@ Collect it with your log pipeline.
 Owner: platform. On, HTTPS with authn and authz on port 8443.
 
 ```yaml
-# values.yaml
-metrics: {enabled: true, port: 8443, secure: true}
+# Helm chart values.yaml
+metrics: {enabled: true, port: 8443, secure: true}   # <- on by default
 prometheus:
-  enabled: true                     # Prometheus Operator ServiceMonitor
+  enabled: true                     # <- Prometheus Operator ServiceMonitor
   tlsConfig: {}                     # CA of the metrics certificate
 ```
 
@@ -499,9 +658,9 @@ Owner: platform. Off. A **Sync now** button and health checks come from
 an `argocd-cm` snippet. Sync Jobs show in the app tree with:
 
 ```yaml
-# values.yaml
+# Helm chart values.yaml
 argocd:
-  tracking: inherit
+  tracking: inherit                 # <- show sync Jobs in the mirror's app
 ```
 
 More: [argocd.md](argocd.md).
