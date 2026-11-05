@@ -442,7 +442,7 @@ func TestRunMaxTags(t *testing.T) {
 		push(t, src.repo, fmt.Sprintf("v1.0.%d", i), image(t))
 	}
 	_, err := Run(context.Background(), Request{Source: src.repo, Target: dst.repo, Policy: tags.Policy{KeepLatest: 1}, MaxTags: 2})
-	if err == nil || !strings.Contains(err.Error(), "limit") {
+	if err == nil || !strings.Contains(err.Error(), "more than 2 tags") {
 		t.Fatalf("want tag limit error, got %v", err)
 	}
 	if n := dst.writes.Load(); n != 0 {

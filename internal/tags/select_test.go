@@ -17,6 +17,7 @@ limitations under the License.
 package tags
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 	"strconv"
@@ -116,7 +117,7 @@ func TestSelectErrors(t *testing.T) {
 		{"program too large", all, Policy{Include: []string{`\w{1000}\w{1000}`}}, fieldInclude},
 		{"range too long", all, Policy{SemverRange: ">=" + strings.Repeat("1", MaxRangeLength)}, "semverRange"},
 		{"negative keepLatest", all, Policy{KeepLatest: -1}, "keepLatest"},
-		{"too many tags", make([]string, MaxTags+1), Policy{}, "tags"},
+		{"too many tags", make([]string, MaxTagsLimit+1), Policy{}, "tags"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -237,5 +238,18 @@ func TestExplainStats(t *testing.T) {
 				t.Errorf("got %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A listing above the default cap selects; the sync Job enforces the
+// target's maxListedTags before selection runs.
+func TestExplainAboveDefaultCap(t *testing.T) {
+	in := make([]string, 26700)
+	for i := range in {
+		in[i] = fmt.Sprintf("v1.0.%d", i)
+	}
+	out, err := Select(in, Policy{KeepLatest: 1})
+	if err != nil || len(out) != 1 || out[0] != "v1.0.26699" {
+		t.Fatalf("got %v, %v", out, err)
 	}
 }

@@ -35,6 +35,7 @@ import (
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
+	"github.com/r-gawronski/tagwarden/internal/tags"
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
@@ -428,5 +429,16 @@ func TestGateTokenDefault(t *testing.T) {
 				t.Errorf("token Secret %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSyncSpecMaxListedTags(t *testing.T) {
+	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{})
+	if got := syncSpec(tg, m, nil).MaxTags; got != tags.MaxTags {
+		t.Errorf("default MaxTags = %d, want %d", got, tags.MaxTags)
+	}
+	tg.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxListedTags: ptr.To[int32](50000)}
+	if got := syncSpec(tg, m, nil).MaxTags; got != 50000 {
+		t.Errorf("MaxTags = %d, want 50000", got)
 	}
 }

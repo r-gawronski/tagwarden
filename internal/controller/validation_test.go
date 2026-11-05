@@ -176,6 +176,7 @@ var _ = Describe("API validation", func() {
 				MaxMirrorsPerNamespace: ptr.To[int32](1),
 				MaxKeepLatest:          ptr.To[int32](100),
 				MaxExplicitTags:        ptr.To[int32](100),
+				MaxListedTags:          ptr.To[int32](100000),
 				MaxArtifactSize:        &size,
 			}
 		}),
@@ -321,6 +322,12 @@ var _ = Describe("API validation", func() {
 		}),
 		Entry("maxExplicitTags 0", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxExplicitTags: ptr.To[int32](0)}
+		}),
+		Entry("maxListedTags 0", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxListedTags: ptr.To[int32](0)}
+		}),
+		Entry("maxListedTags 100001", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
+			o.Spec.Limits = &mirrorv1alpha1.TargetLimits{MaxListedTags: ptr.To[int32](100001)}
 		}),
 		Entry("maxArtifactSize 0", func(o *mirrorv1alpha1.ClusterMirrorTarget) {
 			size := resource.MustParse("0")

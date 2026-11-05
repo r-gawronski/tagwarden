@@ -33,7 +33,10 @@ const (
 	MaxPatternLength = 256
 	MaxProgramInsts  = 2000
 	MaxRangeLength   = 256
-	MaxTags          = 10000
+	// MaxTags is the default cap of a tag listing; MaxTagsLimit is the
+	// highest cap a target may set (maxListedTags).
+	MaxTags      = 10000
+	MaxTagsLimit = 100000
 )
 
 // semverTag is the tag shape treated as a version. It rejects plain numbers
@@ -97,8 +100,8 @@ func Select(tags []string, p Policy) ([]string, error) {
 // Explain is Select with the per-filter counts.
 func Explain(tags []string, p Policy) ([]string, Stats, error) {
 	st := Stats{Listed: len(tags)}
-	if len(tags) > MaxTags {
-		return nil, st, fmt.Errorf("tags: %d entries exceed the limit of %d", len(tags), MaxTags)
+	if len(tags) > MaxTagsLimit {
+		return nil, st, fmt.Errorf("tags: %d entries exceed the limit of %d", len(tags), MaxTagsLimit)
 	}
 	include, exclude, constraint, err := p.compile()
 	if err != nil {

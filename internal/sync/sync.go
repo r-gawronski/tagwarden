@@ -277,7 +277,7 @@ func (s *syncer) list(ctx context.Context) ([]string, error) {
 		}
 		all = append(all, page.Tags...)
 		if len(all) > s.req.MaxTags {
-			return nil, fmt.Errorf("sync: source has more than %d tags, the limit", s.req.MaxTags)
+			return nil, fmt.Errorf("sync: source has more than %d tags, the limit (maxListedTags of the ClusterMirrorTarget)", s.req.MaxTags)
 		}
 	}
 	return all, nil

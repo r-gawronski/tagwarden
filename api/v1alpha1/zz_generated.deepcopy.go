@@ -812,6 +812,11 @@ func (in *TargetLimits) DeepCopyInto(out *TargetLimits) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.MaxListedTags != nil {
+		in, out := &in.MaxListedTags, &out.MaxListedTags
+		*out = new(int32)
+		**out = **in
+	}
 	if in.MaxArtifactSize != nil {
 		in, out := &in.MaxArtifactSize, &out.MaxArtifactSize
 		x := (*in).DeepCopy()

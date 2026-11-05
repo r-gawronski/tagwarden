@@ -147,8 +147,9 @@ project owned by a single team, for example:
 
 One team shouldn't be able to hog a shared target. Every target has
 limits, and you get the defaults without writing anything: schedules at
-most hourly, 50 mirrors per namespace, `keepLatest` up to 20 and 50
-explicit tags. Artifact size has no cap until you set one.
+most hourly, 50 mirrors per namespace, `keepLatest` up to 20, 50
+explicit tags and 10000 listed source tags. Artifact size has no cap
+until you set one.
 
 Go over a limit and your mirror gets `Ready=False` with reason
 `ScheduleTooFrequent` or `LimitExceeded`, and Tagwarden removes its
@@ -160,6 +161,11 @@ it, the tag fails and stays where it was. A layer shared by several
 platforms of an index counts once per platform, so the check errs on the
 strict side.
 
+`include`, `semverRange` and `keepLatest` need the full source tag list.
+A source with more tags than `maxListedTags` fails the sync run instead
+of selecting from a partial list. Raise the limit for a large
+repository, up to 100000. Explicit `tags.tags` never list the source.
+
 ```yaml
 spec:
   limits:
@@ -167,6 +173,7 @@ spec:
     maxMirrorsPerNamespace: 20
     maxKeepLatest: 10            # up to 100
     maxExplicitTags: 20          # up to 100
+    maxListedTags: 50000         # up to 100000
     maxArtifactSize: 5Gi         # config plus layers, all platforms
 ```
 
