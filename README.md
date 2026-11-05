@@ -636,6 +636,7 @@ You need Kubernetes 1.30 or newer and a registry you can push to.
 
 ## Documentation
 
+- [Features](docs/features.md): how to enable each feature, defaults and checks.
 - [Install](docs/install.md): Helm, Kustomize, uninstall, vulnerability gate.
 - [Network policies](docs/network-policies.md): sync pod labels and
   example egress policies.
