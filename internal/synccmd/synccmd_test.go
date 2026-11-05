@@ -929,3 +929,40 @@ func TestSelectionReport(t *testing.T) {
 		t.Fatalf("%v, %d bytes: %s", err, len(b), b)
 	}
 }
+
+// A Harbor target deletes tags through the Harbor API with the mounted
+// target credentials; other targets keep the OCI tag delete.
+func TestLoadHarborDeleteTag(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, _ := r.BasicAuth()
+		got = r.Method + " " + r.URL.EscapedPath() + " " + u + ":" + p
+	}))
+	t.Cleanup(srv.Close)
+	dst, err := name.NewRepository(strings.TrimPrefix(srv.URL, "http://")+"/team/app", name.StrictValidation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := newRegistry(t, false)
+	extra := `"allowedSources":[` + strconv.Quote(src.RegistryStr()) + `]`
+
+	e := newEnv(t, src, dst, password)
+	_, req, err := load(context.Background(), e.spec, e.opts, func(k string) string { return e.vars[k] })
+	if err != nil || req.DeleteTag != nil {
+		t.Fatalf("OCI target: DeleteTag set or %v", err)
+	}
+
+	e.writeSpec(t, src.String(), `"targetFlavor":"Harbor",`+extra)
+	_, req, err = load(context.Background(), e.spec, e.opts, func(k string) string { return e.vars[k] })
+	if err != nil || req.DeleteTag == nil {
+		t.Fatalf("Harbor target: DeleteTag nil or %v", err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	if err := req.DeleteTag(context.Background(), "v1", digest); err != nil {
+		t.Fatal(err)
+	}
+	want := "DELETE /api/v2.0/projects/team/repositories/app/artifacts/" + digest + "/tags/v1 " + user + ":" + password
+	if got != want {
+		t.Fatalf("request %q, want %q", got, want)
+	}
+}

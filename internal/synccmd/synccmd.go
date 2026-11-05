@@ -217,7 +217,7 @@ func load(ctx context.Context, specPath string, p options, getenv func(string) s
 			return syncspec.Spec{}, sync.Request{}, err
 		}
 	}
-	return spec, sync.Request{
+	req := sync.Request{
 		Gate:              gate,
 		Source:            spec.SourceRepo,
 		Target:            spec.TargetRepo,
@@ -228,7 +228,11 @@ func load(ctx context.Context, specPath string, p options, getenv func(string) s
 		MaxArtifactSize:   spec.MaxArtifactSize,
 		SourceOpts:        []remote.Option{remote.WithTransport(srcT), remote.WithAuth(srcAuth)},
 		TargetOpts:        []remote.Option{remote.WithTransport(dstT), remote.WithAuth(auth)},
-	}, nil
+	}
+	if spec.TargetFlavor == syncspec.FlavorHarbor {
+		req.DeleteTag = registry.HarborDeleteTag(dstT, auth, spec.TargetRepo)
+	}
+	return spec, req, nil
 }
 
 // dockerAuth reads the credentials for host from a dockerconfigjson file;
