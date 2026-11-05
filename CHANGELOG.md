@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1-rc.2] - 2026-11-05
+
+### Highlights
+
+Opt-in prune: with `spec.tags.prune: true` a mirror deletes target tags it copied and no longer selects. Only tags in `status.owned` are pruned, never a digest; tags pushed before the upgrade are not adopted.
+
+### Added
+
+- Prune tags a mirror no longer selects (#95)
+
+### Documentation
+
+- Add feature reference and require it on every change (#93)
+- **features:** Full example objects, checked by a dry-run test (#94)
+
 ## [0.1.1-rc.1] - 2026-11-05
 
 ### Highlights
