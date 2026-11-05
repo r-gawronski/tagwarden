@@ -551,6 +551,12 @@ func summarize(res sync.Result) report {
 			r.Synced = append(r.Synced, syncedTag{Tag: tag, Digest: d})
 		}
 	}
+	for _, a := range res.Pruned {
+		r.Pruned = append(r.Pruned, syncedTag{Tag: a.Tag, Digest: a.Digest})
+	}
+	for _, a := range res.Dropped {
+		r.Dropped = append(r.Dropped, syncedTag{Tag: a.Tag, Digest: a.Digest})
+	}
 	if st := res.Stats; st != nil {
 		r.Selection = &syncspec.Selection{
 			Listed: st.Listed, Filtered: st.Filtered, NotSemver: st.NotSemver, Prerelease: st.Prerelease,
@@ -612,6 +618,14 @@ func encode(r report) []byte {
 	if !fits(r) {
 		r.Truncated = true
 		r.Synced = synced[:largest(len(synced), func(k int) bool { r.Synced = synced[:k]; return fits(r) })]
+	}
+	// Pruned and dropped tags are small and kept ahead of the synced tags:
+	// they are cut only when no synced tag is left. Those that do not fit stay in the controller's record and are checked again
+	// next run; a pruned tag is gone by then and is dropped the second time.
+	if pruned, dropped := r.Pruned, r.Dropped; !fits(r) {
+		r.PrunedTruncated = true
+		r.Pruned = pruned[:largest(len(pruned), func(k int) bool { r.Pruned = pruned[:k]; return fits(r) })]
+		r.Dropped = dropped[:largest(len(dropped), func(k int) bool { r.Dropped = dropped[:k]; return fits(r) })]
 	}
 	// The missing tag names are the last to lose; their count stays.
 	if sel := r.Selection; sel != nil && !fits(r) {

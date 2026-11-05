@@ -930,6 +930,36 @@ func TestSelectionReport(t *testing.T) {
 	}
 }
 
+func TestPrunedReport(t *testing.T) {
+	d := "sha256:" + strings.Repeat("a", 64)
+	res := sync.Result{
+		Pruned:  []sync.Artifact{{Tag: "v1.0.0", Digest: d}},
+		Dropped: []sync.Artifact{{Tag: "v0.9.0", Digest: d}},
+	}
+	got, err := syncspec.ParseReport(string(encode(summarize(res))))
+	if err != nil || got.PrunedTruncated ||
+		!reflect.DeepEqual(got.Pruned, []syncedTag{{Tag: "v1.0.0", Digest: d}}) ||
+		!reflect.DeepEqual(got.Dropped, []syncedTag{{Tag: "v0.9.0", Digest: d}}) {
+		t.Fatalf("%+v, %v", got, err)
+	}
+	if r := summarize(sync.Result{}); r.Pruned != nil || r.Dropped != nil {
+		t.Errorf("nothing pruned: %+v", r)
+	}
+
+	// When the message is full the synced tags go first, then the pruned
+	// ones, and the flag says so.
+	r := summarize(res)
+	for i := range 200 {
+		r.Synced = append(r.Synced, syncedTag{Tag: fmt.Sprintf("v1.0.%d-%s", i, strings.Repeat("x", 100)), Digest: d})
+		r.Pruned = append(r.Pruned, syncedTag{Tag: fmt.Sprintf("v0.0.%d-%s", i, strings.Repeat("y", 100)), Digest: d})
+	}
+	b := encode(r)
+	got, err = syncspec.ParseReport(string(b))
+	if err != nil || len(b) > maxTermination || !got.PrunedTruncated || len(got.Pruned) == 0 || len(got.Pruned) == len(r.Pruned) {
+		t.Fatalf("%v, %d bytes, %d pruned, truncated %v", err, len(b), len(got.Pruned), got.PrunedTruncated)
+	}
+}
+
 // A Harbor target deletes tags through the Harbor API with the mounted
 // target credentials; other targets keep the OCI tag delete.
 func TestLoadHarborDeleteTag(t *testing.T) {

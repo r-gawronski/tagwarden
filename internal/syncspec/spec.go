@@ -556,6 +556,14 @@ type Report struct {
 	// RescanAction.
 	Rescan bool `json:"rescan,omitempty"`
 
+	// Pruned lists the Spec.Prunable tags the Job deleted from the target.
+	// Dropped lists the ones it found gone or moved and left alone; the
+	// controller stops tracking them. PrunedTruncated means the lists were
+	// cut to fit the message: the cut tags are checked again next run.
+	Pruned          []SyncedTag `json:"pruned,omitempty"`
+	Dropped         []SyncedTag `json:"dropped,omitempty"`
+	PrunedTruncated bool        `json:"prunedTruncated,omitempty"`
+
 	// Selection says what the tag selection did. Nil in a re-scan and from
 	// Jobs that predate it; the controller then judges nothing from it.
 	Selection *Selection `json:"selection,omitempty"`
@@ -647,6 +655,14 @@ func ParseReport(msg string) (Report, error) {
 			if !tagPattern.MatchString(t) {
 				return Report{}, errors.New("report: invalid selection")
 			}
+		}
+	}
+	if len(r.Pruned) > MaxPrunable || len(r.Dropped) > MaxPrunable || r.Rescan && len(r.Pruned)+len(r.Dropped) > 0 {
+		return Report{}, errors.New("report: invalid pruned entries")
+	}
+	for _, s := range slices.Concat(r.Pruned, r.Dropped) {
+		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
+			return Report{}, errors.New("report: invalid pruned entry")
 		}
 	}
 	for _, s := range r.Judged {

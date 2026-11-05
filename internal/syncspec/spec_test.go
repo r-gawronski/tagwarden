@@ -274,6 +274,30 @@ func TestParseReport(t *testing.T) {
 	}
 }
 
+func TestParseReportPruned(t *testing.T) {
+	d := "sha256:" + strings.Repeat("a", 64)
+	entry := `{"tag":"v1","digest":"` + d + `"}`
+	r, err := ParseReport(`{"v":1,"synced":[],"pruned":[` + entry + `],"dropped":[` + entry + `],"prunedTruncated":true}`)
+	if err != nil || len(r.Pruned) != 1 || len(r.Dropped) != 1 || !r.PrunedTruncated {
+		t.Fatalf("report %+v, err %v", r, err)
+	}
+	many := strings.TrimSuffix(strings.Repeat(entry+",", MaxPrunable+1), ",")
+	for name, msg := range map[string]string{
+		"bad pruned tag":      `{"v":1,"pruned":[{"tag":"../x","digest":"` + d + `"}]}`,
+		"bad pruned digest":   `{"v":1,"pruned":[{"tag":"v1","digest":"latest"}]}`,
+		"bad dropped tag":     `{"v":1,"dropped":[{"tag":"-x","digest":"` + d + `"}]}`,
+		"bad dropped digest":  `{"v":1,"dropped":[{"tag":"v1","digest":"sha256:abc"}]}`,
+		"too many pruned":     `{"v":1,"pruned":[` + many + `]}`,
+		"too many dropped":    `{"v":1,"dropped":[` + many + `]}`,
+		"pruned in a rescan":  `{"v":2,"rescan":true,"pruned":[` + entry + `]}`,
+		"dropped in a rescan": `{"v":2,"rescan":true,"dropped":[` + entry + `]}`,
+	} {
+		if _, err := ParseReport(msg); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}
+
 func TestParseReportV2(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	entry := func(extra string) string {

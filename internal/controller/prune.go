@@ -18,9 +18,12 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
@@ -60,4 +63,45 @@ func notePruneHeld(m *mirrorv1alpha1.ArtifactMirror) {
 		return
 	}
 	c.Message = strings.TrimPrefix(c.Message+"; ", "; ") + pruneHeldNote
+}
+
+// reasonTagPruned is the Event reason for a tag a sync deleted.
+const reasonTagPruned = "TagPruned"
+
+// checkPruned refuses a report that prunes what the controller did not
+// offer (threat model T12): prune must be on, and every pruned tag must be
+// in status.owned, not named in spec.tags.tags and not in the run's own
+// synced list. It runs before the report is applied, so owned still holds
+// what the Job was sent. A re-scan prunes nothing; ParseReport refuses it.
+// Dropped tags are only forgotten, so unknown ones do no harm.
+func checkPruned(m *mirrorv1alpha1.ArtifactMirror, rep syncspec.Report) error {
+	for _, p := range rep.Pruned {
+		switch {
+		case !m.Spec.Tags.Prune:
+			return errors.New("report: pruned tags with prune off")
+		case !slices.ContainsFunc(m.Status.Owned, func(o mirrorv1alpha1.SyncedTag) bool { return o.Tag == p.Tag }),
+			slices.Contains(m.Spec.Tags.Tags, p.Tag),
+			slices.ContainsFunc(rep.Synced, func(s syncspec.SyncedTag) bool { return s.Tag == p.Tag }):
+			return errors.New("report: pruned a tag that was not offered")
+		}
+	}
+	return nil
+}
+
+// toOwned converts report entries to the status type.
+func toOwned(in []syncspec.SyncedTag) []mirrorv1alpha1.SyncedTag {
+	out := make([]mirrorv1alpha1.SyncedTag, 0, len(in))
+	for _, s := range in {
+		out = append(out, mirrorv1alpha1.SyncedTag{Tag: s.Tag, Digest: s.Digest})
+	}
+	return out
+}
+
+// prunedEvents queues one Normal Event per pruned tag, at most
+// maxGateEvents.
+func prunedEvents(ev *pending, pruned []syncspec.SyncedTag) {
+	for _, p := range pruned[:min(len(pruned), maxGateEvents)] {
+		ev.add(corev1.EventTypeNormal, reasonTagPruned, "Sync",
+			fmt.Sprintf("tag %s (%s) deleted from the target, no longer selected; the digest stays", p.Tag, p.Digest))
+	}
 }

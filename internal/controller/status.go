@@ -118,6 +118,9 @@ func recordJob(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batchv1
 		eventType = corev1.EventTypeNormal
 	}
 	ev.add(eventType, cond.Reason, action, cond.Message)
+	if rep != nil && !rescan {
+		prunedEvents(ev, rep.Pruned)
+	}
 	if rep != nil && !rescan && rep.Selection != nil {
 		sel := rep.Selection
 		selectedTags.WithLabelValues(m.Namespace, m.Name).Set(float64(sel.Selected))
@@ -184,7 +187,9 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 	var rep syncspec.Report
 	repErr := fmt.Errorf("no sync container result: %s", done.Reason)
 	if term != nil {
-		rep, repErr = syncspec.ParseReport(term.Message)
+		if rep, repErr = syncspec.ParseReport(term.Message); repErr == nil {
+			repErr = checkPruned(m, rep)
+		}
 	}
 	switch {
 	case term == nil || term.ExitCode == exitCrashed || repErr != nil:
@@ -233,7 +238,7 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 		}
 		var ownedCut bool
 		if !rescan {
-			m.Status.Owned, ownedCut = mergeOwned(m.Status.Owned, m.Status.Synced, nil, nil)
+			m.Status.Owned, ownedCut = mergeOwned(m.Status.Owned, m.Status.Synced, toOwned(rep.Pruned), toOwned(rep.Dropped))
 		}
 		if rescan && cond.Status != metav1.ConditionTrue {
 			cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + "rescan failed: " + summary(rep)
@@ -290,6 +295,9 @@ func (r *ArtifactMirrorReconciler) termination(ctx context.Context, job *batchv1
 // trusted.
 func summary(r syncspec.Report) string {
 	s := fmt.Sprintf("copied %d, skipped %d, mutated %d, failed %d", r.Copied, r.Skipped, r.Mutated, r.Failed)
+	if len(r.Pruned) > 0 {
+		s += fmt.Sprintf(", pruned %d", len(r.Pruned))
+	}
 	if r.Truncated {
 		s += fmt.Sprintf("; synced list truncated to %d tags", min(len(r.Synced), maxSynced))
 	}
