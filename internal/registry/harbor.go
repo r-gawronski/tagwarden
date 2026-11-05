@@ -44,8 +44,8 @@ func HarborDeleteTag(rt http.RoundTripper, auth authn.Authenticator, repo name.R
 		// Never follow a redirect: credentials go only to the target host.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+	project, path, _ := strings.Cut(repo.RepositoryStr(), "/")
 	return func(ctx context.Context, tag, digest string) error {
-		project, path, _ := strings.Cut(repo.RepositoryStr(), "/")
 		if path == "" {
 			return fmt.Errorf("harbor: repository %q has no path after the project", repo.RepositoryStr())
 		}
@@ -56,9 +56,11 @@ func HarborDeleteTag(rt http.RoundTripper, auth authn.Authenticator, repo name.R
 		if cfg.Username == "" || cfg.Password == "" {
 			return errors.New("harbor: delete tag: username and password are required")
 		}
+		// Always https: never send credentials over plain http. ggcr's
+		// Scheme() guesses http for private and loopback hosts.
 		// Harbor wants the repository path escaped twice ("/" -> "%252F").
-		u := fmt.Sprintf("%s://%s/api/v2.0/projects/%s/repositories/%s/artifacts/%s/tags/%s",
-			repo.Scheme(), repo.RegistryStr(), url.PathEscape(project),
+		u := fmt.Sprintf("https://%s/api/v2.0/projects/%s/repositories/%s/artifacts/%s/tags/%s",
+			repo.RegistryStr(), url.PathEscape(project),
 			url.PathEscape(url.PathEscape(path)), url.PathEscape(digest), url.PathEscape(tag))
 		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
 		if err != nil {

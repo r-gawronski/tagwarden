@@ -934,12 +934,12 @@ func TestSelectionReport(t *testing.T) {
 // target credentials; other targets keep the OCI tag delete.
 func TestLoadHarborDeleteTag(t *testing.T) {
 	var got string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, _ := r.BasicAuth()
 		got = r.Method + " " + r.URL.EscapedPath() + " " + u + ":" + p
 	}))
 	t.Cleanup(srv.Close)
-	dst, err := name.NewRepository(strings.TrimPrefix(srv.URL, "http://")+"/team/app", name.StrictValidation)
+	dst, err := name.NewRepository(strings.TrimPrefix(srv.URL, "https://")+"/team/app", name.StrictValidation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -952,6 +952,9 @@ func TestLoadHarborDeleteTag(t *testing.T) {
 		t.Fatalf("OCI target: DeleteTag set or %v", err)
 	}
 
+	// The Harbor API is https only; trust the test server as the target CA.
+	e.opts.targetCA = filepath.Join(e.dir, "ca.crt")
+	e.write(t, e.opts.targetCA, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})))
 	e.writeSpec(t, src.String(), `"targetFlavor":"Harbor",`+extra)
 	_, req, err = load(context.Background(), e.spec, e.opts, func(k string) string { return e.vars[k] })
 	if err != nil || req.DeleteTag == nil {

@@ -134,3 +134,29 @@ func TestHarborDeleteTagRejectsBadInput(t *testing.T) {
 		})
 	}
 }
+
+// ggcr's Scheme() guesses http for private hosts. The delete must still use
+// TLS, or it sends the credentials in clear text.
+func TestHarborDeleteTagUsesHTTPSForPrivateHosts(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	auth := authn.FromConfig(authn.AuthConfig{Username: "robot$push", Password: "s3cret"})
+	for _, host := range []string{"10.20.0.5", "harbor.local", "localhost:8443"} {
+		t.Run(host, func(t *testing.T) {
+			repo, err := name.NewRepository(host + "/mirror/docker.io/library/nginx")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var tls bool
+			rt := harborServer(t, func(w http.ResponseWriter, r *http.Request) { tls = r.TLS != nil })
+			// The httptest certificate does not cover host; verify it as
+			// example.com so the handshake still checks the chain.
+			rt.(*http.Transport).TLSClientConfig.ServerName = "example.com"
+			if err := HarborDeleteTag(rt, auth, repo)(context.Background(), "1.0", digest); err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if !tls {
+				t.Fatal("request was not sent over TLS")
+			}
+		})
+	}
+}
