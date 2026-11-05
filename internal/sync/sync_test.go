@@ -65,7 +65,9 @@ type testRegistry struct {
 	tagLists atomic.Int32
 	// headStatus, when set, answers every manifest HEAD with this status.
 	headStatus atomic.Int32
-	mu         stdsync.Mutex
+	// listFailing makes /tags/list answer 500 from now on.
+	listFailing atomic.Bool
+	mu          stdsync.Mutex
 	// puts lists the paths of manifest PUT requests.
 	puts []string
 	// flipBlob maps a blob digest to a byte offset inverted on GET.
@@ -115,7 +117,7 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 		}
 		if strings.HasSuffix(req.URL.Path, "/tags/list") {
 			r.tagLists.Add(1)
-			if o.listFails {
+			if o.listFails || r.listFailing.Load() {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}

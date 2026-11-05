@@ -229,6 +229,9 @@ func load(ctx context.Context, specPath string, p options, getenv func(string) s
 		SourceOpts:        []remote.Option{remote.WithTransport(srcT), remote.WithAuth(srcAuth)},
 		TargetOpts:        []remote.Option{remote.WithTransport(dstT), remote.WithAuth(auth)},
 	}
+	for _, p := range spec.Prunable {
+		req.Prunable = append(req.Prunable, sync.Artifact{Tag: p.Tag, Digest: p.Digest})
+	}
 	if spec.TargetFlavor == syncspec.FlavorHarbor {
 		req.DeleteTag = registry.HarborDeleteTag(dstT, auth, spec.TargetRepo)
 	}
