@@ -152,8 +152,9 @@ spec:
     prune: true                     # <- delete tags this mirror created and no longer selects
 ```
 
-Only tags recorded in `status.owned` are candidates. Tags pushed before
-the mirror recorded them, or by hand, are never pruned. Prune deletes the
+Only tags recorded in `status.owned` are candidates: the tags a sync
+copied or overwrote. Tags pushed before the mirror recorded them, or by
+hand, are never pruned, also when the sync skipped them. Prune deletes the
 tag, not the digest: free the disk with registry garbage collection of
 untagged artifacts. A prune is skipped for the whole run when a copy
 failed or was blocked, when the selection is empty, or when another mirror

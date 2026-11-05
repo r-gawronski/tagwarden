@@ -45,15 +45,21 @@ Two PRs, in this order:
 
 ### Owned record (controller)
 
-- After every sync report, every `synced` entry (copied or skipped) is
-  merged into `owned` by tag; the run's digest wins.
+- After every sync report, every `synced` entry the Job marked `copied`
+  (copied or overwritten in this run) is merged into `owned` by tag; the
+  run's digest wins. A skipped tag was on the target already, so the
+  mirror cannot show it put the tag there: it never joins `owned` and
+  never changes a recorded digest. With `onTagMutation: Ignore` a human
+  push is therefore never adopted.
 - Entries the report lists as pruned are removed. Entries for tags the run
-  saw missing on the target are removed too.
+  saw missing or moved on the target (`dropped`) are removed too, but only
+  when tag and digest match the record and the run did not sync the tag.
 - Over 200 entries the oldest versions are dropped from the record (not
   from the registry) and the Synced condition says so. They are then never
   pruned: fail safe.
 - Tags on the target before the mirror recorded them (before this change,
-  or pushed by hand) are never in `owned` and never pruned. No backfill.
+  or pushed by hand) are never in `owned` and never pruned, also when
+  their digest matches the source at the first sync. No backfill.
 - `owned` is kept with `prune` off as well, so turning it on later prunes
   what the mirror created meanwhile.
 
@@ -72,6 +78,10 @@ Two PRs, in this order:
 
 - After all copies of a run, the Job deletes every `prunable` tag that is
   not in the run's selection.
+- A prunable tag that the selection would pick had the source listed it
+  (the policy run over the listing plus the prunable tags) is kept and
+  reported in errors. A valid but incomplete listing cannot prune the
+  newest tags.
 - Before each delete it resolves the tag on the target and deletes only if
   it still points at the digest in `owned`. A moved tag is kept and dropped
   from `owned`.
@@ -89,7 +99,10 @@ Two PRs, in this order:
 
 - The termination message gets `pruned []{tag, digest}`, validated like
   `synced` (T12): a pruned tag must be in the `prunable` list the
-  controller sent, otherwise the report is `Crashed`.
+  controller sent, with the same digest, otherwise the report is `Crashed`.
+- Accepted: two Jobs that overlap and both prune the same tag. The second
+  report is refused as `Crashed` because the first already removed the tag
+  from `owned`. Only the status is affected; the next run is clean.
 - The Synced message gets a `pruned N` counter.
 - Event `TagPruned` per tag, capped like the gate Events.
 

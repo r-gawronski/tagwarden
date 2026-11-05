@@ -849,7 +849,8 @@ by default. With it, a sync deletes the tags that the mirror created and
 no longer selects, for example after `keepLatest` moved on.
 
 - **Only recorded tags.** The controller records each tag that a mirror
-  copies in `status.owned`. Only those tags are candidates. Tags that were
+  copies or overwrites in `status.owned`. A tag the sync only skipped (it
+  was already on the target) is not recorded, even when its digest matches. Only those tags are candidates. Tags that were
   on the target before the mirror recorded them (pushed before the upgrade,
   or by hand) are not in `status.owned` and are never pruned. There is no
   backfill. `status.owned` keeps up to 200 tags; the oldest are dropped from
