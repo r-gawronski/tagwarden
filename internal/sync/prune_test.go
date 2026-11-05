@@ -28,6 +28,8 @@ import (
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
+const caseBlockedTag = "blocked tag"
+
 const (
 	v110 = "v1.1.0"
 	v120 = "v1.2.0"
@@ -137,7 +139,7 @@ func TestPruneSkipsTheStep(t *testing.T) {
 		{"refused mutation", func(t *testing.T, src, dst *testRegistry, req *Request) {
 			push(t, dst.repo, v130, image(t))
 		}},
-		{"blocked tag", func(t *testing.T, src, dst *testRegistry, req *Request) {
+		{caseBlockedTag, func(t *testing.T, src, dst *testRegistry, req *Request) {
 			push(t, src.repo, "v1.4.0", image(t))
 			req.Gate = newGate(t, vuln.Policy{Action: vuln.Block}, func(string) (string, string) { return critical, "0" }).gate
 		}},
@@ -148,7 +150,7 @@ func TestPruneSkipsTheStep(t *testing.T) {
 			before := targetTags(t, dst)
 			writes := dst.writes.Load()
 			res, err := Run(context.Background(), req)
-			if tc.name != "empty selection" && tc.name != "blocked tag" && err == nil {
+			if tc.name != "empty selection" && tc.name != caseBlockedTag && err == nil {
 				t.Fatalf("want an error, got %+v", res)
 			}
 			if len(res.Pruned) != 0 || len(res.Dropped) != 0 {
@@ -157,7 +159,7 @@ func TestPruneSkipsTheStep(t *testing.T) {
 			if got := targetTags(t, dst); !slices.Equal(got, before) {
 				t.Errorf("target tags %v, want %v", got, before)
 			}
-			if tc.name != "failed copy" && tc.name != "blocked tag" && dst.writes.Load() != writes {
+			if tc.name != "failed copy" && tc.name != caseBlockedTag && dst.writes.Load() != writes {
 				t.Error("the target was written")
 			}
 		})

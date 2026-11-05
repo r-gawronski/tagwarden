@@ -29,6 +29,8 @@ import (
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
 
+const caseBadTag = "bad tag"
+
 const (
 	scannerVersion = "0.76.1"
 	nextMinor      = "0.77.0"
@@ -207,7 +209,7 @@ func TestDecodePrunable(t *testing.T) {
 	cases := map[string]struct{ list, wantErr string }{
 		"valid":      {`[` + entry("v1.0", dg) + `, ` + entry("v0.9", dg) + `]`, ""},
 		"empty":      {`[]`, ""},
-		"bad tag":    {`[` + entry("-bad", dg) + `]`, "prunable: invalid entry"},
+		caseBadTag:   {`[` + entry("-bad", dg) + `]`, "prunable: invalid entry"},
 		"bad digest": {`[` + entry("v1", `"latest"`) + `]`, "prunable: invalid entry"},
 		"too many":   {`[` + strings.Join(many, ",") + `]`, "prunable: more than"},
 	}
@@ -262,7 +264,7 @@ func TestParseReport(t *testing.T) {
 		"no version":   `{"copied":1}`,
 		"new version":  `{"v":3}`,
 		"negative":     `{"v":1,"failed":-1}`,
-		"bad tag":      `{"v":1,"synced":[{"tag":"../x","digest":"` + digest + `"}]}`,
+		caseBadTag:     `{"v":1,"synced":[{"tag":"../x","digest":"` + digest + `"}]}`,
 		"bad digest":   `{"v":1,"synced":[{"tag":"v1","digest":"sha256:abc"}]}`,
 		"wrong type":   `{"v":1,"synced":"v1"}`,
 		"trailing obj": `{"v":1}{"v":1}`,
@@ -328,7 +330,7 @@ func TestParseReportV2(t *testing.T) {
 		"error w/o reason":  strings.Replace(entry(""), `"Findings"`, `"ScanError"`, 1),
 		"unknown reason":    entry(`,"scanError":"Oops"`),
 		"bad db time":       entry(`,"dbUpdatedAt":"yesterday"`),
-		"bad tag":           strings.Replace(entry(""), `"tag":"v1"`, `"tag":"../x"`, 1),
+		caseBadTag:          strings.Replace(entry(""), `"tag":"v1"`, `"tag":"../x"`, 1),
 		"no scannedAt":      strings.Replace(entry(""), `,"scannedAt":"2026-11-03T10:00:00Z"`, "", 1),
 		"zero scannedAt":    strings.Replace(entry(""), "2026-11-03T10:00:00Z", "0001-01-01T00:00:00Z", 1),
 		"future scannedAt":  strings.Replace(entry(""), "2026-11-03T10:00:00Z", time.Now().Add(time.Hour).UTC().Format(time.RFC3339), 1),

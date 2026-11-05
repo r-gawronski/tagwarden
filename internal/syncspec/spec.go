@@ -648,34 +648,11 @@ func ParseReport(msg string) (Report, error) {
 			return Report{}, errors.New("report: invalid synced entry")
 		}
 	}
-	if sel := r.Selection; sel != nil {
-		if min(sel.Listed, sel.Filtered, sel.NotSemver, sel.Prerelease, sel.OutOfRange, sel.Trimmed, sel.Selected, sel.Missing) < 0 {
-			return Report{}, errors.New("report: negative count")
-		}
-		if len(sel.MissingTags) > MaxMissingTags {
-			return Report{}, errors.New("report: invalid selection")
-		}
-		for _, t := range sel.MissingTags {
-			if !tagPattern.MatchString(t) {
-				return Report{}, errors.New("report: invalid selection")
-			}
-		}
+	if err := validateSelection(r.Selection); err != nil {
+		return Report{}, err
 	}
-	if len(r.Pruned) > MaxPrunable || len(r.Dropped) > MaxPrunable || r.Rescan && len(r.Pruned)+len(r.Dropped) > 0 {
-		return Report{}, errors.New("report: invalid pruned entries")
-	}
-	for _, s := range slices.Concat(r.Pruned, r.Dropped) {
-		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
-			return Report{}, errors.New("report: invalid pruned entry")
-		}
-	}
-	for _, s := range r.Judged {
-		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
-			return Report{}, errors.New("report: invalid judged entry")
-		}
-	}
-	if r.JudgedFingerprint != "" && !fingerprintPattern.MatchString(r.JudgedFingerprint) {
-		return Report{}, errors.New("report: invalid judged fingerprint")
+	if err := validatePruneFields(r); err != nil {
+		return Report{}, err
 	}
 	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || r.JudgedFingerprint != "" || r.Rescan) {
 		return Report{}, errors.New("report: gate fields in version 1")
@@ -691,6 +668,45 @@ func ParseReport(msg string) (Report, error) {
 		}
 	}
 	return r, nil
+}
+
+func validateSelection(sel *Selection) error {
+	if sel == nil {
+		return nil
+	}
+	if min(sel.Listed, sel.Filtered, sel.NotSemver, sel.Prerelease, sel.OutOfRange, sel.Trimmed, sel.Selected, sel.Missing) < 0 {
+		return errors.New("report: negative count")
+	}
+	if len(sel.MissingTags) > MaxMissingTags {
+		return errors.New("report: invalid selection")
+	}
+	for _, t := range sel.MissingTags {
+		if !tagPattern.MatchString(t) {
+			return errors.New("report: invalid selection")
+		}
+	}
+
+	return nil
+}
+
+func validatePruneFields(r Report) error {
+	if len(r.Pruned) > MaxPrunable || len(r.Dropped) > MaxPrunable || r.Rescan && len(r.Pruned)+len(r.Dropped) > 0 {
+		return errors.New("report: invalid pruned entries")
+	}
+	for _, s := range slices.Concat(r.Pruned, r.Dropped) {
+		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
+			return errors.New("report: invalid pruned entry")
+		}
+	}
+	for _, s := range r.Judged {
+		if !tagPattern.MatchString(s.Tag) || !digestPattern.MatchString(s.Digest) {
+			return errors.New("report: invalid judged entry")
+		}
+	}
+	if r.JudgedFingerprint != "" && !fingerprintPattern.MatchString(r.JudgedFingerprint) {
+		return errors.New("report: invalid judged fingerprint")
+	}
+	return nil
 }
 
 var clusterServiceName = regexp.MustCompile(`^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc)(\.cluster\.local)?$`)

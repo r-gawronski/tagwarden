@@ -431,7 +431,7 @@ func TestRecordJobPruned(t *testing.T) {
 	})
 	t.Run("events are capped", func(t *testing.T) {
 		m := mirror(true)
-		var pruned []syncspec.SyncedTag
+		pruned := make([]syncspec.SyncedTag, 0, maxGateEvents+5)
 		m.Status.Owned = nil
 		for i := range maxGateEvents + 5 {
 			s := st(fmt.Sprint("t", i), dig1)

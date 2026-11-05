@@ -40,6 +40,14 @@ import (
 	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
+const (
+	mixedCaseRegistry = "Registry.Example.Internal:8443"
+	selfUID           = "self"
+	otherRegistry     = "other.example.internal"
+	tag30             = "3.0"
+	tag31             = "3.1"
+)
+
 func TestNextRescan(t *testing.T) {
 	interval := 24 * time.Hour
 	base := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
@@ -68,8 +76,8 @@ func TestUntaggable(t *testing.T) {
 	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Action: mirrorv1alpha1.GateActionBlock,
 		OnVulnerableTag: mirrorv1alpha1.OnVulnerableTagUntag})
 	// Same registry as validTarget's, in another spelling.
-	tg.Spec.Registry = "Registry.Example.Internal:8443"
-	m.UID = "self"
+	tg.Spec.Registry = mixedCaseRegistry
+	m.UID = selfUID
 	m.Spec.Tags.Tags = []string{v310, tag39, "4.0"}
 	// "old" is no longer selected; 4.0 was never recorded.
 	m.Status.Synced = []mirrorv1alpha1.SyncedTag{{Tag: v310}, {Tag: tag39}, {Tag: "old"}}
@@ -80,7 +88,7 @@ func TestUntaggable(t *testing.T) {
 	}
 	other := validTarget("same-registry")
 	elsewhere := validTarget("elsewhere")
-	elsewhere.Spec.Registry = "other.example.internal"
+	elsewhere.Spec.Registry = otherRegistry
 	deleting := peer("deleting", tg.Name, mirrorv1alpha1.TagSelector{Tags: []string{v310}})
 	deleting.DeletionTimestamp, deleting.Finalizers = &metav1.Time{Time: time.Now()}, []string{Finalizer}
 	deletingOther := peer("deleting-other", "same-registry", mirrorv1alpha1.TagSelector{Tags: []string{tag39}})
@@ -371,8 +379,8 @@ var _ = Describe("re-scan", Ordered, func() {
 
 func TestHeldTags(t *testing.T) {
 	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Action: mirrorv1alpha1.GateActionBlock})
-	tg.Spec.Registry = "Registry.Example.Internal:8443"
-	m.UID = "self"
+	tg.Spec.Registry = mixedCaseRegistry
+	m.UID = selfUID
 	m.Spec.Tags = mirrorv1alpha1.TagSelector{Include: []string{"^3"}}
 	peer := func(ns, target string, sel mirrorv1alpha1.TagSelector) *mirrorv1alpha1.ArtifactMirror {
 		o := m.DeepCopy()
@@ -381,7 +389,7 @@ func TestHeldTags(t *testing.T) {
 	}
 	same := validTarget("same-registry")
 	elsewhere := validTarget("elsewhere")
-	elsewhere.Spec.Registry = "other.example.internal"
+	elsewhere.Spec.Registry = otherRegistry
 	gone := peer("gone", tg.Name, mirrorv1alpha1.TagSelector{Tags: []string{"gone"}})
 	gone.DeletionTimestamp, gone.Finalizers = &metav1.Time{Time: time.Now()}, []string{Finalizer}
 	explicit := func(tags ...string) mirrorv1alpha1.TagSelector { return mirrorv1alpha1.TagSelector{Tags: tags} }
@@ -430,9 +438,9 @@ func TestHeldTags(t *testing.T) {
 
 func TestPrunable(t *testing.T) {
 	tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Action: mirrorv1alpha1.GateActionBlock})
-	m.UID = "self"
+	m.UID = selfUID
 	m.Spec.Tags = mirrorv1alpha1.TagSelector{Include: []string{"^3"}, Prune: true}
-	m.Status.Owned = []mirrorv1alpha1.SyncedTag{{Tag: "3.2", Digest: dig1}, {Tag: "3.1", Digest: dig2}, {Tag: "3.0", Digest: dig1}}
+	m.Status.Owned = []mirrorv1alpha1.SyncedTag{{Tag: "3.2", Digest: dig1}, {Tag: tag31, Digest: dig2}, {Tag: tag30, Digest: dig1}}
 	peer := m.DeepCopy()
 	peer.Namespace, peer.UID, peer.Status = teamB, "peer", mirrorv1alpha1.ArtifactMirrorStatus{}
 	peer.Spec.Tags = mirrorv1alpha1.TagSelector{Tags: []string{"3.1"}}
@@ -449,7 +457,7 @@ func TestPrunable(t *testing.T) {
 		}
 		return got, held
 	}
-	all := []syncspec.SyncedTag{{Tag: "3.2", Digest: dig1}, {Tag: "3.1", Digest: dig2}, {Tag: "3.0", Digest: dig1}}
+	all := []syncspec.SyncedTag{{Tag: "3.2", Digest: dig1}, {Tag: tag31, Digest: dig2}, {Tag: tag30, Digest: dig1}}
 	if got, held := prunable(m); !slices.Equal(got, all) || held {
 		t.Errorf("owned: %v %v", got, held)
 	}
@@ -463,7 +471,7 @@ func TestPrunable(t *testing.T) {
 	}
 	// Tags named in spec.tags.tags are never pruned.
 	named := m.DeepCopy()
-	named.Spec.Tags.Tags = []string{"3.0"}
+	named.Spec.Tags.Tags = []string{tag30}
 	if got, _ := prunable(named); !slices.Equal(got, all[:2]) {
 		t.Errorf("named tag: %v", got)
 	}

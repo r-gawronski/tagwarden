@@ -56,6 +56,8 @@ import (
 	twtags "github.com/r-gawronski/tagwarden/internal/tags"
 )
 
+const v100 = "v1.0.0"
+
 var update = flag.Bool("update", false, "rewrite golden files")
 
 const (
@@ -88,7 +90,7 @@ func golden(t *testing.T, file string, got []byte) {
 func TestEncodeReport(t *testing.T) {
 	r := report{
 		Copied: 1, Skipped: 1, Mutated: 1, Failed: 1,
-		Synced: []syncedTag{{Tag: v110, Digest: "sha256:" + strings.Repeat("a", 64)}, {Tag: "v1.0.0", Digest: "sha256:" + strings.Repeat("b", 64)}},
+		Synced: []syncedTag{{Tag: v110, Digest: "sha256:" + strings.Repeat("a", 64)}, {Tag: v100, Digest: "sha256:" + strings.Repeat("b", 64)}},
 		Errors: []string{"v0.9.0: resolve source tag: not found"},
 	}
 	golden(t, "report.golden", encode(r))
@@ -270,7 +272,7 @@ func assertNoSecrets(t *testing.T, outputs ...string) {
 
 func TestRunSyncs(t *testing.T) {
 	src, dst := newRegistry(t, false), newRegistry(t, true)
-	pushImages(t, src, "v1.0.0", v110, "v1.2.0")
+	pushImages(t, src, v100, v110, "v1.2.0")
 	e := newEnv(t, src, dst, password)
 
 	code, out, msg := e.run(t)
@@ -314,7 +316,7 @@ func TestRunSyncs(t *testing.T) {
 
 func TestRunWrongPassword(t *testing.T) {
 	src, dst := newRegistry(t, false), newRegistry(t, true)
-	pushImages(t, src, "v1.0.0", v110)
+	pushImages(t, src, v100, v110)
 	e := newEnv(t, src, dst, "wrong-"+password)
 	e.vars["HTTPS_PROXY"] = "http://proxy.example.internal:3128"
 	e.vars[syncspec.ProxyUserEnv] = "proxy-user"
@@ -329,7 +331,7 @@ func TestRunWrongPassword(t *testing.T) {
 
 func TestRunAuditsArtifactTooLarge(t *testing.T) {
 	src, dst := newRegistry(t, false), newRegistry(t, true)
-	pushImages(t, src, "v1.0.0", v110)
+	pushImages(t, src, v100, v110)
 	e := newEnv(t, src, dst, password)
 	e.writeSpec(t, src.String(), `"allowedSources":[`+strconv.Quote(src.RegistryStr())+`],"maxArtifactSize":10`)
 
@@ -632,7 +634,7 @@ func TestRunSourceCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tag := range []string{"v1.0.0", v110} {
+	for _, tag := range []string{v100, v110} {
 		if err := remote.Write(src.Tag(tag), img, remote.WithAuth(&authn.Basic{Username: user, Password: sourcePass})); err != nil {
 			t.Fatal(err)
 		}
@@ -690,7 +692,7 @@ func TestRunSourceCredentialsNotSentOnRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := remote.Write(src.Tag("v1.0.0"), img, remote.WithAuth(&authn.Basic{Username: user, Password: sourcePass})); err != nil {
+	if err := remote.Write(src.Tag(v100), img, remote.WithAuth(&authn.Basic{Username: user, Password: sourcePass})); err != nil {
 		t.Fatal(err)
 	}
 	e := newEnv(t, src, newRegistry(t, true), password)
@@ -744,7 +746,7 @@ func TestRunSourceCA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := remote.Write(src.Tag("v1.0.0"), img, remote.WithTransport(tr)); err != nil {
+	if err := remote.Write(src.Tag(v100), img, remote.WithTransport(tr)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -773,16 +775,16 @@ func TestRunSourceCA(t *testing.T) {
 
 func TestRunAuditsIgnoredMutation(t *testing.T) {
 	src, dst := newRegistry(t, false), newRegistry(t, true)
-	pushImages(t, src, "v1.0.0")
+	pushImages(t, src, v100)
 	img, err := random.Image(64, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := remote.Write(dst.Tag("v1.0.0"), img, remote.WithAuth(&authn.Basic{Username: user, Password: password})); err != nil {
+	if err := remote.Write(dst.Tag(v100), img, remote.WithAuth(&authn.Basic{Username: user, Password: password})); err != nil {
 		t.Fatal(err)
 	}
 	kept, _ := img.Digest()
-	upstream, err := remote.Head(src.Tag("v1.0.0"))
+	upstream, err := remote.Head(src.Tag(v100))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -948,12 +950,12 @@ func TestSyncedReportMarksCopied(t *testing.T) {
 func TestPrunedReport(t *testing.T) {
 	d := "sha256:" + strings.Repeat("a", 64)
 	res := sync.Result{
-		Pruned:  []sync.Artifact{{Tag: "v1.0.0", Digest: d}},
+		Pruned:  []sync.Artifact{{Tag: v100, Digest: d}},
 		Dropped: []sync.Artifact{{Tag: "v0.9.0", Digest: d}},
 	}
 	got, err := syncspec.ParseReport(string(encode(summarize(res))))
 	if err != nil || got.PrunedTruncated ||
-		!reflect.DeepEqual(got.Pruned, []syncedTag{{Tag: "v1.0.0", Digest: d}}) ||
+		!reflect.DeepEqual(got.Pruned, []syncedTag{{Tag: v100, Digest: d}}) ||
 		!reflect.DeepEqual(got.Dropped, []syncedTag{{Tag: "v0.9.0", Digest: d}}) {
 		t.Fatalf("%+v, %v", got, err)
 	}
