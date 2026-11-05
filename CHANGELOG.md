@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1-rc.1] - 2026-11-05
+
+### Highlights
+
+Harbor targets delete tags through the Harbor API. A ClusterMirrorTarget can set its own `maxListedTags` limit. Adds the SBOM design and the SBOM referrer package.
+
+### Added
+
+- **registry:** Harbor tag delete through the Harbor API (#88)
+- **api:** Configurable maxListedTags limit per ClusterMirrorTarget (#87)
+- **sbom:** Design and SBOM referrer package (#85)
+
 ## [0.1.0] - 2026-11-05
 
 ### Highlights
