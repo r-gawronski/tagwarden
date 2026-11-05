@@ -31,7 +31,7 @@ import (
 
 // ErrTagNotFound means Harbor answered 404: the tag, artifact, repository
 // or project was not found.
-var ErrTagNotFound = errors.New("harbor: tag not found on digest")
+var ErrTagNotFound = errors.New("harbor: not found")
 
 // HarborDeleteTag returns a function that removes one tag from one digest
 // through the Harbor API. Harbor refuses the OCI tag delete

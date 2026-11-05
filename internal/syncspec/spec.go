@@ -74,6 +74,10 @@ const (
 	ProxyPasswordEnv = "TAGWARDEN_PROXY_PASSWORD" //nolint:gosec // env var name, not a credential
 )
 
+// FlavorHarbor is Spec.TargetFlavor for Harbor: tags are deleted through
+// the Harbor API.
+const FlavorHarbor = "Harbor"
+
 // Cloud registry auth.
 const (
 	// AuthAzureWorkloadIdentity names Azure workload identity in
@@ -286,6 +290,9 @@ type Spec struct {
 	// mounted dockerconfigjson, or anonymous for a source without one.
 	TargetAuth string `json:"targetAuth,omitempty"`
 	SourceAuth string `json:"sourceAuth,omitempty"`
+	// TargetFlavor is the target's registryFlavor. Empty means OCI
+	// distribution.
+	TargetFlavor string `json:"targetFlavor,omitempty"`
 	// Azure is required when a registry uses AuthAzureWorkloadIdentity.
 	Azure *Azure `json:"azure,omitempty"`
 	// AWS is required when a registry uses AuthAWSWorkloadIdentity.
@@ -378,6 +385,15 @@ func (s *Spec) validate() error {
 		default:
 			return fmt.Errorf("unknown registry auth %q", a)
 		}
+	}
+	switch s.TargetFlavor {
+	case "":
+	case FlavorHarbor:
+		if s.TargetAuth != "" {
+			return errors.New("targetFlavor Harbor: needs the target Secret credentials")
+		}
+	default:
+		return fmt.Errorf("unknown targetFlavor %q", s.TargetFlavor)
 	}
 	if s.Azure != nil {
 		if err := s.Azure.validate(); err != nil {
