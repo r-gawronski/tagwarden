@@ -619,6 +619,117 @@ type ScannerSpec struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// SBOMMode selects where the SBOM of a mirrored image comes from.
+// +kubebuilder:validation:Enum=Disabled;PreferUpstream;Generate
+type SBOMMode string
+
+const (
+	// SBOMModeDisabled attaches no SBOM. Upstream SBOM referrers are copied
+	// like any referrer.
+	SBOMModeDisabled SBOMMode = "Disabled"
+	// SBOMModePreferUpstream uses a valid upstream SBOM referrer of the
+	// configured format and generates one otherwise.
+	SBOMModePreferUpstream SBOMMode = "PreferUpstream"
+	// SBOMModeGenerate always attaches a generated SBOM.
+	SBOMModeGenerate SBOMMode = "Generate"
+)
+
+// SBOMFormat is the SBOM document format. Documents are always JSON.
+// +kubebuilder:validation:Enum=CycloneDX;SPDX
+type SBOMFormat string
+
+const (
+	// SBOMFormatCycloneDX is CycloneDX JSON (application/vnd.cyclonedx+json).
+	SBOMFormatCycloneDX SBOMFormat = "CycloneDX"
+	// SBOMFormatSPDX is SPDX JSON (application/spdx+json).
+	SBOMFormatSPDX SBOMFormat = "SPDX"
+)
+
+// SBOMPolicy is the SBOM policy for the image mirrors of a target,
+// user-defined and generated. Mirrors carry no SBOM field of their own, so
+// tenants cannot turn it off. Helm chart mirrors are not affected.
+// +kubebuilder:validation:XValidation:rule="!has(self.required) || !self.required || (has(self.mode) && self.mode != 'Disabled')",message="required needs mode PreferUpstream or Generate"
+type SBOMPolicy struct {
+	// mode selects where the SBOM of each platform child comes from:
+	// Disabled attaches none, PreferUpstream uses a valid upstream SBOM
+	// referrer and generates one otherwise, Generate always generates one.
+	// +kubebuilder:default=Disabled
+	// +optional
+	Mode SBOMMode `json:"mode,omitempty"`
+
+	// format of the SBOM document: CycloneDX or SPDX, always JSON.
+	// +kubebuilder:default=CycloneDX
+	// +optional
+	Format SBOMFormat `json:"format,omitempty"`
+
+	// required fails closed: a new tag whose SBOM cannot be produced or
+	// attached for every platform child is not published. Tags published
+	// before are never untagged. Needs mode PreferUpstream or Generate.
+	// +optional
+	Required bool `json:"required,omitempty"`
+
+	// generator configures the Trivy sidecar that writes the SBOM from the
+	// local copy of the image. It needs no network, no vulnerability DB and
+	// no Secret. All fields are optional with the chart's Trivy image.
+	// +optional
+	Generator *SBOMGenerator `json:"generator,omitempty"`
+}
+
+// SBOMGenerator is the Trivy image and the sidecar settings that generate
+// SBOMs.
+// +kubebuilder:validation:XValidation:rule="has(self.image) == has(self.version)",message="set image and version together"
+// +kubebuilder:validation:XValidation:rule="!has(self.javaDB) || self.javaDB != 'PerJob' || has(self.javaDBRepository)",message="javaDB PerJob needs javaDBRepository"
+type SBOMGenerator struct {
+	// image is the Trivy image, pinned by digest, for example
+	// registry.example.internal/platform/ghcr.io/aquasecurity/trivy@sha256:<digest>.
+	// Defaults to the chart's Trivy image. Set it together with version.
+	// When autoMirror.vulnerabilityGate.scanner.image is also set, the two
+	// must be equal: a gated Job runs one Trivy sidecar for both.
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule=`self.matches(r'^[^@\s]+@sha256:[0-9a-f]{64}$')`,message="must be pinned by digest: <repository>@sha256:<64 hex>"
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// version is the Trivy version of image, for example 0.76.1.
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[0-9]+\.[0-9]+\.[0-9]+$`
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// javaDB selects how JAR files are listed, as for the gate. Disabled
+	// uses no Java DB and marks each SBOM java-scanned: false; PerJob pulls
+	// the Java DB in each Job.
+	// +kubebuilder:default=Disabled
+	// +optional
+	JavaDB JavaDBMode `json:"javaDB,omitempty"`
+
+	// javaDBRepository is the Java DB in spec.registry with its tag, for
+	// example registry.example.internal/platform/ghcr.io/aquasecurity/trivy-java-db:1.
+	// Required with javaDB PerJob.
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule=`self.matches(r'^[^/@\s]+(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)+:[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$')`,message="must be <registry>/<repository>:<tag>"
+	// +optional
+	JavaDBRepository string `json:"javaDBRepository,omitempty"`
+
+	// timeout of SBOM generation for one platform child. Between 1m and 1h.
+	// +kubebuilder:default="10m"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m') && duration(self) <= duration('1h')",message="must be between 1m and 1h"
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// storage is the size limit of the emptyDir that holds the image the
+	// SBOM is generated from.
+	// +kubebuilder:default="20Gi"
+	// +kubebuilder:validation:XValidation:rule="quantity(string(self)).isGreaterThan(quantity('0'))",message="must be positive"
+	// +optional
+	Storage *resource.Quantity `json:"storage,omitempty"`
+
+	// resources of the generator sidecar. Defaults to requests 100m and
+	// 256Mi, limits 2 CPUs and 2Gi.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
 // RegistryFlavor names a registry that needs its own API for an operation
 // OCI distribution does not offer.
 // +kubebuilder:validation:Enum=Harbor
@@ -631,6 +742,8 @@ const RegistryFlavorHarbor RegistryFlavor = "Harbor"
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.exists(p, p.name == self.autoMirror.project)",message="autoMirror.project must be listed in projects"
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || self.projects.all(p, p.name != self.autoMirror.project || !has(p.allowRepositoryOverride) || !p.allowRepositoryOverride)",message="autoMirror.project must not allow repository overrides, so node pulls through a path rewrite stay bound to one source"
 // +kubebuilder:validation:XValidation:rule="!has(self.autoMirror) || !has(self.autoMirror.vulnerabilityGate) || !has(self.autoMirror.vulnerabilityGate.scanner) || !has(self.autoMirror.vulnerabilityGate.scanner.javaDBRepository) || self.autoMirror.vulnerabilityGate.scanner.javaDBRepository.startsWith(self.registry + '/')",message="autoMirror.vulnerabilityGate.scanner.javaDBRepository must be in spec.registry"
+// +kubebuilder:validation:XValidation:rule="!has(self.sbom) || !has(self.sbom.generator) || !has(self.sbom.generator.javaDBRepository) || self.sbom.generator.javaDBRepository.startsWith(self.registry + '/')",message="sbom.generator.javaDBRepository must be in spec.registry"
+// +kubebuilder:validation:XValidation:rule="!has(self.sbom) || !has(self.sbom.generator) || !has(self.sbom.generator.image) || !has(self.autoMirror) || !has(self.autoMirror.vulnerabilityGate) || !has(self.autoMirror.vulnerabilityGate.scanner) || !has(self.autoMirror.vulnerabilityGate.scanner.image) || (self.sbom.generator.image == self.autoMirror.vulnerabilityGate.scanner.image && self.sbom.generator.version == self.autoMirror.vulnerabilityGate.scanner.version)",message="sbom.generator image and version must equal autoMirror.vulnerabilityGate.scanner image and version when both are set"
 // +kubebuilder:validation:XValidation:rule="has(self.credentialsSecretRef) != has(self.auth)",message="set exactly one of credentialsSecretRef or auth"
 // +kubebuilder:validation:XValidation:rule="!has(self.registryFlavor) || has(self.credentialsSecretRef)",message="registryFlavor Harbor needs credentialsSecretRef"
 // +kubebuilder:validation:XValidation:rule=`!has(self.auth) || !has(self.auth.azureWorkloadIdentity) || self.registry.lowerAscii().matches(r'^[a-z0-9]+(-[a-z0-9]+)?\.azurecr\.(io|us|cn)(:443)?$')`,message="auth.azureWorkloadIdentity needs an Azure Container Registry host (*.azurecr.io, *.azurecr.us or *.azurecr.cn)"
@@ -734,6 +847,11 @@ type ClusterMirrorTargetSpec struct {
 	// autoMirror lets annotated pods request mirrors of their images.
 	// +optional
 	AutoMirror *AutoMirror `json:"autoMirror,omitempty"`
+
+	// sbom is the SBOM policy for the image mirrors of this target. Off
+	// when absent.
+	// +optional
+	SBOM *SBOMPolicy `json:"sbom,omitempty"`
 }
 
 // ClusterMirrorTargetStatus defines the observed state of ClusterMirrorTarget.

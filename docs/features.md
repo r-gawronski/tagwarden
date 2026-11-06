@@ -47,6 +47,7 @@ feature; the other lines are the minimum the object needs.
 | [Vulnerability gate](#vulnerability-gate) | platform | off | ClusterMirrorTarget `spec.autoMirror.vulnerabilityGate`, chart `trivy` |
 | [Re-scan and untag](#re-scan-and-untag) | platform | off | ClusterMirrorTarget `vulnerabilityGate.rescanInterval`, `onVulnerableTag` |
 | [Vulnerability exceptions](#vulnerability-exceptions) | security | none | `VulnerabilityException` |
+| [SBOM policy](#sbom-policy) (preview: API only) | platform | `Disabled` | ClusterMirrorTarget `spec.sbom`, chart `trivy.image` |
 | [Signatures and referrers](#signatures-and-referrers) | - | always on | - |
 | [Metrics](#metrics) | platform | on | chart `metrics`, `prometheus` |
 | [Audit log](#audit-log) | - | always on | sync Job stdout |
@@ -658,6 +659,75 @@ requesting user. Check: condition `Active`; `False` with reason
 `Expired`, `TooLong` or `TargetNotFound`. More:
 [install, Exceptions](install.md#5-exceptions).
 
+## Supply chain
+
+### SBOM policy
+
+Owner: platform. `Disabled`. Preview: this release adds the API and the
+`SBOMReady` condition only. **Sync Jobs do not generate, attach or require
+SBOMs yet**, also with `required: true`; the condition message says so.
+Design and plan: [design/sbom.md](design/sbom.md), issue #69.
+
+The policy covers every `Image` mirror of the target, user-defined and
+generated. `ArtifactMirror` has no SBOM field, so a tenant cannot turn it
+off. The generator is a Trivy sidecar that needs no network, no
+vulnerability DB and no Secret.
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
+spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [docker.io]
+  projects:
+    - {name: shared, namespaceSelector: {}}
+  sbom:
+    mode: Generate                  # <- Disabled (default) | PreferUpstream | Generate
+    format: CycloneDX               # <- default; CycloneDX | SPDX, always JSON
+    required: true                  # <- fail closed for new tags; needs a mode other than Disabled
+    generator:                      # <- optional; defaults to the chart's trivy.image
+      javaDB: Disabled              # default; PerJob needs javaDBRepository in spec.registry
+      timeout: 10m                  # default, per platform child, 1m to 1h
+      storage: 20Gi                 # default
+```
+
+The generator image comes from `sbom.generator.image` and `version`
+(pinned by digest, set together) or from the chart. The chart passes
+`--trivy-image` and `--trivy-version` whenever `trivy.image.digest` is
+set, also without the in-chart server:
+
+```yaml
+# Helm chart values.yaml
+trivy:
+  enabled: false                    # no Trivy server needed for SBOMs
+  image:                            # <- default SBOM generator
+    repository: registry.example.internal/platform/ghcr.io/aquasecurity/trivy
+    tag: "0.76.1"
+    digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+When `autoMirror.vulnerabilityGate.scanner.image` is also set,
+`sbom.generator` must use the same image and version.
+
+Check: the target's `SBOMReady` condition.
+
+- `True`, reason `Ready`: the generator is configured.
+- `False`, reason `NotConfigured`: mode is on but there is no generator
+  image. Gauge `tagwarden_sbom_not_configured{target}` is 1 and a Warning
+  Event is recorded.
+- `False`, reason `WeakerTargetOnRegistry` (only with `required: true`):
+  another `ClusterMirrorTarget` on the same registry lists one of the
+  target's projects with a weaker policy (no policy, not required, another
+  format, or `PreferUpstream` under `Generate`). Tags pushed through it
+  skip the SBOM. A Warning Event names it. Mirrors keep working.
+
+```sh
+kubectl get clustermirrortarget registry \
+  -o jsonpath='{.status.conditions[?(@.type=="SBOMReady")]}'
+```
+
 ## Always on
 
 ### Signatures and referrers
@@ -687,7 +757,8 @@ prometheus:
 
 Tagwarden metrics: `tagwarden_mirror_selected_tags`,
 `tagwarden_vulnerability_gate_unscanned`,
-`tagwarden_scanner_start_failures_total`.
+`tagwarden_scanner_start_failures_total`,
+`tagwarden_sbom_not_configured`.
 
 ### Argo CD integration
 

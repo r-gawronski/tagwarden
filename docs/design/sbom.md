@@ -1,6 +1,6 @@
 # SBOM generation and enforcement for mirrored images
 
-Status: Approved (2026-11-04), step 1 implemented. Issue #69. Builds on the vulnerability gate (#21,
+Status: Approved (2026-11-04), steps 1 and 2 implemented. Issue #69. Builds on the vulnerability gate (#21,
 `docs/design/vulnerability-gate.md`) and reuses its Trivy sidecar.
 
 ## Goal
@@ -500,9 +500,22 @@ Each step is a PR with tests first.
    generated-referrer detection, reserved annotation check. Table tests and
    a push round trip against the in-process registry with and without the
    referrers API.
-2. **API.** `spec.sbom` with CEL, target condition `SBOMReady`
+2. **API.** Done. `spec.sbom` with CEL, target condition `SBOMReady`
    (`NotConfigured`, `WeakerTargetOnRegistry`), the gauge, chart flags.
-   Envtest.
+   Envtest. Notes from the implementation:
+   - `signing` is not in the API yet; it comes with step 8.
+   - With both images set, `sbom.generator` must match the gate scanner
+     in image and version, not only image.
+   - "Weaker" for `WeakerTargetOnRegistry` means the other target publishes
+     tags this one would not: no policy or `Disabled`, `required: false`,
+     another format, or `PreferUpstream` under `Generate`. Targets being
+     deleted are ignored.
+   - Until step 3 the `SBOMReady` messages end with "sync Jobs do not
+     generate or require SBOMs yet", so a `True` condition is not read as
+     enforcement.
+   - `--trivy-image` and `--trivy-version` are valid without
+     `--trivy-url`. A gated target with its own `scanner.url` and no
+     `scanner.image` now gets the chart's image as its client default.
 3. **Sync integration.** Sidecar request kind, generation per child,
    referrer push (with and without the referrers API, in-process
    registries), present-tag backfill, upstream selection, reserved
