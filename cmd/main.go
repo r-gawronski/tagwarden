@@ -79,7 +79,9 @@ var (
 	trivyVersionRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 )
 
-// validateTrivy checks the vulnerability gate flags. They are all empty or all set.
+// validateTrivy checks the Trivy flags. --trivy-image and --trivy-version
+// are set together; they are the default SBOM generator and, with
+// --trivy-url, the client of the in-chart gate server.
 func validateTrivy(image, version, serverURL string) error {
 	if image == "" && version == "" && serverURL == "" {
 		return nil
@@ -89,6 +91,9 @@ func validateTrivy(image, version, serverURL string) error {
 	}
 	if !trivyVersionRe.MatchString(version) {
 		return errors.New("--trivy-version must look like 0.76.1")
+	}
+	if serverURL == "" {
+		return nil
 	}
 	u, err := url.Parse(serverURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -153,8 +158,10 @@ func main() {
 		`Show sync CronJobs in the Argo CD app of their mirror: "inherit", or empty to turn it off.`)
 	flag.StringVar(&argoInstanceLabel, "argocd-instance-label", controller.DefaultArgoCDInstanceLabel,
 		"The label Argo CD uses for label tracking mode.")
-	flag.StringVar(&trivyImage, "trivy-image", "", "Trivy image of the gate, pinned by digest. Set by the chart.")
-	flag.StringVar(&trivyVersion, "trivy-version", "", "Trivy version of the gate image and server. Set by the chart.")
+	flag.StringVar(&trivyImage, "trivy-image", "",
+		"Trivy image of the gate and the SBOM generator, pinned by digest. Set by the chart.")
+	flag.StringVar(&trivyVersion, "trivy-version", "",
+		"Trivy version of --trivy-image; the gate checks it against the server. Set by the chart.")
 	flag.StringVar(&trivyURL, "trivy-url", "", "URL of the in-chart Trivy server. Set by the chart.")
 	flag.StringVar(&trivyTokenSecret, "trivy-token-secret", "",
 		"Secret in the operator namespace with the token of the in-chart Trivy server (key token). Set by the chart.")
@@ -216,6 +223,8 @@ func main() {
 	}
 	if trivyURL != "" {
 		setupLog.Info("Vulnerability gate scanner configured", "image", trivyImage, "version", trivyVersion, "url", trivyURL)
+	} else if trivyImage != "" {
+		setupLog.Info("Trivy image configured without a server", "image", trivyImage, "version", trivyVersion)
 	}
 	var denied []string
 	var deniedPrefixes []netip.Prefix

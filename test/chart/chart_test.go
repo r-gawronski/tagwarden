@@ -215,6 +215,35 @@ func TestTrivyEnabled(t *testing.T) {
 	}
 }
 
+// TestTrivyImageWithoutServer checks that trivy.image alone passes the
+// image flags, the default SBOM generator, and renders no server, no
+// server URL and no token.
+func TestTrivyImageWithoutServer(t *testing.T) {
+	out, err := render(t, "-f", "example-values.yaml", "--set",
+		"trivy.image.repository=registry.example.internal/platform/trivy,trivy.image.tag=0.76.1,"+
+			"trivy.image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"- --trivy-image=registry.example.internal/platform/trivy:0.76.1@sha256:0123456789abcdef",
+		"- --trivy-version=0.76.1\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered chart lacks %q", want)
+		}
+	}
+	for _, not := range []string{"--trivy-url", "--trivy-token-secret", "--scanner-start-timeout", "component: trivy", "trivy-token"} {
+		if strings.Contains(out, not) {
+			t.Errorf("rendered chart has %q without trivy.enabled", not)
+		}
+	}
+	if out, err := render(t, "-f", "example-values.yaml", "--set",
+		"trivy.image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"); err == nil {
+		t.Errorf("digest without repository and tag renders:\n%s", out)
+	}
+}
+
 // TestVulnerabilityExceptions checks that the approver ClusterRole is
 // always rendered, and its binding and the approvedBy policy only on request.
 func TestVulnerabilityExceptions(t *testing.T) {
