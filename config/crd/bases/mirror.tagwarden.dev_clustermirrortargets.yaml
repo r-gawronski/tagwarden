@@ -701,6 +701,175 @@ spec:
                 enum:
                 - Harbor
                 type: string
+              sbom:
+                description: |-
+                  sbom is the SBOM policy for the image mirrors of this target. Off
+                  when absent.
+                properties:
+                  format:
+                    default: CycloneDX
+                    description: 'format of the SBOM document: CycloneDX or SPDX,
+                      always JSON.'
+                    enum:
+                    - CycloneDX
+                    - SPDX
+                    type: string
+                  generator:
+                    description: |-
+                      generator configures the Trivy sidecar that writes the SBOM from the
+                      local copy of the image. It needs no network, no vulnerability DB and
+                      no Secret. All fields are optional with the chart's Trivy image.
+                    properties:
+                      image:
+                        description: |-
+                          image is the Trivy image, pinned by digest, for example
+                          registry.example.internal/platform/ghcr.io/aquasecurity/trivy@sha256:<digest>.
+                          Defaults to the chart's Trivy image. Set it together with version.
+                          When autoMirror.vulnerabilityGate.scanner.image is also set, the two
+                          must be equal: a gated Job runs one Trivy sidecar for both.
+                        maxLength: 512
+                        type: string
+                        x-kubernetes-validations:
+                        - message: 'must be pinned by digest: <repository>@sha256:<64
+                            hex>'
+                          rule: self.matches(r'^[^@\s]+@sha256:[0-9a-f]{64}$')
+                      javaDB:
+                        default: Disabled
+                        description: |-
+                          javaDB selects how JAR files are listed, as for the gate. Disabled
+                          uses no Java DB and marks each SBOM java-scanned: false; PerJob pulls
+                          the Java DB in each Job.
+                        enum:
+                        - Disabled
+                        - PerJob
+                        type: string
+                      javaDBRepository:
+                        description: |-
+                          javaDBRepository is the Java DB in spec.registry with its tag, for
+                          example registry.example.internal/platform/ghcr.io/aquasecurity/trivy-java-db:1.
+                          Required with javaDB PerJob.
+                        maxLength: 512
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be <registry>/<repository>:<tag>
+                          rule: self.matches(r'^[^/@\s]+(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)+:[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$')
+                      resources:
+                        description: |-
+                          resources of the generator sidecar. Defaults to requests 100m and
+                          256Mi, limits 2 CPUs and 2Gi.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This field depends on the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                                request:
+                                  description: |-
+                                    Request is the name chosen for a request in the referenced claim.
+                                    If empty, everything from the claim is made available, otherwise
+                                    only the result of this request.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
+                      storage:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        default: 20Gi
+                        description: |-
+                          storage is the size limit of the emptyDir that holds the image the
+                          SBOM is generated from.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                        x-kubernetes-validations:
+                        - message: must be positive
+                          rule: quantity(string(self)).isGreaterThan(quantity('0'))
+                      timeout:
+                        default: 10m
+                        description: timeout of SBOM generation for one platform child.
+                          Between 1m and 1h.
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be between 1m and 1h
+                          rule: duration(self) >= duration('1m') && duration(self)
+                            <= duration('1h')
+                      version:
+                        description: version is the Trivy version of image, for example
+                          0.76.1.
+                        maxLength: 32
+                        pattern: ^[0-9]+\.[0-9]+\.[0-9]+$
+                        type: string
+                    type: object
+                    x-kubernetes-validations:
+                    - message: set image and version together
+                      rule: has(self.image) == has(self.version)
+                    - message: javaDB PerJob needs javaDBRepository
+                      rule: '!has(self.javaDB) || self.javaDB != ''PerJob'' || has(self.javaDBRepository)'
+                  mode:
+                    default: Disabled
+                    description: |-
+                      mode selects where the SBOM of each platform child comes from:
+                      Disabled attaches none, PreferUpstream uses a valid upstream SBOM
+                      referrer and generates one otherwise, Generate always generates one.
+                    enum:
+                    - Disabled
+                    - PreferUpstream
+                    - Generate
+                    type: string
+                  required:
+                    description: |-
+                      required fails closed: a new tag whose SBOM cannot be produced or
+                      attached for every platform child is not published. Tags published
+                      before are never untagged. Needs mode PreferUpstream or Generate.
+                    type: boolean
+                type: object
+                x-kubernetes-validations:
+                - message: required needs mode PreferUpstream or Generate
+                  rule: '!has(self.required) || !self.required || (has(self.mode)
+                    && self.mode != ''Disabled'')'
               sourceCABundles:
                 description: |-
                   sourceCABundles lists extra root CAs per source registry, for
@@ -949,6 +1118,17 @@ spec:
                 || !has(self.autoMirror.vulnerabilityGate.scanner) || !has(self.autoMirror.vulnerabilityGate.scanner.javaDBRepository)
                 || self.autoMirror.vulnerabilityGate.scanner.javaDBRepository.startsWith(self.registry
                 + ''/'')'
+            - message: sbom.generator.javaDBRepository must be in spec.registry
+              rule: '!has(self.sbom) || !has(self.sbom.generator) || !has(self.sbom.generator.javaDBRepository)
+                || self.sbom.generator.javaDBRepository.startsWith(self.registry +
+                ''/'')'
+            - message: sbom.generator image and version must equal autoMirror.vulnerabilityGate.scanner
+                image and version when both are set
+              rule: '!has(self.sbom) || !has(self.sbom.generator) || !has(self.sbom.generator.image)
+                || !has(self.autoMirror) || !has(self.autoMirror.vulnerabilityGate)
+                || !has(self.autoMirror.vulnerabilityGate.scanner) || !has(self.autoMirror.vulnerabilityGate.scanner.image)
+                || (self.sbom.generator.image == self.autoMirror.vulnerabilityGate.scanner.image
+                && self.sbom.generator.version == self.autoMirror.vulnerabilityGate.scanner.version)'
             - message: set exactly one of credentialsSecretRef or auth
               rule: has(self.credentialsSecretRef) != has(self.auth)
             - message: registryFlavor Harbor needs credentialsSecretRef
