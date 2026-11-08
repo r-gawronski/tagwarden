@@ -109,7 +109,11 @@ message, so write it as a Conventional Commit.
 
 Do not edit `CHANGELOG.md` in feature pull requests. It is generated from the
 conventional commit subjects, so make the pull request title a good changelog
-line. Maintainers run `make changelog VERSION=X.Y.Z`, tidy the result and merge
+line: lower case, says what changes for the user. The scope picks the
+changelog component (`api`, `controller`, `sync`, `tags`, `registry`, `gate`,
+`sbom`, `cmd`, `chart`, `docs`, `deps`; see `cliff.toml`). A breaking change
+uses `!` and a `BREAKING CHANGE:` footer that says what breaks and what the
+user must do; that footer is the changelog entry. Maintainers run `make changelog VERSION=X.Y.Z`, tidy the result and merge
 it in a `chore: changelog for vX.Y.Z` pull request. Then they run the Release
 workflow from the Actions tab, or
 `gh workflow run release.yaml --ref main -f version=X.Y.Z`. It refuses a
