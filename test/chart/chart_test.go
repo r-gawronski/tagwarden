@@ -20,6 +20,8 @@ limitations under the License.
 package chart
 
 import (
+	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -256,4 +258,45 @@ func TestVulnerabilityExceptions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValuesDocumented fails when a key of values.schema.json is missing from
+// docs/helm-values.md.
+func TestValuesDocumented(t *testing.T) {
+	raw, err := os.ReadFile(chartDir + "/values.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := os.ReadFile("../../docs/helm-values.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type node struct {
+		Ref        string           `json:"$ref"`
+		Properties map[string]*node `json:"properties"`
+		Items      *node            `json:"items"`
+	}
+	var schema struct {
+		node
+		Definitions map[string]*node `json:"definitions"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	var walk func(n *node, path string)
+	walk = func(n *node, path string) {
+		if n.Ref != "" {
+			n = schema.Definitions[strings.TrimPrefix(n.Ref, "#/definitions/")]
+		}
+		if path != "" && n.Properties == nil && !strings.Contains(string(doc), "`"+path+"`") {
+			t.Errorf("%s is not documented in docs/helm-values.md", path)
+		}
+		for k, c := range n.Properties {
+			walk(c, strings.TrimPrefix(path+"."+k, "."))
+		}
+		if n.Items != nil && n.Items.Properties != nil {
+			walk(n.Items, path+"[]")
+		}
+	}
+	walk(&schema.node, "")
 }

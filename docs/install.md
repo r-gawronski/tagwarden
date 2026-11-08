@@ -46,8 +46,8 @@ helm install tagwarden dist/chart \
 - `values.schema.json` rejects unknown keys, and the manager args must keep
   `--sync-image` and `--denied-cidrs`.
 
-Details on values and on how the chart is generated:
-[design/helm-chart.md](design/helm-chart.md).
+Every value with its default: [helm-values.md](helm-values.md). How the
+chart is generated: [design/helm-chart.md](design/helm-chart.md).
 
 ### Uninstall
 

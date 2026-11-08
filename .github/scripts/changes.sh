@@ -14,8 +14,8 @@ if [ -n "$range" ] && [ "${REF_TYPE:-}" != tag ] && ! [[ "${BASE:-}" =~ ^0*$ ]];
   if files=$(git diff --no-renames --name-only "$range") && [ -n "$files" ]; then
     grep -qvE "$docs" <<<"$files"
     [ $? -eq 1 ] && code=false
-    # test/docs applies the examples in docs/features.md.
-    grep -qx docs/features.md <<<"$files" && code=true
+    # test/docs applies the examples in docs/features.md; test/chart checks docs/helm-values.md.
+    grep -qxE 'docs/(features|helm-values)\.md' <<<"$files" && code=true
   fi
 fi
 echo "docs-only check: code=$code"

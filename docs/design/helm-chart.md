@@ -72,22 +72,8 @@ Objects passed through to Kubernetes fields (`securityContext`, `resources`,
 the `spec` of targets and mirrors are not described in the schema; the API
 server validates them against the Kubernetes and CRD schemas.
 
-| Value | Default | Notes |
-|-------|---------|-------|
-| `manager.image.repository`, `.tag`, `.digest`, `.pullPolicy` | `registry.example.internal/tagwarden/tagwarden`, appVersion, none, `IfNotPresent` | the digest is appended as `repo:tag@sha256:...` |
-| `syncImage.repository`, `.tag`, `.digest` | empty | empty repository means the manager image; empty tag means `manager.image.tag` |
-| `deniedCIDRs` | `[]` | rendered as `--denied-cidrs`; set the pod and service CIDRs |
-| `leaderElection.enabled` | `true` | |
-| `metrics.enabled`, `.port`, `.secure` | `true`, `8443`, `true` | |
-| `manager.imagePullSecrets`, `.nodeSelector`, `.tolerations`, `.affinity` | empty | |
-| `manager.podSecurityContext`, `.securityContext`, `.resources` | hardened | runAsNonRoot, seccomp RuntimeDefault, read-only root FS, no privilege escalation, drop ALL, limits set |
-| `crd.enabled`, `crd.keep` | `true`, `true` | see below |
-| `rbac.helpers.enabled` | `false` | admin, editor and viewer ClusterRoles for the CRDs; `VulnerabilityException` gets a viewer only |
-| `trivy.enabled` | `false` | in-chart Trivy server for the vulnerability gate, see below |
-| `vulnerabilityExceptions.approvers` | `[]` | subjects bound to the `<release>-exception-approver` ClusterRole (write exceptions); the role is always rendered |
-| `vulnerabilityExceptions.approvedByPolicy.enabled` | `false` | ValidatingAdmissionPolicy: `spec.approvedBy` must equal the requesting user on create and update |
-| `targets` | `[]` | items `{name, spec}` render `ClusterMirrorTarget` |
-| `mirrors` | `[]` | items `{name, namespace, spec}` render `ArtifactMirror` |
+Every value, its default and its constraints:
+[../helm-values.md](../helm-values.md).
 
 The manager args in `manager.args` are templates that wire leader election,
 the sync image and the denied CIDRs. The schema rejects a list without a

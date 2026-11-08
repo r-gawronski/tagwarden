@@ -659,6 +659,7 @@ You need Kubernetes 1.30 or newer and a registry you can push to.
 
 - [Features](docs/features.md): how to enable each feature, defaults and checks.
 - [Install](docs/install.md): Helm, Kustomize, uninstall, vulnerability gate.
+- [Helm values](docs/helm-values.md): every chart value with type, default and constraints.
 - [Network policies](docs/network-policies.md): sync pod labels and
   example egress policies.
 - [Argo CD](docs/argocd.md): a Sync now button, health checks and sync Jobs in the app tree.

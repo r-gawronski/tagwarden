@@ -63,8 +63,9 @@ Every pull request reports all required checks. A pull request that
 changes only docs (`**/*.md`, `docs/`, `LICENSE`, `.github/CODEOWNERS`,
 `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md`,
 `.github/release.yml`) skips the heavy jobs, which then show as success.
-`docs/features.md` is the exception: `test/docs` applies its examples, so a
-change to it runs everything.
+`docs/features.md` and `docs/helm-values.md` are the exceptions: `test/docs`
+applies the examples of the first, and the chart tests check that the second
+lists every value, so a change to either runs everything.
 Anything else counts as code and runs everything. The same rule applies to
 pushes to `main`: a docs-only merge skips CI, CodeQL, the image build (no new
 `main-<sha>` image) and e2e. If the check cannot tell, it runs everything.
