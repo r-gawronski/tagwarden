@@ -271,12 +271,12 @@ func tagPolicy(sel mirrorv1alpha1.TagSelector) tags.Policy {
 
 func mirrorMeta(m *mirrorv1alpha1.ArtifactMirror) (labels, annotations map[string]string) {
 	return map[string]string{
-		LabelMirror:                    mirrorHash(m.Namespace, m.Name),
-		"app.kubernetes.io/managed-by": "tagwarden",
-	}, map[string]string{
-		AnnotationMirrorNamespace: m.Namespace,
-		AnnotationMirrorName:      m.Name,
-	}
+			LabelMirror:                    mirrorHash(m.Namespace, m.Name),
+			"app.kubernetes.io/managed-by": "tagwarden",
+		}, map[string]string{
+			AnnotationMirrorNamespace: m.Namespace,
+			AnnotationMirrorName:      m.Name,
+		}
 }
 
 // renderConfigMap sets the spec ConfigMap content.
