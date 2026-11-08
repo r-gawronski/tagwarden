@@ -54,12 +54,19 @@ git switch -c chore/changelog-0.1.0 origin/main
 make changelog VERSION=0.1.0    # needs Docker and tags fetched
 ```
 
-The target turns the commits since the last tag into a `## [0.1.0] - <date>`
-section below `## [Unreleased]`. Sections: Security (`feat` or `fix` whose
-subject mentions security or a CVE), Added (`feat`), Fixed (`fix`), Changed
-(`refactor`, `perf`) and Documentation (`docs`). `ci`, `build`, `chore`,
-`test` and dependency bumps are left out. Then edit by hand: add a short
-Highlights paragraph for a notable release, fix wording, merge duplicates.
+The target turns the commits since the last tag into a
+`## [0.1.0](<compare link>) (<date>)` section below `## [Unreleased]`. It
+opens with Breaking changes: the `BREAKING CHANGE:` footer of each breaking
+commit, or its subject when there is no footer. Then one section per
+component, taken from the commit scope: API, Controller, Sync, Tags,
+Registry, Vulnerability gate, SBOM, CLI, Chart, Docs, Dependencies, and
+Other for no or an unknown scope (the mapping is in `cliff.toml`). Each
+component lists Features (`feat`), Bug fixes (`fix`), Performance (`perf`)
+and Reverts (`revert`), with links to the pull request, the commit and the
+issue a `Closes #N` or `Fixes #N` footer names. `docs`, `refactor`, `ci`,
+`build`, `chore`, `test` and Dependabot bumps are left out. Then edit by
+hand: add a short Highlights paragraph after the heading for a notable
+release, fix wording, merge duplicates.
 Open the pull request `chore: changelog for v0.1.0` and merge it.
 
 Then run the **Release** workflow (`.github/workflows/release.yaml`) from the
@@ -99,8 +106,12 @@ has a pre-release suffix (`v0.1.0-rc.1`).
 
 Attached files: the packaged chart `tagwarden-<version>.tgz` and one SPDX SBOM
 per platform, `tagwarden_<version>_linux_<arch>.spdx.json`. `publish` hands
-them over as a workflow artifact. The notes are the `CHANGELOG.md` section of that version, followed by the
-image and chart references with digests and a `cosign verify` example. A tag
+them over as a workflow artifact. The notes are the `CHANGELOG.md` section of that version, heading
+included, followed by Artifacts and verification: a table of the image and
+chart digests and the SBOM files, and commands that verify the image
+signature, the SBOM attestation of each platform image and the chart
+signature against the tag's exact identity, then install the chart by
+digest. A tag
 pushed by hand without a changelog section still gets a release: the job
 warns and falls back to GitHub generated notes, grouped by label through
 `.github/release.yml`. Those miss commits from before the history rewrite,

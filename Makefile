@@ -62,7 +62,7 @@ changelog: ## Move the commits since the last tag into CHANGELOG.md as a VERSION
 	@test -n "$(VERSION)" || { echo "usage: make changelog VERSION=x.y.z" >&2; exit 1; }
 	@set -e; n=$$(mktemp); o=$$(mktemp); trap 'rm -f "$$n" "$$o"' EXIT; \
 	docker run --rm -v "$$PWD":/app -w /app $(GIT_CLIFF_IMAGE) --unreleased --tag v$(VERSION) --strip header > "$$n"; \
-	awk 'FNR==NR { new = new $$0 "\n"; next } { print } /^## \[Unreleased\]/ { printf "\n%s", new }' "$$n" CHANGELOG.md > "$$o"; \
+	awk 'FNR==NR { new = new $$0 "\n"; next } { print } /^## \[Unreleased\]/ { sub(/\n+$$/, "\n", new); printf "\n%s", new }' "$$n" CHANGELOG.md > "$$o"; \
 	cat "$$o" > CHANGELOG.md
 
 .PHONY: fmt

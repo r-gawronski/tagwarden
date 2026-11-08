@@ -248,21 +248,39 @@ jobs:
           CHART_REF: ${{ steps.chart.outputs.ref }}
         run: |
           cp "bin/chart/tagwarden-$VERSION.tgz" release/
+          version_re=${VERSION//./\\.}
           cat > release/notes.md <<EOF
-          ## Artifacts
+          ## Artifacts and verification
 
-          - Image: \`$IMAGE:$VERSION\` (\`$IMAGE@$DIGEST\`)
-          - Chart: \`oci://${CHART_REF%@*}:$VERSION\` (\`$CHART_REF\`)
+          | Artifact | Reference |
+          | --- | --- |
+          | Image | \`$IMAGE@$DIGEST\` (tag \`$VERSION\`) |
+          | Helm chart | \`oci://${CHART_REF%@*}\` version \`$VERSION\`, \`${CHART_REF#*@}\` |
+          | SBOMs | \`tagwarden_${VERSION}_linux_amd64.spdx.json\` and \`tagwarden_${VERSION}_linux_arm64.spdx.json\`, attached |
 
-          Verify the signatures (keyless, cosign):
+          The release workflow scanned both platform images (linux/amd64 and linux/arm64) with Trivy, signed the image index and each platform image keyless with cosign, attested a signed SPDX SBOM to each platform image and signed the chart. The chart pulls the image by the tag \`$VERSION\`, so verify by digest, never by tag. The commands below check all of it again. You need [Docker](https://docs.docker.com/engine/install/), jq and [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3.x or later (the signatures are stored as Sigstore bundles, which cosign 2.x does not find). Details: [release design](https://github.com/$REPO/blob/v$VERSION/docs/design/release.md).
 
-          \`\`\`sh
-          cosign verify $IMAGE@$DIGEST \\
-            --certificate-identity-regexp '^https://github\\.com/$REPO/\\.github/workflows/build\\.yaml@refs/tags/v.+\$' \\
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          \`\`\`bash
+          ISSUER=https://token.actions.githubusercontent.com
+          IDENTITY='^https://github\\.com/$REPO/\\.github/workflows/build\\.yaml@refs/tags/v$version_re\$'
+          IMAGE=$IMAGE@$DIGEST
+          CHART=$CHART_REF
+
+          cosign verify --certificate-identity-regexp "\$IDENTITY" --certificate-oidc-issuer "\$ISSUER" "\$IMAGE"
+          # One SBOM per platform image, attested on the digest of each.
+          for arch in amd64 arm64; do
+            child="\$(docker buildx imagetools inspect --raw "\$IMAGE" | jq -r --arg a "\$arch" \\
+              '.manifests[] | select(.platform.os == "linux" and .platform.architecture == \$a) | .digest')"
+            cosign verify-attestation --type spdxjson --certificate-identity-regexp "\$IDENTITY" \\
+              --certificate-oidc-issuer "\$ISSUER" "\${IMAGE%@*}@\$child" > /dev/null
+          done
+          cosign verify --certificate-identity-regexp "\$IDENTITY" --certificate-oidc-issuer "\$ISSUER" "\$CHART"
+
+          # Install the chart you verified: the digest in the reference means nothing can move in between.
+          helm install tagwarden "oci://\$CHART" \\
+            --namespace tagwarden-system --create-namespace \\
+            --set 'deniedCIDRs={10.244.0.0/16,10.96.0.0/12}'
           \`\`\`
-
-          The SPDX SBOMs of each platform image are attached. See docs/design/release.md for the chart and the attestations.
 
           EOF
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -296,7 +314,7 @@ jobs:
           notes=(--notes-file release/notes.md)
           gh api -H 'Accept: application/vnd.github.raw+json' \
             "repos/$GH_REPO/contents/CHANGELOG.md?ref=$TAG" > CHANGELOG.md || : > CHANGELOG.md
-          awk -v v="$V" '/^## \[/ { on = index($0, "## [" v "]") == 1; next } on' CHANGELOG.md > changelog.md
+          awk -v v="$V" '/^## \[/ { on = index($0, "## [" v "]") == 1 } on' CHANGELOG.md > changelog.md
           if grep -q '[^[:space:]]' changelog.md; then
             cat changelog.md > full.md
             printf '\n' >> full.md

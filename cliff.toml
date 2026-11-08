@@ -1,11 +1,15 @@
-# git-cliff configuration for CHANGELOG.md (Keep a Changelog layout).
-# Run through `make changelog VERSION=x.y.z`. See docs/design/release.md.
+# git-cliff configuration for CHANGELOG.md. Run through
+# `make changelog VERSION=x.y.z`. See docs/design/release.md.
 #
-# Sections: Security, Added (feat), Fixed (fix), Changed (refactor, perf),
-# Documentation (docs). ci, build, chore, test and style commits are left out,
-# and so are dependency bumps (build(deps), chore(deps), Dependabot): they
-# are not user-visible. A fix(deps) that mentions a CVE lands in Security.
-# The group names carry a numeric comment that only fixes their order.
+# A version section opens with Breaking changes (the BREAKING CHANGE footer of
+# each breaking commit, or its subject), then one section per component, taken
+# from the commit scope (api -> API, controller -> Controller, ...; no or an
+# unknown scope -> Other). Inside a component: Features (feat), Bug fixes
+# (fix), Performance (perf), Reverts (revert), entries sorted by subject.
+# docs, refactor, test, ci, build, chore and style commits are left out, and
+# so are Dependabot bumps (build(deps), chore(deps)). A fix(deps) for a CVE
+# lands in Dependencies. Group names carry a numeric comment that only fixes
+# their order.
 
 [changelog]
 header = """
@@ -13,26 +17,75 @@ header = """
 
 All notable changes to this project are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Entries come from the Conventional Commits on `main`, grouped by component.
+This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 """
 body = """
+{%- macro entry(c) -%}
+* {{ c.message | split(pat="\n") | first | trim }} \
+([{{ c.id | truncate(length=7, end="") }}](https://github.com/r-gawronski/tagwarden/commit/{{ c.id }}))\
+{% for f in c.footers %}{% if f.token in ["Closes", "Fixes"] and f.separator == " #" %}\
+{% set n = f.value | split(pat="\n") | first | trim %}, closes [#{{ n }}](https://github.com/r-gawronski/tagwarden/issues/{{ n }}){% endif %}{% endfor %}
+{% endmacro entry -%}
+
+{%- macro component(name, commits) -%}
+{% if commits | length > 0 %}
+### {{ name }}
+{% for group, gc in commits | group_by(attribute="group") %}
+#### {{ group | striptags | trim }}
+
+{% for c in gc | sort(attribute="message") %}{{ self::entry(c=c) }}{% endfor %}
+{% endfor -%}
+{% endif -%}
+{% endmacro component -%}
+
 {% if version -%}
-## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% if previous.version -%}
+## [{{ version | trim_start_matches(pat="v") }}](https://github.com/r-gawronski/tagwarden/compare/{{ previous.version }}...{{ version }}) ({{ timestamp | date(format="%Y-%m-%d") }})
+{% else -%}
+## [{{ version | trim_start_matches(pat="v") }}] ({{ timestamp | date(format="%Y-%m-%d") }})
+{% endif -%}
 {% else -%}
 ## [Unreleased]
 {% endif -%}
-{% for group, commits in commits | group_by(attribute="group") %}
-### {{ group | striptags | trim | upper_first }}
-{% for commit in commits %}
-- {% if commit.breaking %}**BREAKING** {% endif %}\
-{% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
-{{ commit.message | upper_first }}\
-{% endfor %}
-{% endfor %}
+
+{% set breaking = commits | filter(attribute="breaking", value=true) -%}
+{% if breaking | length > 0 %}
+### Breaking changes
+
+{% for c in breaking %}* {% if c.scope %}**{{ c.scope }}:** {% endif %}{{ c.breaking_description | trim }}
+{% endfor -%}
+{% endif -%}
+
+{% set components = [
+  "API:api",
+  "Controller:controller,argocd,config",
+  "Sync:sync,syncspec",
+  "Tags:tags",
+  "Registry:registry",
+  "Vulnerability gate:gate,vuln",
+  "SBOM:sbom",
+  "CLI:cmd",
+  "Chart:chart,helm",
+  "Docs:docs,features,threat-model",
+  "Dependencies:deps",
+] -%}
+{% set_global known = [] -%}
+{% for comp in components -%}
+{% set name = comp | split(pat=":") | first -%}
+{% set scopes = comp | split(pat=":") | last | split(pat=",") -%}
+{% set_global known = known | concat(with=scopes) -%}
+{% set_global picked = [] -%}
+{% for c in commits %}{% if c.scope and c.scope in scopes %}{% set_global picked = picked | concat(with=c) %}{% endif %}{% endfor -%}
+{{ self::component(name=name, commits=picked) }}
+{%- endfor -%}
+{% set_global other = [] -%}
+{% for c in commits %}{% if not c.scope or c.scope not in known %}{% set_global other = other | concat(with=c) %}{% endif %}{% endfor -%}
+{{ self::component(name="Other", commits=other) }}
 """
 trim = true
+postprocessors = [{ pattern = '\n{3,}', replace = "\n\n" }]
 
 [git]
 conventional_commits = true
@@ -43,19 +96,18 @@ filter_commits = true
 topo_order = false
 sort_commits = "oldest"
 tag_pattern = "v[0-9].*"
-# Link the trailing (#NN), the squash-merge pull request number. An earlier
-# (#NN) in the subject is an issue reference and stays plain. Commits from
-# before the history rewrite have no number.
+# Link the trailing (#NN) of the subject, the squash-merge pull request
+# number, and an earlier (#NN), an issue reference. (?m) because the message
+# includes the body. Commits from before the history rewrite have no number.
 commit_preprocessors = [
-  { pattern = '\(#([0-9]+)\)$', replace = "([#${1}](https://github.com/r-gawronski/tagwarden/pull/${1}))" },
+  { pattern = '\(#([0-9]+)\) \(', replace = "([#${1}](https://github.com/r-gawronski/tagwarden/issues/${1})) (" },
+  { pattern = '(?m)\(#([0-9]+)\)$', replace = "([#${1}](https://github.com/r-gawronski/tagwarden/pull/${1}))" },
 ]
 commit_parsers = [
   { message = "^(build|chore)\\(deps", skip = true },
-  { message = "^(feat|fix)(\\(.*\\))?!?:.*(?i:security|CVE-)", group = "<!-- 0 -->Security" },
-  { message = "^(feat|fix)\\(security\\)", group = "<!-- 0 -->Security" },
-  { message = "^feat", group = "<!-- 1 -->Added" },
-  { message = "^fix", group = "<!-- 2 -->Fixed" },
-  { message = "^(refactor|perf)", group = "<!-- 3 -->Changed" },
-  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^revert", group = "<!-- 3 -->Reverts" },
   { message = ".*", skip = true },
 ]
