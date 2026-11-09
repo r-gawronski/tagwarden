@@ -152,7 +152,7 @@ func (r *ArtifactMirrorReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	if !equality.Semantic.DeepEqual(old, &m.Status) {
 		if err := r.Status().Update(ctx, &m); err != nil {
-			return ctrl.Result{}, err
+			return statusUpdateFailed(ctx, err)
 		}
 	}
 	r.markApplied(ctx, applied)
