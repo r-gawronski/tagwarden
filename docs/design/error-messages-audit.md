@@ -52,22 +52,25 @@ is fine when it says more. The problems:
 6. Two paths put internal addresses into tenant-visible text: the Job's
    source address check and the scanner probe, which auto-mirror relays to
    Pod Events.
-7. Messages that tell a tenant to wait on the platform team rarely say
-   why (`ClusterMirrorTarget X is not Ready`), and tenants may not be able
-   to read the cluster-scoped object.
+7. Messages that point at another object rarely say why
+   (`ClusterMirrorTarget X is not Ready`), and a namespace user may not be
+   able to read the cluster-scoped object. One message
+   (`automirror.go:198`) tells the reader to "ask the platform team". That
+   assumes an organization the operator may not have: in a homelab one
+   person owns the mirror and the target.
 
 Findings listed in section 4, by primary category:
 
 | Category | Count |
 |----------|-------|
-| Length caps | 1 |
+| Length caps and context | 2 |
 | Grammar and wording | 8 |
 | Go conventions | 1 |
-| Missing information or next step | 10 |
+| Missing information or next step | 11 |
 | Consistency (wording, reasons) | 6 |
 | Composition (after wrapping and summary) | 5 |
 | Safety | 2 |
-| **Listed** | **33** |
+| **Listed** | **35** |
 | Minor, not listed | 21 |
 
 The minor items are terse sentinel texts that only appear for a forged or
@@ -110,12 +113,12 @@ transport detail), mark the gap with `...`.
    - Before: `1.27: sync: target tag points to a different digest than upstream`
    - After: `1.27: upstream tag moved ...`
 
-3. **Limits use one pattern: what, actual value, field path, owner.**
+3. **Limits use one pattern: what, actual value, field path, object.**
    This is what `limits.go` already does. The sync Job does not know the
-   target name, so it says "of the ClusterMirrorTarget"; the mirror's
-   `spec.targetRef` makes that unambiguous.
+   target name today; B2 adds it to the Job spec so the message can name
+   the ClusterMirrorTarget.
    - Before: `artifact too large: 5368709120 > 2147483648`
-   - After: `artifact docker.io/library/nginx:1.27 is 5Gi, above the limit spec.limits.maxArtifactSize 2Gi of the ClusterMirrorTarget; ask the platform team to raise the limit, or exclude this tag with tags.exclude`
+   - After: `artifact docker.io/library/nginx:1.27 is 5Gi, above spec.limits.maxArtifactSize 2Gi of ClusterMirrorTarget shared; raise that limit or exclude the tag with tags.exclude`
 
 4. **Field paths are the API's dotted paths.** `tags.include[0]`,
    `spec.limits.maxListedTags`, `policy.onTagMutation`. Never Go names
@@ -135,11 +138,13 @@ transport detail), mark the gap with `...`.
    - Before: `40 prerelease skipped; set allowPrerelease; copied 0, ...`
    - After: `40 prereleases skipped (set tags.allowPrerelease: true to keep them)`
 
-7. **End with the next step when the reader can take one.** Name the
-   field to change, or say who acts (`ask the platform team`), as
-   `AutoMirrorDisabled` already does.
+7. **End with the next step: the object and the field to change.**
+   Never name a role or a team ("ask the platform team", "contact your
+   administrator"). The operator runs in large clusters and in a homelab
+   with one admin alike. The object name tells the reader where the fix
+   is; RBAC decides who may make it.
    - Before: `ClusterMirrorTarget shared is not Ready`
-   - After: `ClusterMirrorTarget shared is not Ready (SecretNotFound: the credentials Secret of the target does not exist); no image is mirrored until it is fixed; ask the platform team`
+   - After: `ClusterMirrorTarget shared is not Ready (SecretNotFound: its credentials Secret does not exist); nothing is mirrored until the ClusterMirrorTarget is fixed`
 
 8. **Explain a reason code in words when the message quotes one.**
    `DeadlineExceeded`, `BackoffLimitExceeded` and the target's Ready reason
@@ -162,11 +167,11 @@ transport detail), mark the gap with `...`.
     - After: `tags 1.27, 1.28`
 
 12. **Tenant-visible text never carries addresses the cluster resolved,
-    denied CIDRs or in-pod paths.** Say what was refused and who can fix
-    it. Put the detail in the Job's JSON stdout or the controller log,
-    where the platform team looks.
+    denied CIDRs or in-pod paths.** Say what was refused and where it is
+    configured. Put the detail in the Job's JSON stdout or the controller
+    log.
     - Before: `source: registry.example.com resolves to 10.96.0.10 in denied CIDR 10.96.0.0/12`
-    - After: `source registry registry.example.com resolves to an address inside the cluster network, which sync Jobs may not reach; ask the platform team to check the registry DNS name or the denied CIDRs`
+    - After: `source registry registry.example.com resolves to an address inside the cluster network, which sync Jobs may not reach; check the registry DNS name, or the deniedCIDRs Helm value of the operator`
 
 Constraint for every sync engine change: `synccmd.audit` splits each entry
 of `res.Errors` on the first `": "` to attach it to the audit line of that
@@ -182,18 +187,19 @@ Most user-impacting first within each area.
 | ID | file:line | Problem | Proposed change |
 |----|-----------|---------|-----------------|
 | B1 | `internal/sync/sync.go:54`, `internal/synccmd/synccmd.go:576-577`, `internal/controller/status.go:43`, `internal/controller/scanner.go:52` | Four caps between 200 and 300 bytes. The proposed messages put the next step last, and the cap cuts it first. | Raise per section 2. Cut at a clause boundary and keep the last clause. Test that every "after" string in section 5 reaches the condition whole. |
+| B2 | `internal/syncspec/spec.go:259-261` | The Job spec carries the mirror's namespace and name but not the ClusterMirrorTarget name, so sync errors can only say "of the ClusterMirrorTarget". | Add the target name to `syncspec.Mirror` and use it in every limit and policy message from the Job. |
 
 ### Sync engine (`internal/sync`, `internal/synccmd`, `internal/tags`)
 
 | ID | file:line | Problem | Proposed message |
 |----|-----------|---------|------------------|
-| S1 | `internal/sync/sync.go:308` | Listing limit: `source has more than %d tags, the limit (maxListedTags of the ClusterMirrorTarget)`. "the limit" dangles, there is no field path and no repository. The count is a lower bound because listing stops, so the real number cannot be shown. | `listing tags of <source repo> stopped after %d tags: the repository has more than spec.limits.maxListedTags (%d) of the ClusterMirrorTarget allows; list the wanted versions in tags.tags, which skips listing, or ask the platform team to raise maxListedTags` |
+| S1 | `internal/sync/sync.go:308` | Listing limit: `source has more than %d tags, the limit (maxListedTags of the ClusterMirrorTarget)`. "the limit" dangles, there is no field path and no repository. The count is a lower bound because listing stops, so the real number cannot be shown. | `listing tags of <source repo> stopped after %d tags: the repository has more than spec.limits.maxListedTags (%d) of ClusterMirrorTarget <target> allows; list the wanted versions in tags.tags, which skips listing, or raise that limit` |
 | S2 | `internal/sync/sync.go:300` | Page cap: no repository, no hint. | `listing tags of <source repo> stopped after %d pages: the registry keeps returning more pages; list the wanted versions in tags.tags, which skips listing` |
-| S3 | `internal/sync/sync.go:51`, `:174`, `:359` | `ErrTagMutated` carries `sync:` and lands mid-string after the tag. No hint about the policy or what to do. | `upstream tag moved: target has %s, upstream now has %s; the target tag was kept because policy.onTagMutation of the ClusterMirrorTarget is Fail; check the upstream release, then ask the platform team to re-tag or set onTagMutation` (full digests: they let the user compare with the upstream registry) |
-| S4 | `internal/sync/sync.go:449`, `:468` | Raw byte counts with `>`, no field, no artifact. | `artifact <repo>:<tag> is %s, above the limit spec.limits.maxArtifactSize %s of the ClusterMirrorTarget; exclude the tag with tags.exclude or ask the platform team to raise the limit` and `referrers (signatures, SBOMs, attestations) of <repo>:<tag> total %s, above spec.limits.maxArtifactSize %s ...` (sizes via `resource.NewQuantity(n, resource.BinarySI)`) |
+| S3 | `internal/sync/sync.go:51`, `:174`, `:359` | `ErrTagMutated` carries `sync:` and lands mid-string after the tag. No hint about the policy or what to do. | `upstream tag moved: target has %s, upstream now has %s; the target tag was kept because spec.policy.onTagMutation of ClusterMirrorTarget <target> is Fail; check the upstream release, then delete the target tag to take the new digest or change onTagMutation` (full digests: they let the user compare with the upstream registry) |
+| S4 | `internal/sync/sync.go:449`, `:468` | Raw byte counts with `>`, no field, no artifact. | `artifact <repo>:<tag> is %s, above spec.limits.maxArtifactSize %s of ClusterMirrorTarget <target>; exclude the tag with tags.exclude or raise that limit` and `referrers (signatures, SBOMs, attestations) of <repo>:<tag> total %s, above spec.limits.maxArtifactSize %s ...` (sizes via `resource.NewQuantity(n, resource.BinarySI)`) |
 | S5 | `internal/sync/sync.go:432` | `platform linux/arm64 not in source`: no field, no list of what the source has. | `requiredPlatforms lists linux/arm64, but the source image has only linux/amd64, linux/s390x; remove it from requiredPlatforms or pick a tag built for it` |
-| S6 | `internal/sync/sync.go:295`, `:304`, `:320`, `:329`, `:364`, `:390` | ggcr errors pass through as is. A 401 or 403 gives no hint, and a registry error with detail prints a Go map (`; [map[Action:pull ...]]`, from `transport.Diagnostic.String`). | Keep the wrap and add a hint on `transport.Error` status 401/403: `...: 401 Unauthorized: the source registry refused the credentials; check sourceCredentials of the ClusterMirrorTarget` (target side: `the target credentials Secret`). Replace the map with `code: message` pairs. |
-| S7 | `internal/synccmd/synccmd.go:246`, `:447` | A missing or unreadable credentials file shows the in-pod path (`open /var/run/...: no such file or directory`) and not which Secret or field to check. | `target credentials: the Secret named in the ClusterMirrorTarget is not mounted or not readable in the sync Job; ask the platform team to check that it exists and has the expected key` (log the path on stdout) |
+| S6 | `internal/sync/sync.go:295`, `:304`, `:320`, `:329`, `:364`, `:390` | ggcr errors pass through as is. A 401 or 403 gives no hint, and a registry error with detail prints a Go map (`; [map[Action:pull ...]]`, from `transport.Diagnostic.String`). | Keep the wrap and add a hint on `transport.Error` status 401/403: `...: 401 Unauthorized: the source registry refused the credentials; check spec.sourceCredentials of ClusterMirrorTarget <target>` (target side: `check the credentials Secret of ClusterMirrorTarget <target>`). Replace the map with `code: message` pairs. |
+| S7 | `internal/synccmd/synccmd.go:246`, `:447` | A missing or unreadable credentials file shows the in-pod path (`open /var/run/...: no such file or directory`) and not which Secret or field to check. | `target credentials: the Secret named in ClusterMirrorTarget <target> is not mounted or not readable in the sync Job; check that the Secret exists and has the expected key` (log the path on stdout) |
 | S8 | `internal/sync/sync.go:51`, `:198`, `:222`, `:231`, `:295`, `:300`, `:304`, `:308`, `internal/sync/gate.go:100`, `internal/tags/select.go:104`, `internal/syncspec/spec.go:328-356` | Package prefixes are inconsistent: 8 of 31 sites in `sync.go` use `sync:`, `tags` uses `tags:` (the field name too), `syncspec` uses `spec:` and `report:`, `synccmd` and `vuln` use none. | Drop `sync:` and `tags:` from errors that reach status (convention 2). `spec:` can stay: it only appears for version skew and says which document is bad. |
 | S9 | `internal/sync/sync.go:300-308`, `:449`, `:468` with `internal/synccmd/synccmd.go:136-139` and `internal/synccmd/gate.go:115` | Deterministic failures exit 1 (`ExitSyncFailed`). `notRetryable` maps only scan-blocked runs to exit 3, so the pod failure policy does not stop a listing or size limit, the Job runs two more times, and the reason is `SyncFailed`. A listing over the limit lists up to 10,000 tags three times. | Not a wording change. Exit 3 for the listing limit and the size limit, reason `ConfigRejected`. A refused mutation stays exit 1: `notRetryable` excludes `ErrTagMutated` on purpose, and changing that needs its own decision. |
 
@@ -205,18 +211,19 @@ Most user-impacting first within each area.
 | C2 | `internal/controller/status.go:304-307` | Four counters even when nothing was attempted (listing failed, setup failed). They push the useful text back. PR #95 added `pruned %d`. | When `Selection == nil` and all counters are zero, print only the errors. On failure print non-zero counters only, `pruned` included. Keep all counters on success. |
 | C3 | `internal/controller/status.go:304` | Gated runs: blocked tags are not counted. A run where the gate blocked every tag reads `copied 0, skipped 0, mutated 0, failed 0`. `Report.Blocked` exists. | Add `blocked %d by the vulnerability gate` when non-zero |
 | C4 | `internal/controller/status.go:311-316` | The error count is `len(r.Errors)` after the Job cut the list to fit 4096 bytes. `ErrorsTruncated` is never read, so 40 failed tags can show as `3 errors`. | Count from `r.Failed`, and add `(error list truncated; the sync Job log has all of them)` when `ErrorsTruncated` is set |
-| C5 | `internal/controller/status.go:188`, `:201` | `Job X exited with code unknown: no sync container result: DeadlineExceeded`. "exited with code unknown" is wrong when the container never ended, and the Job reason is not explained. | `Job X ended without a sync result (DeadlineExceeded: the Job ran longer than its 1h deadline; a large first sync can need more, ask the platform team)`; for `BackoffLimitExceeded`: `(BackoffLimitExceeded: the sync pod failed 3 times; kubectl logs job/X shows why)` |
+| C5 | `internal/controller/status.go:188`, `:201` | `Job X exited with code unknown: no sync container result: DeadlineExceeded`. "exited with code unknown" is wrong when the container never ended, and the Job reason is not explained. | `Job X ended without a sync result (DeadlineExceeded: the Job ran longer than its fixed 1h deadline; select fewer tags, for example with tags.keepLatest, so one run copies less)`; for `BackoffLimitExceeded`: `(BackoffLimitExceeded: the sync pod failed 3 times; kubectl logs job/X shows why)` |
 | C6 | `internal/controller/status.go:333` | The selection note puts `; set allowPrerelease` inside a comma list and then appends the counters with another `;`. Plurals are wrong (`40 prerelease skipped`). | `no tags selected from 120 listed: 80 removed by tags.include/tags.exclude, 40 prereleases skipped (set tags.allowPrerelease: true to keep them)` and no counters (C2) |
-| C7 | `internal/controller/artifactmirror_controller.go:224` | `ClusterMirrorTarget X is not Ready` without the cause. Tenants often cannot read the cluster-scoped object. | `ClusterMirrorTarget %s is not Ready (%s: <what the reason means>); no image is mirrored until it is fixed; ask the platform team`. Map each target Ready reason to a fixed sentence. The target message can quote Secret names from the operator namespace, so do not copy it. |
-| C8 | `internal/controller/gate.go:77`, `internal/controller/artifactmirror_controller.go:250` | A gate without a usable scanner under `onScanError: Block` says "not configured" twice, because `problem` starts with it, and does not say who acts. | `vulnerability gate of ClusterMirrorTarget %s has no usable scanner (%s); onScanError is Block, so nothing is copied until the platform team configures one`, with `problem` minus its `not configured: ` prefix. Reason: see the note below the table. |
-| C9 | `internal/controller/gate.go:189` | Report mode: `gate enabled but scanner not configured; images are copied unscanned` names neither the target nor who acts. | `vulnerability gate of ClusterMirrorTarget %s has no usable scanner; onScanError is Report, so images are copied without a scan; ask the platform team` |
+| C7 | `internal/controller/artifactmirror_controller.go:224` | `ClusterMirrorTarget X is not Ready` without the cause. Tenants often cannot read the cluster-scoped object. | `ClusterMirrorTarget %s is not Ready (%s: <what the reason means>); nothing is mirrored until the ClusterMirrorTarget is fixed`. Map each target Ready reason to a fixed sentence. The target message can quote Secret names from the operator namespace, so do not copy it. |
+| C8 | `internal/controller/gate.go:77`, `internal/controller/artifactmirror_controller.go:250` | A gate without a usable scanner under `onScanError: Block` says "not configured" twice, because `problem` starts with it, and does not say who acts. | `vulnerability gate of ClusterMirrorTarget %s has no usable scanner (%s); onScanError is Block, so nothing is copied until a scanner is configured`, with `problem` minus its `not configured: ` prefix. Reason: see the note below the table. |
+| C9 | `internal/controller/gate.go:189` | Report mode: `gate enabled but scanner not configured; images are copied unscanned` names neither the target nor who acts. | `vulnerability gate of ClusterMirrorTarget %s has no usable scanner; onScanError is Report, so images are copied without a scan; set spec.vulnerabilityGate.scanner.url or enable the chart's Trivy server` |
 | C10 | `internal/controller/artifactmirror_controller.go:408`, `internal/syncspec/spec.go:356` | `tags: include[0]: ...` while `limits.go` writes `tags.keepLatest`. | `tags.include[0]: ...` (pass the full path into `compilePatterns`, or prefix with `tags.` without the colon) |
 | C11 | `internal/controller/artifactmirror_controller.go:207` | Sync-now refusal says `ArtifactMirror is not Ready: TargetConflict` and drops the message that explains it. | `sync now refused: ArtifactMirror is not Ready (%s): %s` with the Ready message |
 | C12 | `internal/controller/artifactmirror_controller.go:302` | `apierrors.IsInvalid` passes the raw API error (`CronJob.batch "..." is invalid: spec...`). It names an object in the operator namespace. | `the API server rejected the sync CronJob rendered from this mirror: %s` with the field causes from `StatusDetails.Causes` only |
-| C13 | `internal/controller/automirror.go:332` | `... autoMirror.maxMirrorsPerNamespace %d of %s`: the kind is missing. | `... of ClusterMirrorTarget %s; delete unused generated mirrors or ask the platform team to raise the limit` |
+| C13 | `internal/controller/automirror.go:332` | `... autoMirror.maxMirrorsPerNamespace %d of %s`: the kind is missing. | `... of ClusterMirrorTarget %s; delete unused generated mirrors in this namespace or raise that limit` |
 | C14 | `internal/controller/clustermirrortarget_controller.go:186`, `:363`, `internal/controller/scanner.go:237`, `internal/registry/transport.go:79` | Three phrasings for one problem: `holds no PEM certificate`, `CA bundle holds no PEM certificate`, `registry: CA bundle contains no PEM certificate`. | `Secret %s key %s has no PEM certificate` everywhere a Secret is known; `CA bundle has no PEM certificate` otherwise |
 | C15 | `internal/controller/limits.go:152`, `internal/controller/syncnow.go:142`, `internal/controller/vulnerabilityexception_controller.go:95` | Go duration format: `runs 30m0s apart`, `minSyncInterval 1h0m0s`, `expires 2160h0m0s after creation`. | `30m`, `1h`, `90d`: a formatter that drops zero units and prints whole days as days, since the API documents 90 days |
 | C16 | `internal/controller/status.go:253` | A failed re-scan appends `rescan failed: copied 0, skipped 0, mutated 0, failed 1`. Copied and skipped mean nothing for a re-scan. | `rescan failed for 1 of 12 tags (1.27): <e>; the tags keep their last verdict` |
+| C17 | `internal/controller/automirror.go:198` | `ClusterMirrorTarget %s does not enable autoMirror; ask the platform team`. Names a team the cluster may not have, and not the field. | `ClusterMirrorTarget %s does not enable autoMirror, so pods in this namespace cannot request mirrors from it; set spec.autoMirror on the ClusterMirrorTarget` |
 
 C8 reason: convention 9 suggests `NotConfigured`, the reason `VulnerabilityGate` uses for the same cause under `Report`. The design (`docs/design/vulnerability-gate.md:893`, `:1416`) chose `ScannerUnavailable` on `Ready` on purpose, and `gate_status_test.go:559`, `:562` assert it. The message fix does not need the rename. Rename only together with those two design lines and the tests, and note it in the changelog: alerts may match on the reason.
 
@@ -226,7 +233,7 @@ C8 reason: convention 9 suggests `NotConfigured`, the reason `VulnerabilityGate`
 |----|-----------|---------|------------------|
 | E1 | `internal/controller/automirror.go:432`, `:437`, `:442` | Pod relay copies the condition as `<reason>: <message>`. With reason `SyncFailed` the Event reads `SyncFailed` / `SyncFailed: copied 0, skipped 0, ...`, and it does not say which mirror to look at, unlike `relayGate` (`:461`). | Prefix only when the condition reason differs from the Event reason; append `; see ArtifactMirror %s/%s` |
 | E2 | `internal/controller/automirror.go:353`, `:446` | Two phrasings for the same Event (`Requested mirror of %s tags %v as ...` and `Mirror of %s tags %v requested as ...`), and `%v` prints `[1.27 1.28]`. | One text: `requested mirror of %s tags %s as ArtifactMirror %s/%s` with `strings.Join(tags, ", ")` |
-| E3 | `internal/controller/automirror.go:339`, `:383` | `TooManyTags`: the first form does not name the limit owner or the dropped tags, the second prints them with `%v`. | `%s: %d tags requested, above autoMirror.maxExplicitTags %d of ClusterMirrorTarget %s; not mirrored: %s; pin fewer tags in this namespace or ask the platform team to raise the limit` for both |
+| E3 | `internal/controller/automirror.go:339`, `:383` | `TooManyTags`: the first form does not name the limit owner or the dropped tags, the second prints them with `%v`. | `%s: %d tags requested, above autoMirror.maxExplicitTags %d of ClusterMirrorTarget %s; not mirrored: %s; use fewer tags of this image in the namespace or raise that limit` for both |
 | E4 | `internal/controller/gate.go:472` | `ScanFailed: tag 1.27 (sha256:...) could not be scanned, copied`. "copied" is ambiguous for a fail-open security event. | `tag 1.27 (sha256:...) could not be scanned (ScanFailed: <what it means>); copied without a vulnerability verdict because onScanError is Report` and `...; not copied because onScanError is Block` |
 | E5 | `internal/controller/automirror.go:202` | `TargetNotReady: ClusterMirrorTarget X is not Ready` on a Pod: same gap as C7. | Same text as C7 |
 | E6 | `internal/controller/automirror.go:347`, `:397` | `%s cannot be mirrored: %v` and `%s cannot be updated: %v` quote the raw API error on a tenant Pod. | Same treatment as C12 |
@@ -235,8 +242,8 @@ C8 reason: convention 9 suggests `NotConfigured`, the reason `VulnerabilityGate`
 
 | ID | file:line | Problem | Proposed message |
 |----|-----------|---------|------------------|
-| X1 | `internal/syncspec/spec.go:481`, `:485`, called from `internal/synccmd/synccmd.go:376-394` | The Job writes the address the cluster DNS returned and the denied CIDR into the report, so the tenant's `Synced` condition shows, for example, the service CIDR. Low impact (the host must be in `allowedSources`), but convention 12 rules it out. | `source registry %s resolves to an address inside the cluster network, which sync Jobs may not reach; ask the platform team to check the registry DNS name or the denied CIDRs`. Write the address and CIDR on the Job's JSON stdout. The controller check sees only literal addresses typed by the tenant; there `source 127.0.0.1 is an internal address; use the registry host name` is enough. |
-| X2 | `internal/controller/scanner.go:86` with `internal/controller/automirror.go:469` | `address refused: resolves to 10.0.0.5 in denied CIDR ...` on `ScannerReady`. That is the platform team's object, but `relayGate` copies the message into Warning Events on tenant Pods. The text also has no subject. | On the target: `scanner address %s resolves to %s in denied CIDR %s; the controller refuses it` (platform team only). In the Pod relay, pass the reason only: `scanner of ClusterMirrorTarget %s is unavailable (%s); images are not mirrored; ask the platform team` |
+| X1 | `internal/syncspec/spec.go:481`, `:485`, called from `internal/synccmd/synccmd.go:376-394` | The Job writes the address the cluster DNS returned and the denied CIDR into the report, so the tenant's `Synced` condition shows, for example, the service CIDR. Low impact (the host must be in `allowedSources`), but convention 12 rules it out. | `source registry %s resolves to an address inside the cluster network, which sync Jobs may not reach; check the registry DNS name, or the deniedCIDRs Helm value of the operator`. Write the address and CIDR on the Job's JSON stdout. The controller check sees only literal addresses typed by the tenant; there `source 127.0.0.1 is an internal address; use the registry host name` is enough. |
+| X2 | `internal/controller/scanner.go:86` with `internal/controller/automirror.go:469` | `address refused: resolves to 10.0.0.5 in denied CIDR ...` on `ScannerReady`. That object is cluster-scoped, but `relayGate` copies the message into Warning Events on tenant Pods. The text also has no subject. | On the target: `scanner address %s resolves to %s in denied CIDR %s; the controller refuses it` (the cluster-scoped object can keep the detail). In the Pod relay, pass the reason only: `scanner of ClusterMirrorTarget %s is unavailable (%s); images are not mirrored; the ScannerReady condition of the ClusterMirrorTarget has the details` |
 
 ### CLI (`cmd/main.go`)
 
@@ -259,9 +266,9 @@ Before:
 
     SyncFailed: copied 0, skipped 0, mutated 0, failed 0; 1 errors, first: sync: source has more than 10000 tags, the limit (maxListedTags of the ClusterMirrorTarget)
 
-After (S1, S9, C1, C2):
+After (B2, S1, S9, C1, C2):
 
-    ConfigRejected: listing tags of docker.io/renovate/renovate stopped after 10000 tags: the repository has more than spec.limits.maxListedTags (10000) of the ClusterMirrorTarget allows; list the wanted versions in tags.tags, which skips listing, or ask the platform team to raise maxListedTags
+    ConfigRejected: listing tags of docker.io/renovate/renovate stopped after 10000 tags: the repository has more than spec.limits.maxListedTags (10000) of ClusterMirrorTarget shared allows; list the wanted versions in tags.tags, which skips listing, or raise that limit
 
 **K2. Upstream tag moved, policy Fail**
 
@@ -271,7 +278,7 @@ Before:
 
 After (S3, S8, C1, C2; the reason stays `SyncFailed`, see S9):
 
-    SyncFailed: skipped 11, mutated 1; 1 error: 1.27.3: upstream tag moved: target has sha256:<64 hex>, upstream now has sha256:<64 hex>; the target tag was kept because policy.onTagMutation of the ClusterMirrorTarget is Fail; check the upstream release, then ask the platform team to re-tag or set onTagMutation
+    SyncFailed: skipped 11, mutated 1; 1 error: 1.27.3: upstream tag moved: target has sha256:<64 hex>, upstream now has sha256:<64 hex>; the target tag was kept because spec.policy.onTagMutation of ClusterMirrorTarget shared is Fail; check the upstream release, then delete the target tag to take the new digest or change onTagMutation
 
 **K3. Private source without valid credentials**
 
@@ -281,7 +288,7 @@ Before:
 
 After (S6, C1, C2):
 
-    SyncFailed: failed 3; 3 tags failed (1.27, 1.28, 1.29), first error: 1.27: resolve source tag: HEAD https://registry.example.com/v2/team/app/manifests/1.27: 401 Unauthorized: the source registry refused the credentials; check sourceCredentials of the ClusterMirrorTarget
+    SyncFailed: failed 3; 3 tags failed (1.27, 1.28, 1.29), first error: 1.27: resolve source tag: HEAD https://registry.example.com/v2/team/app/manifests/1.27: 401 Unauthorized: the source registry refused the credentials; check spec.sourceCredentials of ClusterMirrorTarget shared
 
 **K4. Artifact over the size limit**
 
@@ -291,7 +298,7 @@ Before:
 
 After (S4, S9, C1, C2):
 
-    ConfigRejected: skipped 4, failed 1; 1 error: 2.0.0: artifact registry.example.com/team/app:2.0.0 is 5Gi, above the limit spec.limits.maxArtifactSize 2Gi of the ClusterMirrorTarget; exclude the tag with tags.exclude or ask the platform team to raise the limit
+    ConfigRejected: skipped 4, failed 1; 1 error: 2.0.0: artifact registry.example.com/team/app:2.0.0 is 5Gi, above spec.limits.maxArtifactSize 2Gi of ClusterMirrorTarget shared; exclude the tag with tags.exclude or raise that limit
 
 **K5. No tag matches the policy**
 
@@ -311,7 +318,7 @@ Before:
 
 After (C5):
 
-    Crashed: Job <job> ended without a sync result (DeadlineExceeded: the Job ran longer than its 1h deadline; a large first sync can need more, ask the platform team)
+    Crashed: Job <job> ended without a sync result (DeadlineExceeded: the Job ran longer than its fixed 1h deadline; select fewer tags, for example with tags.keepLatest, so one run copies less)
 
 **K7. Gate with `onScanError: Block` and no scanner (`Ready`)**
 
@@ -321,7 +328,7 @@ Before:
 
 After (C8, reason unchanged):
 
-    ScannerUnavailable: vulnerability gate of ClusterMirrorTarget shared has no usable scanner (set scanner.url or enable the chart's Trivy server); onScanError is Block, so nothing is copied until the platform team configures one
+    ScannerUnavailable: vulnerability gate of ClusterMirrorTarget shared has no usable scanner (set scanner.url or enable the chart's Trivy server); onScanError is Block, so nothing is copied until a scanner is configured
 
 **K8. Source host that resolves to an internal address**
 
@@ -331,7 +338,7 @@ Before:
 
 After (X1, C2):
 
-    ConfigRejected: source registry registry.example.com resolves to an address inside the cluster network, which sync Jobs may not reach; ask the platform team to check the registry DNS name or the denied CIDRs
+    ConfigRejected: source registry registry.example.com resolves to an address inside the cluster network, which sync Jobs may not reach; check the registry DNS name, or the deniedCIDRs Helm value of the operator
 
 **K9. K1 as a Warning Event on an auto-mirrored Pod**
 
@@ -341,7 +348,7 @@ Before (Event reason `SyncFailed`):
 
 After (E1 on top of K1; reason `SyncFailed`, the inner reason differs so it stays):
 
-    ConfigRejected: listing tags of docker.io/renovate/renovate stopped after 10000 tags: the repository has more than spec.limits.maxListedTags (10000) of the ClusterMirrorTarget allows; list the wanted versions in tags.tags, which skips listing, or ask the platform team to raise maxListedTags; see ArtifactMirror team-a/renovate-renovate
+    ConfigRejected: listing tags of docker.io/renovate/renovate stopped after 10000 tags: the repository has more than spec.limits.maxListedTags (10000) of ClusterMirrorTarget shared allows; list the wanted versions in tags.tags, which skips listing, or raise that limit; see ArtifactMirror team-a/renovate-renovate
 
 All "after" strings fit the proposed 1024-byte caps, the Event note limit
 included. K1, K2 and K9 do not fit today's 256-byte condition cap.
@@ -350,9 +357,10 @@ included. K1, K2 and K9 do not fit today's 256-byte condition cap.
 
 Each one is small and can be reviewed on its own. Order is by impact.
 
-1. **`fix: raise message length caps`** (`sync.go`, `synccmd.go`,
-   `status.go`, `scanner.go`). B1. Comes first: every other PR writes
-   longer messages. Add a test that fills the report with errors of the
+1. **`fix: raise message length caps and pass the target name to the
+   Job`** (`sync.go`, `synccmd.go`, `syncspec`, `render.go`, `status.go`,
+   `scanner.go`). B1, B2. Comes first: every other PR writes longer
+   messages that name the ClusterMirrorTarget. Add a test that fills the report with errors of the
    new size and checks `encode` stays under 4096 bytes.
 2. **`fix: clearer sync summary in status`** (`status.go`,
    `status_test.go`). C1, C2, C3, C4, C6, C16. Pure string building,
@@ -373,7 +381,7 @@ Each one is small and can be reviewed on its own. Order is by impact.
    keeps exit 1.
 6. **`fix(controller): say why and who acts in Ready messages`**
    (`artifactmirror_controller.go`, `gate.go`, `automirror.go`). C7, C8,
-   C9, C11, C12, C13, E5, E6. Keep the `ScannerUnavailable` reason unless
+   C9, C11, C12, C13, C17, E5, E6. Keep the `ScannerUnavailable` reason unless
    the design doc changes with it (see C8).
 7. **`fix(automirror): consistent Pod Events`** (`automirror.go`,
    `gate.go`). E1, E2, E3, E4.
