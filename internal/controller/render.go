@@ -226,7 +226,7 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 		maxSize = l.MaxArtifactSize.Value()
 	}
 	s := syncspec.Spec{
-		Mirror:            syncspec.Mirror{Namespace: m.Namespace, Name: m.Name},
+		Mirror:            syncspec.Mirror{Namespace: m.Namespace, Name: m.Name, Target: t.Name},
 		Source:            canonicalSource(m.Spec.Source),
 		Target:            targetRepo(t, m),
 		Tags:              tagPolicy(m.Spec.Tags),

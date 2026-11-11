@@ -445,8 +445,8 @@ func TestRunMaxTags(t *testing.T) {
 	for i := range 3 {
 		push(t, src.repo, fmt.Sprintf("v1.0.%d", i), image(t))
 	}
-	_, err := Run(context.Background(), Request{Source: src.repo, Target: dst.repo, Policy: tags.Policy{KeepLatest: 1}, MaxTags: 2})
-	if err == nil || !strings.Contains(err.Error(), "more than 2 tags") {
+	_, err := Run(context.Background(), Request{Source: src.repo, Target: dst.repo, Policy: tags.Policy{KeepLatest: 1}, MaxTags: 2, TargetName: "shared"})
+	if err == nil || !strings.Contains(err.Error(), "more than 2 tags") || !strings.Contains(err.Error(), "maxListedTags of ClusterMirrorTarget shared") {
 		t.Fatalf("want tag limit error, got %v", err)
 	}
 	if n := dst.writes.Load(); n != 0 {

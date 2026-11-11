@@ -49,7 +49,7 @@ const (
 	// maxClockSkew is how far in the future a DB UpdatedAt may be.
 	maxClockSkew = 5 * time.Minute
 	// maxMessage caps condition messages and Events.
-	maxMessage = 256
+	maxMessage = 1024
 	// DefaultClusterDomain is the default DNS domain of the cluster.
 	DefaultClusterDomain = "cluster.local"
 )
@@ -111,7 +111,7 @@ func capMessage(s string) string {
 	if len(s) <= maxMessage {
 		return s
 	}
-	return s[:maxMessage-3] + "..."
+	return cut(s, maxMessage-3) + "..."
 }
 
 // ScannerConfig is the Trivy server and client of the vulnerability gate.

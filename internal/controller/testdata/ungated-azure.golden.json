@@ -12,7 +12,7 @@
       }
     },
     "data": {
-      "spec.json": "{\n  \"mirror\": {\n    \"namespace\": \"default\",\n    \"name\": \"render\"\n  },\n  \"source\": \"registry.k8s.io/pause\",\n  \"target\": \"myregistry.azurecr.io/mirror/k8s/pause\",\n  \"tags\": {\n    \"include\": [\n      \"^\\\\d+\\\\.\\\\d+$\"\n    ],\n    \"exclude\": [\n      \"-rc\"\n    ],\n    \"semverRange\": \"\\u003e=3.9\",\n    \"keepLatest\": 3,\n    \"allowPrerelease\": true,\n    \"tags\": [\n      \"3.10\"\n    ]\n  },\n  \"requiredPlatforms\": [\n    \"linux/amd64\",\n    \"linux/arm64/v8\"\n  ],\n  \"onTagMutation\": \"Fail\",\n  \"maxTags\": 10000,\n  \"allowedSources\": [\n    \"registry.k8s.io\",\n    \"ghcr.io\"\n  ],\n  \"deniedCIDRs\": [\n    \"10.96.0.0/12\"\n  ],\n  \"targetAuth\": \"azureWorkloadIdentity\",\n  \"azure\": {\n    \"clientID\": \"00000000-0000-0000-0000-000000000000\",\n    \"tenantID\": \"00000000-0000-0000-0000-000000000000\",\n    \"authorityHost\": \"https://login.microsoftonline.com/\"\n  }\n}"
+      "spec.json": "{\n  \"mirror\": {\n    \"namespace\": \"default\",\n    \"name\": \"render\",\n    \"target\": \"default\"\n  },\n  \"source\": \"registry.k8s.io/pause\",\n  \"target\": \"myregistry.azurecr.io/mirror/k8s/pause\",\n  \"tags\": {\n    \"include\": [\n      \"^\\\\d+\\\\.\\\\d+$\"\n    ],\n    \"exclude\": [\n      \"-rc\"\n    ],\n    \"semverRange\": \"\\u003e=3.9\",\n    \"keepLatest\": 3,\n    \"allowPrerelease\": true,\n    \"tags\": [\n      \"3.10\"\n    ]\n  },\n  \"requiredPlatforms\": [\n    \"linux/amd64\",\n    \"linux/arm64/v8\"\n  ],\n  \"onTagMutation\": \"Fail\",\n  \"maxTags\": 10000,\n  \"allowedSources\": [\n    \"registry.k8s.io\",\n    \"ghcr.io\"\n  ],\n  \"deniedCIDRs\": [\n    \"10.96.0.0/12\"\n  ],\n  \"targetAuth\": \"azureWorkloadIdentity\",\n  \"azure\": {\n    \"clientID\": \"00000000-0000-0000-0000-000000000000\",\n    \"tenantID\": \"00000000-0000-0000-0000-000000000000\",\n    \"authorityHost\": \"https://login.microsoftonline.com/\"\n  }\n}"
     }
   },
   "cronJob": {
@@ -25,7 +25,7 @@
         "tagwarden.dev/target": "default"
       },
       "annotations": {
-        "tagwarden.dev/cronjob-checksum": "10adc528a3d8bb4e21eee00475c20d7bb22c9e74dc3177bbb1224580d701bbbb",
+        "tagwarden.dev/cronjob-checksum": "fc4cd547706560bba181cdce6ea6eb0a97f87eb7d3ee383e6be1b333accb1909",
         "tagwarden.dev/mirror-name": "render",
         "tagwarden.dev/mirror-namespace": "default"
       }
@@ -76,7 +76,7 @@
               "annotations": {
                 "tagwarden.dev/mirror-name": "render",
                 "tagwarden.dev/mirror-namespace": "default",
-                "tagwarden.dev/spec-checksum": "f0f43e953c0be6ac817127eb5ffbe95b1253820fcd149417fdf20295a3f6d826"
+                "tagwarden.dev/spec-checksum": "b8d5b0998f178be677ed430dfd45d271aadb65f9ae2252cdf203c47ca2101cf6"
               }
             },
             "spec": {
