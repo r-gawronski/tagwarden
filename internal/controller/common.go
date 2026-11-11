@@ -17,11 +17,32 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"time"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// conflictRequeue is the retry delay after a status update loses an
+// optimistic-concurrency race, usually to the reconciler's own previous write
+// that the cache has not caught up with.
+const conflictRequeue = time.Second
+
+// statusUpdateFailed turns a status-update conflict into a quiet requeue, so
+// cache lag does not show up as a Reconciler error. Other errors pass through.
+func statusUpdateFailed(ctx context.Context, err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		log.FromContext(ctx).V(1).Info("Status update conflict, requeueing", "error", err.Error())
+		return ctrl.Result{RequeueAfter: conflictRequeue}, nil
+	}
+	return ctrl.Result{}, err
+}
 
 // Condition types.
 const (

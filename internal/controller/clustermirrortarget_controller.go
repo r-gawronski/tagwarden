@@ -142,7 +142,7 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 		return res, nil
 	}
 	if err := r.Status().Update(ctx, &t); err != nil {
-		return ctrl.Result{}, err
+		return statusUpdateFailed(ctx, err)
 	}
 	if newReason {
 		r.Recorder.Eventf(&t, nil, corev1.EventTypeWarning, reason, "Reconcile", "%s", msg)
