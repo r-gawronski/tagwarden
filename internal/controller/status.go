@@ -43,6 +43,11 @@ const (
 	maxErrorLen = 1024
 	// exitCrashed is the Go runtime exit code for an unrecovered crash.
 	exitCrashed = 2
+	// jobBackoffLimit and jobDeadlineSeconds bound each sync Job.
+	jobBackoffLimit    = 2
+	jobDeadlineSeconds = 3600
+	// maxErrorTags caps the tags named in a summary of several errors.
+	maxErrorTags = 10
 )
 
 // +kubebuilder:rbac:groups=batch,namespace=system,resources=jobs,verbs=get;list;watch;create;patch;delete
@@ -185,20 +190,20 @@ func applyResult(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, done *batch
 		cond.Type = ConditionRescanned
 	}
 	var rep syncspec.Report
-	repErr := fmt.Errorf("no sync container result: %s", done.Reason)
+	var repErr error
 	if term != nil {
 		if rep, repErr = syncspec.ParseReport(term.Message); repErr == nil {
 			repErr = checkPruned(m, rep)
 		}
 	}
 	switch {
-	case term == nil || term.ExitCode == exitCrashed || repErr != nil:
+	case term == nil:
 		cond.Reason = ReasonCrashed
-		code := "unknown"
-		if term != nil {
-			code = fmt.Sprint(term.ExitCode)
-		}
-		cond.Message = fmt.Sprintf("Job %s exited with code %s", job.Name, code)
+		cond.Message = fmt.Sprintf("Job %s ended without a sync result (%s)", job.Name, jobEndReason(done.Reason))
+		return cond, nil
+	case term.ExitCode == exitCrashed || repErr != nil:
+		cond.Reason = ReasonCrashed
+		cond.Message = fmt.Sprintf("Job %s exited with code %d", job.Name, term.ExitCode)
 		if repErr != nil {
 			cond.Message += ": " + repErr.Error()
 		}
@@ -250,17 +255,18 @@ func applyReport(m *mirrorv1alpha1.ArtifactMirror, cond metav1.Condition, rep sy
 		m.Status.Owned, ownedCut = mergeOwned(m.Status.Owned, rep)
 	}
 	if rescan && cond.Status != metav1.ConditionTrue {
-		cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + "rescan failed: " + summary(rep)
+		cond.Message = clauses(cond.Message, "rescan failed: "+summary(rep, false))
 		return cond, &rep
 	}
-	msg := summary(rep)
+	var note string
 	if sel := rep.Selection; !rescan && sel != nil && (sel.Selected == 0 || sel.Missing > 0) {
-		msg = selectionNote(sel) + "; " + msg
+		note = selectionNote(sel)
 	}
+	var owned string
 	if ownedCut {
-		msg += fmt.Sprintf("; owned list truncated to %d tags, the oldest are never pruned", maxOwned)
+		owned = fmt.Sprintf("owned list truncated to %d tags, the oldest are never pruned", maxOwned)
 	}
-	cond.Message = strings.TrimPrefix(cond.Message+"; ", "; ") + msg
+	cond.Message = clauses(cond.Message, note, summary(rep, cond.Status == metav1.ConditionTrue), owned)
 	return cond, &rep
 }
 
@@ -297,23 +303,84 @@ func (r *ArtifactMirrorReconciler) termination(ctx context.Context, job *batchv1
 	return out, nil
 }
 
-// summary describes a report in one line. Sync errors never hold secrets
-// (threat model T8); they are still cut and cleaned since the Job is not
-// trusted.
-func summary(r syncspec.Report) string {
-	s := fmt.Sprintf("copied %d, skipped %d, mutated %d, failed %d", r.Copied, r.Skipped, r.Mutated, r.Failed)
-	if len(r.Pruned) > 0 {
-		s += fmt.Sprintf(", pruned %d", len(r.Pruned))
+// jobEndReason explains why a Job ended without a sync result.
+func jobEndReason(reason string) string {
+	switch reason {
+	case batchv1.JobReasonDeadlineExceeded:
+		return fmt.Sprintf("%s: the Job ran longer than its %d-minute deadline; select fewer tags, for example with tags.keepLatest, so one run copies less",
+			reason, jobDeadlineSeconds/60)
+	case batchv1.JobReasonBackoffLimitExceeded:
+		return fmt.Sprintf("%s: the sync pod failed %d times without writing a result; its log shows why", reason, jobBackoffLimit+1)
 	}
-	if r.Truncated {
-		s += fmt.Sprintf("; synced list truncated to %d tags", min(len(r.Synced), maxSynced))
-	}
-	if len(r.Errors) > 0 {
-		e := strings.ToValidUTF8(r.Errors[0], "?")
-		if c := cut(e, maxErrorLen); c != e {
-			e = c + "..."
+	return cmp.Or(reason, "no reason given")
+}
+
+// clauses joins the non-empty parts with "; ".
+func clauses(parts ...string) string {
+	return strings.Join(slices.DeleteFunc(parts, func(p string) bool { return p == "" }), "; ")
+}
+
+// summary describes a report in one line. A successful run keeps all four
+// counters, so the healthy message always reads the same; a failed one
+// keeps the non-zero counters only, so the error comes first. Sync errors
+// never hold secrets (threat model T8); they are still cut and cleaned
+// since the Job is not trusted.
+func summary(r syncspec.Report, ok bool) string {
+	var counts []string
+	for i, c := range []struct {
+		n      int
+		format string
+	}{
+		{r.Copied, "copied %d"}, {r.Skipped, "skipped %d"}, {r.Mutated, "mutated %d"}, {r.Failed, "failed %d"},
+		{r.Blocked, "blocked %d by the vulnerability gate"}, {len(r.Pruned), "pruned %d"},
+	} {
+		if c.n > 0 || ok && i < 4 {
+			counts = append(counts, fmt.Sprintf(c.format, c.n))
 		}
-		s += fmt.Sprintf("; %d errors, first: %s", len(r.Errors), e)
+	}
+	var truncated string
+	if r.Truncated {
+		truncated = fmt.Sprintf("synced list truncated to %d tags", min(len(r.Synced), maxSynced))
+	}
+	return clauses(strings.Join(counts, ", "), truncated, errorsNote(r))
+}
+
+// errorsNote quotes the first error and, for several, counts them and
+// names the tags they belong to.
+func errorsNote(r syncspec.Report) string {
+	if len(r.Errors) == 0 {
+		return ""
+	}
+	first := strings.ToValidUTF8(r.Errors[0], "?")
+	if c := cut(first, maxErrorLen); c != first {
+		first = c + "..."
+	}
+	n := max(len(r.Errors), r.Failed)
+	s := "1 error: " + first
+	if n > 1 {
+		s = fmt.Sprintf("%d errors%s, first: %s", n, errorTags(r.Errors, n), first)
+	}
+	if r.ErrorsTruncated {
+		s += "; the sync Job cut the error list, its pod log has every error"
+	}
+	return s
+}
+
+// errorTags names the tags of per-tag errors ("<tag>: <message>") out of
+// n errors in all.
+func errorTags(errs []string, n int) string {
+	var tags []string
+	for _, e := range errs {
+		if t, _, ok := strings.Cut(e, ": "); ok && syncspec.ValidTag(t) && len(tags) < maxErrorTags {
+			tags = append(tags, t)
+		}
+	}
+	if len(tags) == 0 {
+		return ""
+	}
+	s := " in tags " + strings.Join(tags, ", ")
+	if more := n - len(tags); more > 0 {
+		s += fmt.Sprintf(" and %d more", more)
 	}
 	return s
 }
@@ -322,26 +389,42 @@ func summary(r syncspec.Report) string {
 func selectionNote(sel *syncspec.Selection) string {
 	var s []string
 	if sel.Selected == 0 {
-		s = append(s, fmt.Sprintf("no tags selected from %d listed", sel.Listed))
+		var why []string
 		for _, c := range []struct {
 			n    int
 			text string
 		}{
-			{sel.Filtered, "removed by include/exclude"},
-			{sel.NotSemver, "not semver"},
-			{sel.OutOfRange, "outside semverRange"},
-			{sel.Prerelease, "prerelease skipped; set allowPrerelease"},
-			{sel.Trimmed, "dropped by keepLatest"},
+			{sel.Filtered, "%d removed by tags.include/tags.exclude"},
+			{sel.NotSemver, "%d not semver (skipped by tags.semverRange)"},
+			{sel.OutOfRange, "%d outside tags.semverRange"},
+			{sel.Prerelease, "%d " + plural(sel.Prerelease, "prerelease") + " skipped (set tags.allowPrerelease: true to keep prereleases)"},
+			{sel.Trimmed, "%d dropped by tags.keepLatest"},
 		} {
 			if c.n > 0 {
-				s = append(s, fmt.Sprintf("%d %s", c.n, c.text))
+				why = append(why, fmt.Sprintf(c.text, c.n))
 			}
+		}
+		switch {
+		case sel.Listed == 0:
+			s = append(s, "no tags selected: the source repository lists no tags")
+		case len(why) == 0:
+			s = append(s, fmt.Sprintf("no tags selected from %d listed", sel.Listed))
+		default:
+			s = append(s, fmt.Sprintf("no tags selected from %d listed: %s", sel.Listed, strings.Join(why, ", ")))
 		}
 	}
 	if sel.Missing > 0 {
-		s = append(s, "explicit tags not found upstream: "+missingList(sel))
+		s = append(s, "tags.tags not found upstream: "+missingList(sel))
 	}
-	return strings.Join(s, ", ")
+	return clauses(s...)
+}
+
+// plural adds an "s" to noun unless n is 1.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return noun
+	}
+	return noun + "s"
 }
 
 // missingList names the missing explicit tags. The names come from the

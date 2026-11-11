@@ -363,7 +363,7 @@ Each one is small and can be reviewed on its own. Order is by impact.
    messages that name the ClusterMirrorTarget. Add a test that fills the report with errors of the
    new size and checks `encode` stays under 4096 bytes.
 2. **`fix: clearer sync summary in status`** (`status.go`,
-   `status_test.go`). C1, C2, C3, C4, C6, C16. Pure string building,
+   `status_test.go`). C1, C2, C3, C4, C5, C6, C16. Pure string building,
    table tests only. Every sync failure message changes: say so in the
    changelog, in case someone matches on it.
 3. **`fix: keep internal addresses out of tenant messages`** (`synccmd`,

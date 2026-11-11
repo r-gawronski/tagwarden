@@ -710,8 +710,8 @@ func finishJob(m *mirrorv1alpha1.ArtifactMirror, name string, at time.Time, exit
 	} else {
 		job.Status.Failed = 1
 		job.Status.Conditions = []batchv1.JobCondition{
-			{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: "BackoffLimitExceeded"},
-			{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: "BackoffLimitExceeded"},
+			{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: batchv1.JobReasonBackoffLimitExceeded},
+			{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: now, Reason: batchv1.JobReasonBackoffLimitExceeded},
 		}
 	}
 	ExpectWithOffset(1, k8sClient.Status().Update(ctx, job)).To(Succeed())
@@ -773,7 +773,7 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 			Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Warning " + reason)))
 		},
 		Entry("sync error", int32(1), `{"v":1,"failed":1,"errors":["`+v310+`: `+strings.Repeat("x", 1000)+`"]}`,
-			ReasonSyncFailed, "failed 1; 1 errors, first: "+v310+": "+strings.Repeat("x", 1000)),
+			ReasonSyncFailed, "failed 1; 1 error: "+v310+": "+strings.Repeat("x", 1000)),
 		Entry("config error", int32(3), `{"v":1,"synced":[],"errors":["source: registry quay.io is not in allowedSources"]}`,
 			ReasonConfigRejected, "not in allowedSources"),
 		Entry("crash", int32(2), "", ReasonCrashed, "exited with code 2"),
@@ -785,7 +785,7 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 	It("ignores a pod the Job does not control", func() {
 		finishJob(0, `{"v":1,"copied":5}`, true)
 		Eventually(synced).Should(And(HaveField("Reason", ReasonCrashed),
-			HaveField("Message", ContainSubstring("no sync container result"))))
+			HaveField("Message", ContainSubstring("ended without a sync result"))))
 	})
 
 	It("ignores an older Job finishing late", func() {
