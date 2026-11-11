@@ -96,13 +96,30 @@ func TestEncodeReport(t *testing.T) {
 	golden(t, "report.golden", encode(r))
 }
 
+// JSON escapes "<" to six bytes; the kept errors are cut further so the
+// report still fits.
+func TestEncodeReportEscapedErrors(t *testing.T) {
+	r := report{Failed: 3}
+	for range 3 {
+		r.Errors = append(r.Errors, strings.Repeat("<", keptErrorLen))
+	}
+	b := encode(r)
+	var got report
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(b) > maxTermination || !got.ErrorsTruncated || len(got.Errors) == 0 || got.Errors[0] == "" {
+		t.Fatalf("%d bytes: %.200s", len(b), b)
+	}
+}
+
 func TestEncodeReportTruncates(t *testing.T) {
 	var r report
 	for i := range 200 {
 		r.Synced = append(r.Synced, syncedTag{Tag: fmt.Sprintf("v1.0.%d-%s", 200-i, strings.Repeat("x", 100)), Digest: "sha256:" + strings.Repeat("c", 64)})
 	}
 	for i := range 10 {
-		r.Errors = append(r.Errors, fmt.Sprintf("v0.%d.0: %s", i, strings.Repeat("e", 200)))
+		r.Errors = append(r.Errors, fmt.Sprintf("v0.%d.0: %s", i, strings.Repeat("e", keptErrorLen)))
 	}
 	r.Copied, r.Failed = 200, 10
 
@@ -113,22 +130,23 @@ func TestEncodeReportTruncates(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The first errors are kept, cut short, before any synced tag.
-		if len(b) > maxTermination || !got.Truncated || !got.ErrorsTruncated || len(got.Errors) != 3 ||
-			len(got.Errors[0]) != 200 || len(got.Synced) == 0 {
+		if len(b) > maxTermination || !got.Truncated || !got.ErrorsTruncated || len(got.Errors) != keptErrors ||
+			len(got.Errors[0]) != keptErrorLen || len(got.Synced) == 0 {
 			t.Fatalf("%d bytes: %s", len(b), b)
 		}
 		golden(t, "report_truncated.golden", b)
 	})
 	t.Run("errors only", func(t *testing.T) {
 		r := r
-		r.Synced = r.Synced[:10]
+		r.Synced = r.Synced[:2]
 		b := encode(r)
 		var got report
 		if err := json.Unmarshal(b, &got); err != nil {
 			t.Fatal(err)
 		}
-		if len(b) > maxTermination || got.Truncated || !got.ErrorsTruncated || len(got.Synced) != 10 ||
-			len(got.Errors) <= 3 || len(got.Errors) == 10 || len(got.Errors[0]) != 200 || len(got.Errors[3]) <= 200 {
+		if len(b) > maxTermination || got.Truncated || !got.ErrorsTruncated || len(got.Synced) != 2 ||
+			len(got.Errors) <= keptErrors || len(got.Errors) == 10 || len(got.Errors[0]) != keptErrorLen ||
+			len(got.Errors[keptErrors]) <= keptErrorLen {
 			t.Fatalf("%d bytes: %s", len(b), b)
 		}
 	})
@@ -201,7 +219,7 @@ func newEnv(t *testing.T, source, target name.Repository, pass string) *env {
 // writeSpec writes a spec for source; extra holds the source check fields.
 func (e *env) writeSpec(t *testing.T, source, extra string) {
 	t.Helper()
-	e.write(t, e.spec, fmt.Sprintf(`{"mirror":{"namespace":"team-a","name":"app"},"source":%q,"target":%q,
+	e.write(t, e.spec, fmt.Sprintf(`{"mirror":{"namespace":"team-a","name":"app","target":"shared"},"source":%q,"target":%q,
 		"tags":{"keepLatest":2},"onTagMutation":"Fail",%s}`, source, e.target, extra))
 }
 
@@ -267,6 +285,15 @@ func assertNoSecrets(t *testing.T, outputs ...string) {
 				t.Fatalf("secret in output: %s", o)
 			}
 		}
+	}
+}
+
+func TestLoadTargetName(t *testing.T) {
+	src, dst := newRegistry(t, false), newRegistry(t, true)
+	e := newEnv(t, src, dst, password)
+	_, req, err := load(context.Background(), e.spec, e.opts, func(k string) string { return e.vars[k] })
+	if err != nil || req.TargetName != "shared" {
+		t.Fatalf("target name %q, %v", req.TargetName, err)
 	}
 }
 

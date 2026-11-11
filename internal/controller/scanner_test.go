@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -189,6 +190,12 @@ func TestProbeMessage(t *testing.T) {
 	}
 	if got := capMessage(huge); len(got) > maxMessage {
 		t.Errorf("capMessage kept %d bytes", len(got))
+	}
+	if s := strings.Repeat("a", 1000); capMessage(s) != s {
+		t.Errorf("capMessage cut a 1000-byte message")
+	}
+	if got := capMessage(strings.Repeat("\u017c", maxMessage)); !utf8.ValidString(got) || len(got) > maxMessage {
+		t.Errorf("capMessage(runes) = %d bytes, valid %v", len(got), utf8.ValidString(got))
 	}
 }
 

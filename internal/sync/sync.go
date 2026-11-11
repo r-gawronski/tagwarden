@@ -51,7 +51,9 @@ var ErrArtifactTooLarge = errors.New("artifact too large")
 var ErrTagMutated = errors.New("sync: target tag points to a different digest than upstream")
 
 const (
-	maxMessage = 300
+	// maxMessage caps one per-tag error: long enough for the cause and the
+	// next step, short enough that two fit in the 4096-byte report.
+	maxMessage = 1024
 	// maxPages stops a registry that keeps returning empty tag pages.
 	maxPages = 1000
 )
@@ -68,6 +70,8 @@ type Request struct {
 	SourceOpts, TargetOpts []remote.Option
 	// MaxTags caps the upstream listing. Zero means tags.MaxTags.
 	MaxTags int
+	// TargetName is the ClusterMirrorTarget name, for messages.
+	TargetName string
 	// MaxArtifactSize caps the config and layer bytes of one artifact,
 	// summed over every manifest of an index, and separately the bytes of
 	// the referrers copied for it. Zero means no limit.
@@ -305,7 +309,7 @@ func (s *syncer) list(ctx context.Context) ([]string, error) {
 		}
 		all = append(all, page.Tags...)
 		if len(all) > s.req.MaxTags {
-			return nil, fmt.Errorf("sync: source has more than %d tags, the limit (maxListedTags of the ClusterMirrorTarget)", s.req.MaxTags)
+			return nil, fmt.Errorf("sync: source has more than %d tags, the limit (maxListedTags of %s)", s.req.MaxTags, targetRef(s.req.TargetName))
 		}
 	}
 	return all, nil
@@ -675,6 +679,15 @@ func resolve(ctx context.Context, p *remote.Puller, ref name.Reference) (*v1.Des
 func notFound(err error) bool {
 	var terr *transport.Error
 	return errors.As(err, &terr) && terr.StatusCode == http.StatusNotFound
+}
+
+// targetRef names the ClusterMirrorTarget in a message. A spec from an
+// older controller has no name.
+func targetRef(target string) string {
+	if target == "" {
+		return "the ClusterMirrorTarget"
+	}
+	return "ClusterMirrorTarget " + target
 }
 
 // short keeps result messages small. Registry references never carry

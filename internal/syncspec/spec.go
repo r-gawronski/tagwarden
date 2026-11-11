@@ -255,10 +255,13 @@ const (
 	ExitConfig = 3
 )
 
-// Mirror names the ArtifactMirror a sync runs for, for audit lines.
+// Mirror names the ArtifactMirror a sync runs for, for audit lines, and
+// its ClusterMirrorTarget.
 type Mirror struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
+	// Target is the ClusterMirrorTarget name, for messages.
+	Target string `json:"target,omitempty"`
 }
 
 // Spec is one sync run.

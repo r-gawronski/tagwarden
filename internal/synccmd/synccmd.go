@@ -225,6 +225,7 @@ func load(ctx context.Context, specPath string, p options, getenv func(string) s
 		RequiredPlatforms: spec.RequiredPlatforms,
 		OnTagMutation:     spec.OnTagMutation,
 		MaxTags:           spec.MaxTags,
+		TargetName:        spec.Mirror.Target,
 		MaxArtifactSize:   spec.MaxArtifactSize,
 		SourceOpts:        []remote.Option{remote.WithTransport(srcT), remote.WithAuth(srcAuth)},
 		TargetOpts:        []remote.Option{remote.WithTransport(dstT), remote.WithAuth(auth)},
@@ -571,10 +572,12 @@ func summarize(res sync.Result) report {
 	return r
 }
 
-// Errors kept first when the report must be truncated, and their cap.
+// Errors kept first when the report must be truncated, their cap, and the
+// most their JSON may take.
 const (
-	keptErrors   = 3
-	keptErrorLen = 200
+	keptErrors   = 2
+	keptErrorLen = 1024
+	maxKeptJSON  = maxTermination * 3 / 4
 )
 
 // encode marshals r within maxTermination bytes. When r does not fit, it
@@ -596,12 +599,8 @@ func encode(r report) []byte {
 		return marshal(r)
 	}
 	errs, synced := r.Errors, r.Synced
-	head := make([]string, 0, keptErrors)
-	for _, e := range errs[:min(keptErrors, len(errs))] {
-		c := cut(e, keptErrorLen)
-		r.ErrorsTruncated = r.ErrorsTruncated || c != e
-		head = append(head, c)
-	}
+	head, cutAny := keepFirst(errs)
+	r.ErrorsTruncated = r.ErrorsTruncated || cutAny
 	rest := errs[len(head):]
 	withRest := func(k int) []string { return append(slices.Clip(head), rest[:k]...) }
 
@@ -647,6 +646,23 @@ func encode(r report) []byte {
 		r.Errors = withRest(largest(len(rest), func(k int) bool { r.Errors = withRest(k); return fits(r) }))
 	}
 	return marshal(r)
+}
+
+// keepFirst cuts the first keptErrors errors to keptErrorLen bytes. JSON
+// escaping can make a string six times longer, so it halves the cut until
+// the kept errors take at most maxKeptJSON bytes.
+func keepFirst(errs []string) (head []string, cutAny bool) {
+	for n := keptErrorLen; ; n /= 2 {
+		head, cutAny = head[:0], false
+		for _, e := range errs[:min(keptErrors, len(errs))] {
+			c := cut(e, n)
+			cutAny = cutAny || c != e
+			head = append(head, c)
+		}
+		if b, _ := json.Marshal(head); len(b) <= maxKeptJSON || n == 0 {
+			return head, cutAny
+		}
+	}
 }
 
 // cut shortens s to at most n bytes without splitting a rune.

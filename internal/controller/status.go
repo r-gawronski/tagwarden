@@ -40,7 +40,7 @@ const (
 	// maxSynced caps status.synced, as the CRD schema does.
 	maxSynced = 200
 	// maxErrorLen caps a sync error quoted in a condition or Event.
-	maxErrorLen = 256
+	maxErrorLen = 1024
 	// exitCrashed is the Go runtime exit code for an unrecovered crash.
 	exitCrashed = 2
 )

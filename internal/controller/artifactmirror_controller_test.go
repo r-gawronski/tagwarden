@@ -137,7 +137,7 @@ var _ = Describe("ArtifactMirror Controller", func() {
 		Expect(k8sClient.Get(ctx, objectKey(m), &cm)).To(Succeed())
 		spec, err := syncspec.Decode(bytes.NewReader([]byte(cm.Data["spec.json"])))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(spec.Mirror).To(Equal(syncspec.Mirror{Namespace: teamA, Name: "render"}))
+		Expect(spec.Mirror).To(Equal(syncspec.Mirror{Namespace: teamA, Name: "render", Target: mirrorTarget}))
 		Expect(spec.Source).To(Equal("registry.k8s.io/pause"))
 		Expect(spec.Target).To(Equal("registry.example.internal:8443/mirror/k8s/pause"))
 		Expect(spec.AllowedSources).To(ContainElements(k8sHost, "ghcr.io"))
@@ -772,8 +772,8 @@ var _ = Describe("ArtifactMirror sync status", Ordered, func() {
 			Expect(len(st.Synced)).To(BeNumerically("<=", maxSynced))
 			Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(ContainElement(ContainSubstring("Warning " + reason)))
 		},
-		Entry("sync error", int32(1), `{"v":1,"failed":1,"errors":["`+v310+`: `+strings.Repeat("x", 300)+`"]}`,
-			ReasonSyncFailed, "failed 1; 1 errors, first: "+v310+": xxx"),
+		Entry("sync error", int32(1), `{"v":1,"failed":1,"errors":["`+v310+`: `+strings.Repeat("x", 1000)+`"]}`,
+			ReasonSyncFailed, "failed 1; 1 errors, first: "+v310+": "+strings.Repeat("x", 1000)),
 		Entry("config error", int32(3), `{"v":1,"synced":[],"errors":["source: registry quay.io is not in allowedSources"]}`,
 			ReasonConfigRejected, "not in allowedSources"),
 		Entry("crash", int32(2), "", ReasonCrashed, "exited with code 2"),
