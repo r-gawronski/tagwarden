@@ -7,6 +7,23 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.1-rc.3](https://github.com/r-gawronski/tagwarden/compare/v0.1.1-rc.2...v0.1.1-rc.3) (2026-11-12)
+
+### Dependencies
+
+#### Bug fixes
+
+* bump Go to 1.26.11 (GO-2026-6859) ([#108](https://github.com/r-gawronski/tagwarden/pull/108)) ([4a6906c](https://github.com/r-gawronski/tagwarden/commit/4a6906c2476099a2324aae897d658d9feb2b5728))
+* bump klauspost/compress to v1.20.2 (GO-2026-6865) ([#100](https://github.com/r-gawronski/tagwarden/pull/100)) ([6440ed5](https://github.com/r-gawronski/tagwarden/commit/6440ed5ba2f84064ad1bd0dd7561b945ed00e69f))
+
+### Other
+
+#### Bug fixes
+
+* clearer sync summary in status ([#110](https://github.com/r-gawronski/tagwarden/pull/110)) ([7536839](https://github.com/r-gawronski/tagwarden/commit/7536839befeb094e4236916977a14471b03ab58a))
+* raise message length caps and pass the target name to sync Jobs ([#109](https://github.com/r-gawronski/tagwarden/pull/109)) ([3356783](https://github.com/r-gawronski/tagwarden/commit/335678389e6669d9b67d99f7f0f4ca801b8f0fb9))
+* requeue status update conflicts instead of logging Reconciler error ([#103](https://github.com/r-gawronski/tagwarden/pull/103)) ([bbf4d4f](https://github.com/r-gawronski/tagwarden/commit/bbf4d4f4a2f695c5a2629c37d6efc298edd17676)), closes [#102](https://github.com/r-gawronski/tagwarden/issues/102)
+
 ## [0.1.1-rc.2](https://github.com/r-gawronski/tagwarden/compare/v0.1.1-rc.1...v0.1.1-rc.2) (2026-11-05)
 
 ### Highlights
