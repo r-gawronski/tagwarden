@@ -627,6 +627,9 @@ var (
 	digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
+// ValidTag reports whether t is a valid OCI tag.
+func ValidTag(t string) bool { return tagPattern.MatchString(t) }
+
 // ParseReport decodes a termination message. The message comes from the
 // Job, so it is untrusted: it must fit MaxReportSize, have version
 // ReportVersion or ReportVersionGate, non-negative counts and valid tags,

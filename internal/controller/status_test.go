@@ -270,7 +270,7 @@ func TestRecordJobNoTagsSelected(t *testing.T) {
 	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != ReasonNoTagsSelected {
 		t.Fatalf("Synced %+v", c)
 	}
-	for _, want := range []string{"2 listed", "1 removed by include/exclude", "1 prerelease skipped; set allowPrerelease"} {
+	for _, want := range []string{"2 listed", "1 removed by tags.include/tags.exclude", "1 prerelease skipped (set tags.allowPrerelease: true"} {
 		if !strings.Contains(c.Message, want) {
 			t.Errorf("message %q lacks %q", c.Message, want)
 		}
@@ -472,5 +472,75 @@ func TestRecordJobPruned(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSummary(t *testing.T) {
+	long := "1.27: " + strings.Repeat("x", maxErrorLen)
+	pruned := []syncspec.SyncedTag{{Tag: "0.9", Digest: "sha256:" + strings.Repeat("a", 64)}}
+	for _, tc := range []struct {
+		name string
+		r    syncspec.Report
+		ok   bool
+		want string
+	}{
+		{"success keeps the counters", syncspec.Report{Copied: 2, Skipped: 1}, true,
+			"copied 2, skipped 1, mutated 0, failed 0"},
+		{"success with gate and prune", syncspec.Report{Copied: 1, Blocked: 2, Pruned: pruned}, true,
+			"copied 1, skipped 0, mutated 0, failed 0, blocked 2 by the vulnerability gate, pruned 1"},
+		{"nothing attempted", syncspec.Report{Errors: []string{"list source tags: 404 Not Found"}}, false,
+			"1 error: list source tags: 404 Not Found"},
+		{"one tag failed", syncspec.Report{Skipped: 4, Failed: 1, Errors: []string{"2.0.0: artifact too large"}}, false,
+			"skipped 4, failed 1; 1 error: 2.0.0: artifact too large"},
+		{"several tags failed", syncspec.Report{Copied: 2, Failed: 3, Errors: []string{"1.27: a", "1.28: b", "1.29: c"}}, false,
+			"copied 2, failed 3; 3 errors in tags 1.27, 1.28, 1.29, first: 1.27: a"},
+		{"error list cut by the Job", syncspec.Report{Failed: 40, Errors: []string{"1.0: a", "1.1: b"}, ErrorsTruncated: true}, false,
+			"failed 40; 40 errors in tags 1.0, 1.1 and 38 more, first: 1.0: a; the sync Job cut the error list, its pod log has every error"},
+		{"long error", syncspec.Report{Failed: 1, Errors: []string{long}}, false,
+			"failed 1; 1 error: " + long[:maxErrorLen] + "..."},
+		{"synced list truncated", syncspec.Report{Copied: 1, Truncated: true}, true,
+			"copied 1, skipped 0, mutated 0, failed 0; synced list truncated to 0 tags"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summary(tc.r, tc.ok); got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSelectionNote(t *testing.T) {
+	for _, tc := range []struct {
+		sel  syncspec.Selection
+		want string
+	}{
+		{syncspec.Selection{Listed: 120, Filtered: 80, Prerelease: 40},
+			"no tags selected from 120 listed: 80 removed by tags.include/tags.exclude, 40 prereleases skipped (set tags.allowPrerelease: true to keep prereleases)"},
+		{syncspec.Selection{Listed: 3, Filtered: 1, NotSemver: 1, OutOfRange: 1},
+			"no tags selected from 3 listed: 1 removed by tags.include/tags.exclude, 1 not semver (skipped by tags.semverRange), 1 outside tags.semverRange"},
+		{syncspec.Selection{},
+			"no tags selected: the source repository lists no tags"},
+		{syncspec.Selection{Selected: 1, Missing: 3, MissingTags: []string{"v9", "v8"}},
+			"tags.tags not found upstream: v9, v8 and 1 more"},
+	} {
+		if got := selectionNote(&tc.sel); got != tc.want {
+			t.Errorf("got  %q\nwant %q", got, tc.want)
+		}
+	}
+}
+
+func TestApplyResultWithoutResult(t *testing.T) {
+	for _, tc := range []struct{ reason, want string }{
+		{batchv1.JobReasonDeadlineExceeded, "Job j ended without a sync result (DeadlineExceeded: the Job ran longer than its 60-minute deadline; select fewer tags, for example with tags.keepLatest, so one run copies less)"},
+		{batchv1.JobReasonBackoffLimitExceeded, "Job j ended without a sync result (BackoffLimitExceeded: the sync pod failed 3 times without writing a result; its log shows why)"},
+		{"Evicted", "Job j ended without a sync result (Evicted)"},
+	} {
+		job := finishedJobAt("j", "", time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC))
+		done := finished(job)
+		done.Reason = tc.reason
+		c, rep := applyResult(&mirrorv1alpha1.ArtifactMirror{}, job, done, nil, false)
+		if c.Reason != ReasonCrashed || c.Message != tc.want || rep != nil {
+			t.Errorf("%s: %s %q", tc.reason, c.Reason, c.Message)
+		}
 	}
 }

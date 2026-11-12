@@ -459,8 +459,8 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 		JobTemplate: batchv1.JobTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},
 			Spec: batchv1.JobSpec{
-				BackoffLimit:            ptr.To[int32](2),
-				ActiveDeadlineSeconds:   ptr.To[int64](3600),
+				BackoffLimit:            ptr.To[int32](jobBackoffLimit),
+				ActiveDeadlineSeconds:   ptr.To[int64](jobDeadlineSeconds),
 				TTLSecondsAfterFinished: ptr.To[int32](86400),
 				// A config error fails again until the config changes.
 				PodFailurePolicy: &batchv1.PodFailurePolicy{Rules: []batchv1.PodFailurePolicyRule{{
