@@ -166,12 +166,16 @@ networkPolicy:
 ## Trivy server for the vulnerability gate. See docs/design/vulnerability-gate.md.
 ## One replica, plain HTTP inside the cluster, guarded by a token and (with
 ## networkPolicy.enabled) a NetworkPolicy. With networkPolicy.enabled=false the
-## server is protected by the token only. The manager gets --trivy-image,
-## --trivy-version and --trivy-url from these values.
+## server is protected by the token only. The manager gets --trivy-url from
+## these values when enabled, and --trivy-image and --trivy-version whenever
+## image.digest is set.
 trivy:
   enabled: false
   ## Pinned by digest, which is required when enabled. tag is the Trivy
   ## version, for example "0.76.1"; the gate checks it against the server.
+  ## The image is also the default SBOM generator of ClusterMirrorTarget
+  ## spec.sbom: set repository, tag and digest without enabled to generate
+  ## SBOMs without the in-chart server.
   image:
     repository: ""
     tag: ""

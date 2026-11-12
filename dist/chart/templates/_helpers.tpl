@@ -116,13 +116,16 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{- end }}
 
 {{/*
-Manager flags for the gate, empty unless trivy.enabled (the only guard). The Trivy version is
-the image tag.
+Manager flags for Trivy. The image and version (the image tag) are passed whenever
+trivy.image.digest is set, so SBOM generation works without the in-chart server. The server
+flags are empty unless trivy.enabled (the only guard for them).
 */}}
 {{- define "tagwarden.trivyManagerArgs" -}}
-{{- if .Values.trivy.enabled }}
+{{- if or .Values.trivy.enabled .Values.trivy.image.digest }}
 - --trivy-image={{ include "tagwarden.trivyImage" . }}
 - --trivy-version={{ .Values.trivy.image.tag }}
+{{- end }}
+{{- if .Values.trivy.enabled }}
 - --trivy-url=http://{{ include "tagwarden.trivyName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.:4954
 - --scanner-start-timeout={{ .Values.trivy.scannerStartTimeout }}
 - --trivy-token-secret={{ .Values.trivy.token.existingSecret | default (include "tagwarden.resourceName" (dict "suffix" "trivy-token" "context" .)) }}
