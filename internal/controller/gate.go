@@ -194,6 +194,7 @@ const (
 	reasonVulnerabilitiesFound  = "VulnerabilitiesFound"
 	reasonVulnerabilityScanFail = "VulnerabilityScanFailed"
 	reasonVulnerabilityBlocked  = "VulnerabilityBlocked"
+	reasonExceptionApplied      = "VulnerabilityExceptionApplied"
 	reasonVulnerableTagFound    = "VulnerableTagFound"
 	reasonTagUntagged           = "TagUntagged"
 	reasonImageVulnerable       = "MirroredImageVulnerable"
@@ -235,6 +236,7 @@ func applyGate(m *mirrorv1alpha1.ArtifactMirror, rep *syncspec.Report, ok bool, 
 	st := &m.Status
 	javaScanned := recordJava(st, rep)
 	keep := mergeJudged(st, rep, ok, start)
+	acceptedEvents(st, rep, keep, isNew, ev)
 
 	findings := make([]mirrorv1alpha1.VulnerabilityFinding, 0, len(rep.TagFindings)+len(st.Findings))
 	for _, f := range rep.TagFindings {
@@ -264,6 +266,7 @@ func applyRescan(m *mirrorv1alpha1.ArtifactMirror, rep *syncspec.Report, ok bool
 	st := &m.Status
 	javaScanned := recordJava(st, rep)
 	keep := mergeJudged(st, rep, ok, start)
+	acceptedEvents(st, rep, keep, isNew, ev)
 
 	var vulnerable []mirrorv1alpha1.VulnerableTag
 	var findings []mirrorv1alpha1.VulnerabilityFinding
@@ -302,6 +305,38 @@ func applyRescan(m *mirrorv1alpha1.ArtifactMirror, rep *syncspec.Report, ok bool
 	setFindings(m, findings, rep.Gate, javaScanned)
 }
 
+// acceptedEvents records the exceptions this run used in status.gate.accepted
+// and queues one Normal Event per tag and exception that is new there, at
+// most maxGateEvents, naming the exception, the IDs and the tag. Tags the
+// run judged replace their entries, so an exception that stops applying is
+// announced again if it returns; a re-scan with the same use stays quiet.
+// Entries of tags the run did not judge are kept while keep says so.
+func acceptedEvents(st *mirrorv1alpha1.ArtifactMirrorStatus, rep *syncspec.Report, keep func(string) bool, isNew bool, ev *pending) {
+	old := st.Gate.Accepted
+	var out []mirrorv1alpha1.AcceptedTag
+	n := 0
+	for _, a := range rep.AcceptedBy {
+		e := mirrorv1alpha1.AcceptedTag{Tag: a.Tag, Digest: a.Digest, Exception: a.Exception}
+		out = append(out, e)
+		if !isNew || slices.Contains(old, e) {
+			continue
+		}
+		if n++; n <= maxGateEvents {
+			ev.add(corev1.EventTypeNormal, reasonExceptionApplied, "Scan",
+				fmt.Sprintf("exception %s lets %s through on tag %s (%s)", a.Exception, strings.Join(a.IDs, ", "), a.Tag, a.Digest))
+		}
+	}
+	for _, o := range old {
+		if keep(o.Tag) && !slices.Contains(out, o) {
+			out = append(out, o)
+		}
+	}
+	st.Gate.Accepted = out[:min(len(out), maxJudged)]
+	if len(out) == 0 {
+		st.Gate.Accepted = nil
+	}
+}
+
 // recordJava sets status.javaScanned from the report and returns it; true
 // when unknown.
 func recordJava(st *mirrorv1alpha1.ArtifactMirrorStatus, rep *syncspec.Report) bool {
@@ -335,6 +370,10 @@ func mergeJudged(st *mirrorv1alpha1.ArtifactMirrorStatus, rep *syncspec.Report, 
 	// pairs the run also reports on the target with the same digest, and
 	// not as a scan error, are kept (threat model T12, T34). judgedAt is
 	// the controller's record of the Job start, never a report time.
+	var oldAccepted []mirrorv1alpha1.AcceptedTag
+	if st.Gate != nil {
+		oldAccepted = st.Gate.Accepted
+	}
 	var judged []mirrorv1alpha1.JudgedTag
 	at := metav1.NewTime(start)
 	for _, j := range rep.Judged {
@@ -349,7 +388,8 @@ func mergeJudged(st *mirrorv1alpha1.ArtifactMirrorStatus, rep *syncspec.Report, 
 			}
 		}
 	}
-	st.Gate = &mirrorv1alpha1.GateStatus{JudgedFingerprint: rep.JudgedFingerprint, Judged: judged[:min(len(judged), maxJudged)]}
+	st.Gate = &mirrorv1alpha1.GateStatus{JudgedFingerprint: rep.JudgedFingerprint, Judged: judged[:min(len(judged), maxJudged)],
+		Accepted: oldAccepted}
 	return keep
 }
 

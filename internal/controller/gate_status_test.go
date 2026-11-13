@@ -418,6 +418,33 @@ var _ = Describe("vulnerability gate status and pod Events", Ordered, func() {
 		Expect(meta.IsStatusConditionTrue(status().Conditions, ConditionVulnerabilitiesFound)).To(BeTrue())
 	})
 
+	It("records one Event per exception and tag, not one per re-scan", func() {
+		accepted := func() string {
+			return `{"v":2,"skipped":0,"synced":[{"tag":"2.0","digest":"` + hexDigest("2") + `"}],"accepted":1,"gate":"ok","javaScanned":false,` +
+				`"judgedFingerprint":"` + fpA + `","judged":[{"tag":"2.0","digest":"` + hexDigest("2") + `"}],` +
+				`"acceptedBy":[{"tag":"2.0","digest":"` + hexDigest("2") + `","exception":"team-a-cve","ids":["` + testCVE + `"]}]}`
+		}
+		applied := func() int {
+			n := 0
+			for _, e := range recorder.Events(ns, gen.Name) {
+				if strings.Contains(e, "Normal "+reasonExceptionApplied) {
+					n++
+				}
+			}
+			return n
+		}
+		finish(0, accepted())
+		Eventually(applied).Should(Equal(1))
+		Expect(recorder.Events(ns, gen.Name)).To(ContainElement(And(ContainSubstring("exception team-a-cve"),
+			ContainSubstring(testCVE), ContainSubstring("tag 2.0"))))
+		Expect(status().Gate.Accepted).To(Equal([]mirrorv1alpha1.AcceptedTag{{Tag: "2.0", Digest: hexDigest("2"), Exception: "team-a-cve"}}))
+
+		finish(0, accepted())
+		Eventually(func() *metav1.Time { return status().LastSyncTime }).Should(HaveField("Time",
+			BeTemporally("==", start.Add(time.Duration(jobs)*time.Minute))))
+		Consistently(applied, 2*time.Second).Should(Equal(1))
+	})
+
 	It("reports a stale DB under Block as DBStale, not a config refusal", func() {
 		finish(syncspec.ExitConfig, `{"v":2,"blocked":1,"scanErrors":1,"synced":[],"gate":"DBStale","javaScanned":false,`+
 			`"judgedFingerprint":"`+fpA+`","tagFindings":[{"tag":"2.0","digest":"`+hexDigest("2")+`","verdict":"ScanError",`+
@@ -577,4 +604,42 @@ func gateValues() map[string]float64 {
 		}
 	}
 	return out
+}
+
+func TestApplyGateAcceptedEvent(t *testing.T) {
+	acc := func(exc string, ids ...string) syncspec.TagAccepted {
+		return syncspec.TagAccepted{Tag: tag10, Digest: hexDigest("1"), Exception: exc, IDs: ids}
+	}
+	run := func(m *mirrorv1alpha1.ArtifactMirror, isNew bool, by ...syncspec.TagAccepted) pending {
+		rep := v2(fpA, syncspec.GateOK, []string{tag10}, []string{tag10})
+		rep.AcceptedBy = by
+		var ev pending
+		applyGate(m, rep, true, isNew, jobStart, &ev)
+		return ev
+	}
+	m := &mirrorv1alpha1.ArtifactMirror{}
+
+	ev := run(m, true, acc("team-a", "CVE-2026-1", "CVE-2026-3"))
+	if len(ev) != 1 || ev[0].typ != corev1.EventTypeNormal || ev[0].reason != reasonExceptionApplied ||
+		!strings.Contains(ev[0].note, "team-a") || !strings.Contains(ev[0].note, tag10) || !strings.Contains(ev[0].note, "CVE-2026-1, CVE-2026-3") {
+		t.Fatalf("first run: %+v", ev)
+	}
+	if len(m.Status.Gate.Accepted) != 1 {
+		t.Fatalf("status.gate.accepted = %+v", m.Status.Gate.Accepted)
+	}
+	if ev = run(m, true, acc("team-a", "CVE-2026-1", "CVE-2026-3")); len(ev) != 0 {
+		t.Errorf("same exception on a re-scan repeated the Event: %+v", ev)
+	}
+	// Another exception for the same tag is a new fact; an unchanged one stays quiet.
+	if ev = run(m, true, acc("team-a", "CVE-2026-1"), acc("team-b", "CVE-2026-2")); len(ev) != 1 || !strings.Contains(ev[0].note, "team-b") {
+		t.Errorf("second exception: %+v", ev)
+	}
+	// Once the exception no longer applies the record goes, so a return is announced again.
+	run(m, true)
+	if m.Status.Gate.Accepted != nil {
+		t.Errorf("accepted not cleared: %+v", m.Status.Gate.Accepted)
+	}
+	if ev = run(m, true, acc("team-a", "CVE-2026-1")); len(ev) != 1 {
+		t.Errorf("returning exception: %+v", ev)
+	}
 }

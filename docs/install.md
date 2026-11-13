@@ -812,7 +812,10 @@ kubectl -n team-web get events --field-selector involvedObject.kind=Pod
   `status.lastRescan` and `status.javaScanned`. `Ready` and `Synced` stay
   True when the sync worked.
 - Events on the mirror: `VulnerabilitiesFound`, `VulnerabilityScanFailed`,
-  `VulnerableTagFound`, `TagUntagged`. On the pod: `VulnerabilitiesFound`
+  `VulnerableTagFound`, `TagUntagged`, and `VulnerabilityExceptionApplied`
+  (Normal) when exceptions turn a tag's verdict from findings to accepted.
+  It names the exception, the IDs and the tag, once per tag and exception.
+  `status.gate.accepted` lists them. On the pod: `VulnerabilitiesFound`
   (Report), `MirrorRefused` with `VulnerabilityBlocked` or `ScanFailed`
   (Block), `VulnerabilityScanFailed` and `MirroredImageVulnerable`
   (re-scan). On an exception: `ExceptionExpired`, `ExceptionTooLong`, `TargetNotFound`.

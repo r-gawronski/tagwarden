@@ -554,6 +554,10 @@ type Report struct {
 	// JudgedTruncated means it was cut; the cut tags are scanned again.
 	Judged          []SyncedTag `json:"judged,omitempty"`
 	JudgedTruncated bool        `json:"judgedTruncated,omitempty"`
+	// AcceptedBy lists, per tag and exception, the IDs the exception let
+	// through. The controller turns new entries into
+	// VulnerabilityExceptionApplied Events.
+	AcceptedBy []TagAccepted `json:"acceptedBy,omitempty"`
 	// JudgedFingerprint is Gate.Fingerprint of the run, set on every gated
 	// run. The controller stores it with Judged and passes it back in
 	// Gate.JudgedFingerprint.
@@ -619,6 +623,37 @@ type TagFinding struct {
 // MaxReportIDs caps TagFinding.TopIDs.
 const MaxReportIDs = 3
 
+// TagAccepted is the use of one exception on one tag.
+type TagAccepted struct {
+	Tag       string `json:"tag"`
+	Digest    string `json:"digest"`
+	Exception string `json:"exception"`
+	// IDs are up to MaxAcceptedIDs IDs the exception covers on the tag.
+	IDs []string `json:"ids"`
+}
+
+// MaxAcceptedIDs caps TagAccepted.IDs and the entries of a report.
+const MaxAcceptedIDs = 10
+
+// MaxAcceptedEntries caps Report.AcceptedBy, as status.gate.accepted is capped.
+const MaxAcceptedEntries = 200
+
+var exceptionNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+
+// Valid reports whether ParseReport accepts a.
+func (a TagAccepted) Valid() bool { return a.validate() == nil }
+
+func (a TagAccepted) validate() error {
+	if !tagPattern.MatchString(a.Tag) || !digestPattern.MatchString(a.Digest) ||
+		len(a.Exception) > 253 || !exceptionNamePattern.MatchString(a.Exception) {
+		return errors.New("tag, digest or exception")
+	}
+	if len(a.IDs) > MaxAcceptedIDs || slices.ContainsFunc(a.IDs, func(id string) bool { return !VulnID(id) }) {
+		return errors.New("ids")
+	}
+	return nil
+}
+
 // maxReportClockSkew is how far in the future a report time may be.
 const maxReportClockSkew = 5 * time.Minute
 
@@ -660,7 +695,7 @@ func ParseReport(msg string) (Report, error) {
 	if err := validatePruneFields(r); err != nil {
 		return Report{}, err
 	}
-	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || r.JudgedFingerprint != "" || r.Rescan) {
+	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || len(r.AcceptedBy) > 0 || r.JudgedFingerprint != "" || r.Rescan) {
 		return Report{}, errors.New("report: gate fields in version 1")
 	}
 	switch r.Gate {
@@ -671,6 +706,14 @@ func ParseReport(msg string) (Report, error) {
 	for _, f := range r.TagFindings {
 		if err := f.validate(r.Rescan); err != nil {
 			return Report{}, fmt.Errorf("report: invalid tag finding: %w", err)
+		}
+	}
+	if len(r.AcceptedBy) > MaxAcceptedEntries {
+		return Report{}, errors.New("report: too many accepted entries")
+	}
+	for _, a := range r.AcceptedBy {
+		if err := a.validate(); err != nil {
+			return Report{}, fmt.Errorf("report: invalid accepted entry: %w", err)
 		}
 	}
 	return r, nil

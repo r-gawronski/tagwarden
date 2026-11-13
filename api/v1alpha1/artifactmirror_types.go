@@ -429,6 +429,33 @@ type GateStatus struct {
 	// +listType=atomic
 	// +optional
 	Judged []JudgedTag `json:"judged,omitempty"`
+
+	// accepted lists the exceptions that let findings through on a tag,
+	// as last reported. The controller records one
+	// VulnerabilityExceptionApplied Event for each entry that is new. At
+	// most 200.
+	// +kubebuilder:validation:MaxItems=200
+	// +listType=atomic
+	// +optional
+	Accepted []AcceptedTag `json:"accepted,omitempty"`
+}
+
+// AcceptedTag is the use of one VulnerabilityException on a tag.
+type AcceptedTag struct {
+	// tag is the target tag.
+	// +kubebuilder:validation:MaxLength=128
+	// +required
+	Tag string `json:"tag"`
+
+	// digest is the index or manifest digest that was judged.
+	// +kubebuilder:validation:MaxLength=71
+	// +required
+	Digest string `json:"digest"`
+
+	// exception is the name of the VulnerabilityException.
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Exception string `json:"exception"`
 }
 
 // ArtifactMirrorStatus defines the observed state of ArtifactMirror.

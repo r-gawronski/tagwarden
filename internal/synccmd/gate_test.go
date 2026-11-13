@@ -26,6 +26,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -411,4 +412,29 @@ func TestRunRescan(t *testing.T) {
 			t.Fatalf("exit %d: %s", code, msg)
 		}
 	})
+}
+
+// An accepted tag reports, per exception, the IDs it let through.
+func TestGateSummaryAcceptedBy(t *testing.T) {
+	const excA, excB = "exc-a", "exc-b"
+	const cve1, cve2, cve3 = "CVE-2026-101", "CVE-2026-102", "CVE-2026-103"
+	digest := "sha256:" + strings.Repeat("d", 64)
+	sc := &sync.Scan{Result: vuln.Result{Verdict: vuln.Accepted, Platforms: []vuln.PlatformResult{
+		{Verdict: vuln.Accepted, Accepted: []vuln.AcceptedFinding{{ID: cve2, Exception: excB}, {ID: cve1, Exception: excA}}},
+		{Verdict: vuln.Accepted, Accepted: []vuln.AcceptedFinding{{ID: cve1, Exception: excA}, {ID: cve3, Exception: excA}}},
+	}}, ScannedAt: time.Now()}
+	res := sync.Result{Selected: []string{v110}, Copied: []sync.Artifact{{Tag: v110, Digest: digest, Scan: sc}}}
+	r := summarize(res)
+	gateSummary(&r, res, strings.Repeat("f", 64), false)
+	got, err := syncspec.ParseReport(string(encode(r)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []syncspec.TagAccepted{
+		{Tag: v110, Digest: digest, Exception: excA, IDs: []string{cve1, cve3}},
+		{Tag: v110, Digest: digest, Exception: excB, IDs: []string{cve2}},
+	}
+	if !reflect.DeepEqual(got.AcceptedBy, want) {
+		t.Fatalf("acceptedBy = %+v, want %+v", got.AcceptedBy, want)
+	}
 }
