@@ -49,6 +49,14 @@ helm install tagwarden dist/chart \
 Every value with its default: [helm-values.md](helm-values.md). How the
 chart is generated: [design/helm-chart.md](design/helm-chart.md).
 
+### Helm 4 panics with `--wait`
+
+Helm 4 with `--wait=watcher` (what a bare `--wait` means there) can crash with
+`panic: send on closed channel` in the kstatus watcher
+(`fluxcd/cli-utils`, `object_status_reporter.go`). The race is still in
+`fluxcd/cli-utils` v1.4.0, which Helm main uses. Rerun the command, or pass
+`--wait=legacy` to use the Helm 3 wait logic.
+
 ### Uninstall
 
 `helm uninstall` keeps the CRDs, targets and mirrors, so user data survives

@@ -176,7 +176,7 @@ func gateHelm(trivyOn bool, extra ...string) {
 		"--set-json", "trivy.networkPolicy.registryEgress="+string(egress),
 		"--set", "trivy.persistence.size=5Gi",
 		"--set", "trivy.scannerStartTimeout=60s",
-		"--force-conflicts", "--wait", "--timeout", "10m")
+		"--force-conflicts", "--wait=legacy", "--timeout", "10m")
 	args = append(args, extra...)
 	_, err = utils.Run(exec.Command("helm", args...))
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "helm upgrade for the gate failed")

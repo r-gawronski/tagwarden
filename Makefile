@@ -369,7 +369,7 @@ helm-deploy: install-helm ## Deploy manager to the K8s cluster via Helm. Specify
 		--create-namespace \
 		--set manager.image.repository=$${IMG%:*} \
 		--set manager.image.tag=$${IMG##*:} \
-		--wait \
+		--wait=legacy \
 		--timeout 5m \
 		$(HELM_EXTRA_ARGS)
 
