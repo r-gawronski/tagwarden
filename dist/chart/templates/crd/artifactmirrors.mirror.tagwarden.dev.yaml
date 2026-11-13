@@ -403,6 +403,37 @@ spec:
                   gate holds the judged verdicts of a generated mirror of a gated
                   target. Absent on mirrors that are not gated.
                 properties:
+                  accepted:
+                    description: |-
+                      accepted lists the exceptions that let findings through on a tag,
+                      as last reported. The controller records one
+                      VulnerabilityExceptionApplied Event for each entry that is new. At
+                      most 200.
+                    items:
+                      description: AcceptedTag is the use of one VulnerabilityException
+                        on a tag.
+                      properties:
+                        digest:
+                          description: digest is the index or manifest digest that
+                            was judged.
+                          maxLength: 71
+                          type: string
+                        exception:
+                          description: exception is the name of the VulnerabilityException.
+                          maxLength: 253
+                          type: string
+                        tag:
+                          description: tag is the target tag.
+                          maxLength: 128
+                          type: string
+                      required:
+                      - digest
+                      - exception
+                      - tag
+                      type: object
+                    maxItems: 200
+                    type: array
+                    x-kubernetes-list-type: atomic
                   judged:
                     description: |-
                       judged lists the tags and digests a gated run gave a final verdict
