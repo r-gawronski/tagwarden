@@ -104,7 +104,10 @@ func (f *fakeSidecar) run(ctx context.Context) {
 			default:
 				_ = os.WriteFile(out+".json", []byte(report), 0o600)
 			}
-			_ = os.WriteFile(out+".exit", []byte(exit+"\n"), 0o600)
+			// Like the real sidecar: tmp + rename, so the client never reads a
+			// created but still empty exit file.
+			_ = os.WriteFile(out+".exit.tmp", []byte(exit+"\n"), 0o600)
+			_ = os.Rename(out+".exit.tmp", out+".exit")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
