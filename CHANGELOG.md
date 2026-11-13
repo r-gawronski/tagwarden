@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.1-rc.5](https://github.com/r-gawronski/tagwarden/compare/v0.1.1-rc.4...v0.1.1-rc.5) (2026-11-13)
+
+### Controller
+
+#### Features
+
+* per-mirror onTagMutation limited by the target ([#118](https://github.com/r-gawronski/tagwarden/pull/118)) ([3d1118d](https://github.com/r-gawronski/tagwarden/commit/3d1118d73435b0ff4fd716d00037ce3bee6038c1)), closes [#117](https://github.com/r-gawronski/tagwarden/issues/117)
+
+
 ## [0.1.1-rc.4](https://github.com/r-gawronski/tagwarden/compare/v0.1.1-rc.3...v0.1.1-rc.4) (2026-11-13)
 
 ### Controller
