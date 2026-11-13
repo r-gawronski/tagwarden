@@ -262,6 +262,9 @@ type fakeTrivy struct {
 }
 
 func newFakeTrivy() *fakeTrivy {
+	// httptest TLS servers share one certificate and ephemeral ports get
+	// reused, so a probe cached for an earlier server can answer for this one.
+	targetReconciler.resetProbes()
 	f := &fakeTrivy{}
 	f.setVersion(trivyVersion, time.Hour)
 	f.status.Store(http.StatusOK)
@@ -460,3 +463,10 @@ var _ = Describe("Scanner readiness", func() {
 		Eventually(cronJob(m)).ShouldNot(BeNil())
 	})
 })
+
+// resetProbes drops the cached scanner probe results.
+func (r *ClusterMirrorTargetReconciler) resetProbes() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.probes = nil
+}

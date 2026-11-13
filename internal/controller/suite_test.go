@@ -33,6 +33,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -121,6 +122,8 @@ var (
 	testEnv   *envtest.Environment
 	cfg       *rest.Config
 	k8sClient client.Client
+	// targetReconciler is kept to reset its scanner probe cache between specs.
+	targetReconciler *ClusterMirrorTargetReconciler
 )
 
 func TestControllers(t *testing.T) {
@@ -171,7 +174,7 @@ var _ = BeforeSuite(func() {
 		Cache:     CacheOptions(operatorNamespace),
 	})
 	Expect(err).NotTo(HaveOccurred())
-	Expect((&ClusterMirrorTargetReconciler{
+	targetReconciler = &ClusterMirrorTargetReconciler{
 		Recorder:      recorder,
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
@@ -179,7 +182,8 @@ var _ = BeforeSuite(func() {
 		Scanner:       suiteScanner,
 		DeniedCIDRs:   []netip.Prefix{netip.MustParsePrefix(deniedCIDR)},
 		allowLoopback: true,
-	}).SetupWithManager(mgr)).To(Succeed())
+	}
+	Expect(targetReconciler.SetupWithManager(mgr)).To(Succeed())
 	Expect((&ArtifactMirrorReconciler{
 		Client:              mgr.GetClient(),
 		APIReader:           mgr.GetAPIReader(),
@@ -207,7 +211,22 @@ var _ = BeforeSuite(func() {
 		defer GinkgoRecover()
 		Expect(mgr.Start(ctx)).To(Succeed())
 	}()
+	// Start the informers the controllers would start lazily on their first
+	// Get, so the first spec does not pay for them inside its timeout.
+	Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue())
+	for _, o := range []client.Object{&corev1.Namespace{}, &corev1.ConfigMap{}, &corev1.Secret{},
+		&corev1.Pod{}, &batchv1.CronJob{}, &batchv1.Job{}} {
+		_, err := mgr.GetCache().GetInformer(ctx, o)
+		Expect(err).NotTo(HaveOccurred())
+	}
 	createMirrorFixtures()
+	// The fixture target is Ready in the API; wait until the manager's cache
+	// sees it too, or the first mirror reconciles against a stale target.
+	Eventually(func() bool {
+		var t mirrorv1alpha1.ClusterMirrorTarget
+		return mgr.GetClient().Get(ctx, client.ObjectKey{Name: mirrorTarget}, &t) == nil &&
+			meta.IsStatusConditionTrue(t.Status.Conditions, ConditionReady)
+	}).Should(BeTrue())
 })
 
 var _ = AfterSuite(func() {
