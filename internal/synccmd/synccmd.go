@@ -605,8 +605,8 @@ func encode(r report) []byte {
 	withRest := func(k int) []string { return append(slices.Clip(head), rest[:k]...) }
 
 	r.Errors = head
-	judged := r.Judged
-	r.Judged = nil
+	judged, acceptedBy := r.Judged, r.AcceptedBy
+	r.Judged, r.AcceptedBy = nil, nil
 	// Gate findings go before synced tags: pod Events depend on them.
 	// Each truncation flag is set before the cut is measured, so the flag
 	// itself always fits.
@@ -635,6 +635,11 @@ func encode(r report) []byte {
 		c := *sel
 		c.MissingTags = nil
 		r.Selection = &c
+	}
+	// Entries that do not fit are left for a later run: they are neither
+	// recorded nor announced yet.
+	if r.AcceptedBy = acceptedBy; !fits(r) {
+		r.AcceptedBy = acceptedBy[:largest(len(acceptedBy), func(k int) bool { r.AcceptedBy = acceptedBy[:k]; return fits(r) })]
 	}
 	// Judged tags that do not fit are only scanned again next run.
 	if r.Judged = judged; !fits(r) {

@@ -655,7 +655,10 @@ spec:
 Chart: `vulnerabilityExceptions.approvers` binds the approver
 ClusterRole; `approvedByPolicy` requires `approvedBy` to equal the
 requesting user. Check: condition `Active`; `False` with reason
-`Expired`, `TooLong` or `TargetNotFound`. More:
+`Expired`, `TooLong` or `TargetNotFound`. When exceptions turn a tag's verdict from
+findings to accepted, the generated mirror gets a Normal Event
+`VulnerabilityExceptionApplied` (exception, IDs, tag), once per tag and
+exception, and `status.gate.accepted` lists the uses. More:
 [install, Exceptions](install.md#5-exceptions).
 
 ## Always on

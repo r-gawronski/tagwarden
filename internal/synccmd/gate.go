@@ -20,8 +20,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -157,6 +159,7 @@ func gateSummary(r *report, res sync.Result, fingerprint string, rescan bool) {
 			r.ScanErrors++
 		case vuln.Accepted:
 			r.Accepted++
+			r.AcceptedBy = append(r.AcceptedBy, acceptedBy(tag, a.Digest, sc)...)
 			continue
 		default:
 			continue
@@ -195,6 +198,30 @@ func gateSummary(r *report, res sync.Result, fingerprint string, rescan bool) {
 		}
 		r.TagFindings = append(r.TagFindings, f)
 	}
+}
+
+// acceptedBy groups the findings an accepted tag owes to exceptions, over
+// its platforms, per exception in name order. Entries that ParseReport
+// would refuse are left out, so they never cost the whole report.
+func acceptedBy(tag, digest string, sc *sync.Scan) []syncspec.TagAccepted {
+	ids := map[string][]string{}
+	for _, p := range sc.Platforms {
+		for _, x := range p.Accepted {
+			if syncspec.VulnID(x.ID) && !slices.Contains(ids[x.Exception], x.ID) {
+				ids[x.Exception] = append(ids[x.Exception], x.ID)
+			}
+		}
+	}
+	var out []syncspec.TagAccepted
+	for _, exc := range slices.Sorted(maps.Keys(ids)) {
+		e := syncspec.TagAccepted{Tag: tag, Digest: digest, Exception: exc, IDs: ids[exc]}
+		slices.Sort(e.IDs)
+		e.IDs = e.IDs[:min(len(e.IDs), syncspec.MaxAcceptedIDs)]
+		if e.Valid() {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // reportReason keeps the report within the reasons ParseReport accepts;
