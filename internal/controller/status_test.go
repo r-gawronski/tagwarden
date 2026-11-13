@@ -544,3 +544,52 @@ func TestApplyResultWithoutResult(t *testing.T) {
 		}
 	}
 }
+
+// The Pod cache can lag the Job cache: a finished Job whose cached Pod has
+// no terminated state yet must read the Pod from the API server instead of
+// being recorded as Crashed, because a Job is applied only once.
+func TestSyncStatusPodCacheLag(t *testing.T) {
+	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name       string
+		apiPod     bool
+		wantReason string
+	}{
+		{"pod only on the API server", true, ReasonSyncFailed},
+		{"pod really gone", false, ReasonCrashed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &mirrorv1alpha1.ArtifactMirror{}
+			m.Namespace, m.Name = "ns", "m"
+			s := goldenScheme(t)
+			for _, add := range []func(*runtime.Scheme) error{batchv1.AddToScheme, corev1.AddToScheme} {
+				if err := add(s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			job := finishedJobAt(syncName, "", t0)
+			job.Namespace, job.UID = opsNS, types.UID(syncName)
+			job.Labels = map[string]string{LabelMirror: mirrorHash("ns", "m")}
+			pod := func(term *corev1.ContainerStateTerminated) *corev1.Pod {
+				return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: opsNS, Name: "p",
+					Labels:          map[string]string{batchv1.JobNameLabel: syncName},
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(job, batchv1.SchemeGroupVersion.WithKind("Job"))}},
+					Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: syncContainer, State: corev1.ContainerState{Terminated: term}}}}}
+			}
+			cache := fake.NewClientBuilder().WithScheme(s).WithObjects(job, pod(nil)).Build()
+			api := fake.NewClientBuilder().WithScheme(s).Build()
+			if tc.apiPod {
+				api = fake.NewClientBuilder().WithScheme(s).WithObjects(pod(termination(t, syncspec.ExitSyncFailed, &syncspec.Report{V: syncspec.ReportVersion}))).Build()
+			}
+			r := &ArtifactMirrorReconciler{Client: cache, APIReader: api, Namespace: opsNS}
+			var ev pending
+			var applied []*batchv1.Job
+			if err := r.syncStatus(context.Background(), m, false, &ev, &applied); err != nil {
+				t.Fatal(err)
+			}
+			if c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced); c == nil || c.Reason != tc.wantReason {
+				t.Errorf("Synced %+v, want reason %s", c, tc.wantReason)
+			}
+		})
+	}
+}
