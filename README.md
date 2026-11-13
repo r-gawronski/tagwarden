@@ -600,7 +600,10 @@ Design: [docs/design/vulnerability-gate.md](docs/design/vulnerability-gate.md).
   Federation, no static Secret (see
   [Cloud registries](#cloud-registries)).
 - **Moving tags:** when an upstream tag points to a new digest, the
-  target decides: `Fail` (default), `Overwrite` or `Ignore`.
+  target decides: `Fail` (default), `Overwrite` or `Ignore`. A mirror may
+  set its own `onTagMutation` when the target lists the value in
+  `policy.allowedOnTagMutation` (empty by default); otherwise it is
+  `Ready=False` with `TagMutationPolicyNotAllowed`.
 - **Multi-tenancy:** teams can only push to projects the platform team
   opened for their namespace, and only from allowed registries. Two
   mirrors can't write different sources to the same path. Per-target

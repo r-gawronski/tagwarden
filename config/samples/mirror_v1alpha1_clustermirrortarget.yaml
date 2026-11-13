@@ -49,6 +49,8 @@ spec:
           example.com/team: a
   policy:
     onTagMutation: Fail
+    # Values a mirror may set in its own spec.onTagMutation. Empty: none.
+    allowedOnTagMutation: [Overwrite]
   # Absent fields use the defaults: 1h, 50, 20, 50, 10000 and no size limit.
   limits:
     minSyncInterval: 1h
