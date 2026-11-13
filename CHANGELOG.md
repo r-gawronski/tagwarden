@@ -7,6 +7,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.1-rc.4](https://github.com/r-gawronski/tagwarden/compare/v0.1.1-rc.3...v0.1.1-rc.4) (2026-11-13)
+
+### Controller
+
+#### Features
+
+* record VulnerabilityExceptionApplied Event ([#113](https://github.com/r-gawronski/tagwarden/pull/113)) ([c47bdee](https://github.com/r-gawronski/tagwarden/commit/c47bdee6512f137679c870b4725b5daee03a272e)), closes [#74](https://github.com/r-gawronski/tagwarden/issues/74)
+
+#### Bug fixes
+
+* read the sync pod from the API server when the cache has no result ([#115](https://github.com/r-gawronski/tagwarden/pull/115)) ([69b31a2](https://github.com/r-gawronski/tagwarden/commit/69b31a27f82a4b567459fa3584c9038cc40799b9))
+
+### Other
+
+#### Bug fixes
+
+* use helm --wait=legacy to avoid kstatus watcher panic ([#112](https://github.com/r-gawronski/tagwarden/pull/112)) ([f7b85a9](https://github.com/r-gawronski/tagwarden/commit/f7b85a983d5b288dea85015d1edcb7fea0a538af)), closes [#83](https://github.com/r-gawronski/tagwarden/issues/83)
+
+
 ## [0.1.1-rc.3](https://github.com/r-gawronski/tagwarden/compare/v0.1.1-rc.2...v0.1.1-rc.3) (2026-11-12)
 
 ### Dependencies
