@@ -884,6 +884,38 @@ no longer selects, for example after `keepLatest` moved on.
 
 Example and the full field list: [features.md, Prune](features.md#prune).
 
+## Moving tags per mirror
+
+Some upstreams rebuild an image under the same tag on purpose. With the
+target policy `Fail`, each rebuild leaves the mirror `SyncFailed`. The target
+can let single mirrors choose another policy instead of dropping the check for
+every mirror:
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
+spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [ghcr.io]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
+  policy:
+    onTagMutation: Fail
+    allowedOnTagMutation: [Overwrite]   # <- empty by default: no override
+```
+
+A mirror then sets `spec.onTagMutation: Overwrite`. The effective value is the
+mirror's if set, else the target's. A mirror may always repeat the target's
+own value. Any other value that is not in `allowedOnTagMutation` gives
+`Ready=False` with reason `TagMutationPolicyNotAllowed`, and the mirror does not
+sync; the message names the mirror, the target, the requested value and the
+allowed values. The controller does not fall back to the target value. Mirrors
+generated from pod annotations never set the field and use the target policy.
+Keep `Fail` as the target default: `Overwrite` re-points a tag after the
+digest was verified once, so use it only for upstreams you trust to rebuild.
+
 ## Tenant limits
 
 `ClusterMirrorTarget.spec.limits` caps schedules, mirrors per namespace,

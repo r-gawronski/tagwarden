@@ -95,6 +95,12 @@ Pods using other tags get nothing. Each pod, source and tag keeps its own
 dedupe key, so an Event is recorded only when the verdict, outcome or
 digest changes, and the key is cleared when the finding goes away.
 
+## Tag mutation policy (#117)
+
+Generated mirrors copy no field from the pod, so `spec.onTagMutation` stays
+empty and they always run with the target policy. A pod annotation must not
+be able to relax a platform control.
+
 ## Not done
 
 - Pruning tags that no pod uses. Prune (threat model T13) only removes

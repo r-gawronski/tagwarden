@@ -34,7 +34,7 @@ feature; the other lines are the minimum the object needs.
 | [Projects and namespace access](#projects-and-namespace-access) | platform | required | ClusterMirrorTarget `spec.projects` |
 | [Allowed sources](#allowed-sources) | platform | required | ClusterMirrorTarget `spec.allowedSources` |
 | [Limits](#limits) | platform | on, with defaults | ClusterMirrorTarget `spec.limits` |
-| [Moving tags](#moving-tags) | platform | `Fail` | ClusterMirrorTarget `spec.policy.onTagMutation` |
+| [Moving tags](#moving-tags) | platform | `Fail` | ClusterMirrorTarget `spec.policy.onTagMutation`, `spec.policy.allowedOnTagMutation`; ArtifactMirror `spec.onTagMutation` |
 | [Proxy](#proxy) | platform | off | ClusterMirrorTarget `spec.proxy` |
 | [Target CA and mTLS](#target-ca-and-mtls) | platform | off | ClusterMirrorTarget `caBundleSecretRef`, `clientCertSecretRef` |
 | [Push credentials](#push-credentials) | platform | required | ClusterMirrorTarget `credentialsSecretRef` or `auth` |
@@ -365,6 +365,39 @@ spec:
   policy:
     onTagMutation: Overwrite        # <- Fail (default) | Overwrite | Ignore
 ```
+
+A mirror may pick its own value when the target allows it. Owners: platform
+(the allow list) and the mirror's team (the choice). Default: no override.
+
+```yaml
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ClusterMirrorTarget
+metadata: {name: registry}
+spec:
+  registry: registry.example.internal
+  credentialsSecretRef: {name: registry-push}
+  allowedSources: [ghcr.io]
+  projects:
+    - {name: mirror, namespaceSelector: {}}
+  policy:
+    onTagMutation: Fail
+    allowedOnTagMutation: [Overwrite]   # <- values a mirror may choose
+---
+apiVersion: mirror.tagwarden.dev/v1alpha1
+kind: ArtifactMirror
+metadata: {name: runner, namespace: default}
+spec:
+  targetRef: registry
+  schedule: "0 3 * * *"
+  source: {registry: ghcr.io, repository: example/runner}
+  target: {project: mirror}
+  tags: {include: ['^\d+$'], keepLatest: 3}
+  onTagMutation: Overwrite              # <- this mirror only
+```
+
+Check: a value outside the allow list gives `Ready=False` with reason
+`TagMutationPolicyNotAllowed`; the message names the mirror, the target and
+both fields. More: [install, Moving tags per mirror](install.md#moving-tags-per-mirror).
 
 ## Network and credentials
 

@@ -172,6 +172,14 @@ type ArtifactMirrorSpec struct {
 	// +optional
 	RequiredPlatforms []string `json:"requiredPlatforms,omitempty"`
 
+	// onTagMutation is the action taken when an upstream tag of this mirror
+	// points to a new digest. When empty, spec.policy.onTagMutation of the
+	// ClusterMirrorTarget applies. A value different from the target's
+	// must be listed in the target's spec.policy.allowedOnTagMutation,
+	// otherwise the mirror is not Ready and does not sync.
+	// +optional
+	OnTagMutation OnTagMutation `json:"onTagMutation,omitempty"`
+
 	// suspend stops scheduling new syncs.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`

@@ -93,6 +93,7 @@ const (
 	ReasonScheduleTooFrequent          = "ScheduleTooFrequent"
 	ReasonLimitExceeded                = "LimitExceeded"
 	ReasonProjectReservedForAutoMirror = "ProjectReservedForAutoMirror"
+	ReasonTagMutationPolicyNotAllowed  = "TagMutationPolicyNotAllowed"
 
 	// Vulnerability gate.
 	ReasonReported           = "Reported"

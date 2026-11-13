@@ -531,6 +531,24 @@ spec:
                 description: policy holds the default policy for mirrors that use
                   this target.
                 properties:
+                  allowedOnTagMutation:
+                    description: |-
+                      allowedOnTagMutation lists the values an ArtifactMirror may set in its
+                      own spec.onTagMutation instead of the value above. A mirror that
+                      asks for a value outside this list, and different from the value
+                      above, gets Ready=False with reason TagMutationPolicyNotAllowed. The
+                      default is an empty list: no mirror may override the policy.
+                    items:
+                      description: OnTagMutation is the action taken when an upstream
+                        tag points to a new digest.
+                      enum:
+                      - Fail
+                      - Overwrite
+                      - Ignore
+                      type: string
+                    maxItems: 3
+                    type: array
+                    x-kubernetes-list-type: set
                   onTagMutation:
                     default: Fail
                     description: onTagMutation is the action taken when an upstream

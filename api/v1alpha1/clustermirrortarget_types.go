@@ -290,6 +290,16 @@ type TargetPolicy struct {
 	// +kubebuilder:default=Fail
 	// +optional
 	OnTagMutation OnTagMutation `json:"onTagMutation,omitempty"`
+
+	// allowedOnTagMutation lists the values an ArtifactMirror may set in its
+	// own spec.onTagMutation instead of the value above. A mirror that
+	// asks for a value outside this list, and different from the value
+	// above, gets Ready=False with reason TagMutationPolicyNotAllowed. The
+	// default is an empty list: no mirror may override the policy.
+	// +kubebuilder:validation:MaxItems=3
+	// +listType=set
+	// +optional
+	AllowedOnTagMutation []OnTagMutation `json:"allowedOnTagMutation,omitempty"`
 }
 
 // TargetProject is a project in the target registry and the namespaces allowed to use it.

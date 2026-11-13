@@ -852,4 +852,62 @@ var _ = Describe("naming", func() {
 		Expect(objectName(mk("Team.A", "My_Mirror.v1"))).To(HavePrefix("team-a-my-mirror-v1-"))
 		Expect(objectName(mk(long, long+"1"))).NotTo(Equal(objectName(mk(long, long+"2"))))
 	})
+
+	Describe("onTagMutation", Ordered, func() {
+		// mutationMirror runs against a target that sets Fail and allows Overwrite.
+		var target *mirrorv1alpha1.ClusterMirrorTarget
+		BeforeAll(func() {
+			target = createReadyTarget("mutation-target", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+				t.Spec.Policy.AllowedOnTagMutation = []mirrorv1alpha1.OnTagMutation{mirrorv1alpha1.OnTagMutationOverwrite}
+			})
+		})
+		mutationMirror := func(name string, want mirrorv1alpha1.OnTagMutation) *mirrorv1alpha1.ArtifactMirror {
+			m := newMirror(teamA, name)
+			m.Spec.TargetRef = target.Name
+			m.Spec.OnTagMutation = want
+			createMirror(m)
+			return m
+		}
+		rendered := func(m *mirrorv1alpha1.ArtifactMirror) mirrorv1alpha1.OnTagMutation {
+			var cm corev1.ConfigMap
+			Eventually(func() error { return k8sClient.Get(ctx, objectKey(m), &cm) }).Should(Succeed())
+			spec, err := syncspec.Decode(bytes.NewReader([]byte(cm.Data["spec.json"])))
+			Expect(err).NotTo(HaveOccurred())
+			return spec.OnTagMutation
+		}
+
+		It("uses the target policy when the mirror sets none", func() {
+			m := mutationMirror("mutation-unset", "")
+			Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
+			Expect(rendered(m)).To(Equal(mirrorv1alpha1.OnTagMutationFail))
+		})
+
+		It("uses a value the target allows", func() {
+			m := mutationMirror("mutation-allowed", mirrorv1alpha1.OnTagMutationOverwrite)
+			Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
+			Expect(rendered(m)).To(Equal(mirrorv1alpha1.OnTagMutationOverwrite))
+		})
+
+		It("always allows the value the target already sets", func() {
+			m := mutationMirror("mutation-equal", mirrorv1alpha1.OnTagMutationFail)
+			Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
+			Expect(rendered(m)).To(Equal(mirrorv1alpha1.OnTagMutationFail))
+		})
+
+		It("refuses a value the target does not allow and renders no CronJob", func() {
+			m := mutationMirror("mutation-refused", mirrorv1alpha1.OnTagMutationIgnore)
+			Eventually(mirrorReady(m)).Should(And(
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", ReasonTagMutationPolicyNotAllowed),
+				HaveField("Message", And(
+					ContainSubstring("ArtifactMirror team-a/mutation-refused"),
+					ContainSubstring("spec.onTagMutation to Ignore"),
+					ContainSubstring("ClusterMirrorTarget mutation-target"),
+					ContainSubstring("policy.allowedOnTagMutation to [Overwrite]")))))
+			Eventually(func() []string { return recorder.Events(teamA, m.Name) }).Should(
+				ContainElement(ContainSubstring("Warning " + ReasonTagMutationPolicyNotAllowed)))
+			_, err := cronJob(m)()
+			Expect(notFound(err)).To(BeTrue())
+		})
+	})
 })

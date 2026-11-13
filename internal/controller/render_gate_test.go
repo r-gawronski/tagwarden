@@ -442,3 +442,25 @@ func TestSyncSpecMaxListedTags(t *testing.T) {
 		t.Errorf("MaxTags = %d, want 50000", got)
 	}
 }
+
+func TestSyncSpecOnTagMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		target, mirror mirrorv1alpha1.OnTagMutation
+		want           mirrorv1alpha1.OnTagMutation
+	}{
+		{"both unset", "", "", mirrorv1alpha1.OnTagMutationFail},
+		{"target only", mirrorv1alpha1.OnTagMutationIgnore, "", mirrorv1alpha1.OnTagMutationIgnore},
+		{"mirror wins", mirrorv1alpha1.OnTagMutationFail, mirrorv1alpha1.OnTagMutationOverwrite, mirrorv1alpha1.OnTagMutationOverwrite},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := validTarget("t")
+			target.Spec.Policy.OnTagMutation = tc.target
+			m := validMirror("m")
+			m.Spec.OnTagMutation = tc.mirror
+			if got := syncSpec(target, m, nil).OnTagMutation; got != tc.want {
+				t.Fatalf("OnTagMutation = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

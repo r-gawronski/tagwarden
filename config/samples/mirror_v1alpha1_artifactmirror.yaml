@@ -20,6 +20,9 @@ spec:
       - ^\d+\.\d+$
     keepLatest: 3
     prune: true   # <- delete tags this mirror created and no longer selects
+  # Optional. Only a value in the target's policy.allowedOnTagMutation
+  # (or the target's own value) is accepted; empty uses the target policy.
+  # onTagMutation: Overwrite
   requiredPlatforms:
     - linux/amd64
     - linux/arm64
