@@ -81,7 +81,15 @@ func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1al
 			*applied = append(*applied, f.job)
 			continue
 		}
-		term, err := r.termination(ctx, f.job)
+		term, err := r.termination(ctx, r, f.job)
+		if err == nil && term == nil {
+			// The Job and Pod caches are separate watch streams, so the cache
+			// can show the finished Job before the Pod's terminated state. The
+			// Job is applied once, so ask the API server before recording a
+			// Crashed that would never be corrected. A Pod that is really gone
+			// stays nil here.
+			term, err = r.termination(ctx, r.APIReader, f.job)
+		}
 		if err != nil {
 			return err
 		}
@@ -281,10 +289,10 @@ func finished(j *batchv1.Job) *batchv1.JobCondition {
 }
 
 // termination returns the latest terminated state of the sync container
-// among the pods the Job controls, or nil.
-func (r *ArtifactMirrorReconciler) termination(ctx context.Context, job *batchv1.Job) (*corev1.ContainerStateTerminated, error) {
+// among the pods the Job controls, read through rd, or nil.
+func (r *ArtifactMirrorReconciler) termination(ctx context.Context, rd client.Reader, job *batchv1.Job) (*corev1.ContainerStateTerminated, error) {
 	var pods corev1.PodList
-	if err := r.List(ctx, &pods, client.InNamespace(r.Namespace),
+	if err := rd.List(ctx, &pods, client.InNamespace(r.Namespace),
 		client.MatchingLabels{batchv1.JobNameLabel: job.Name}); err != nil {
 		return nil, err
 	}
