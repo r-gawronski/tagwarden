@@ -361,7 +361,7 @@ func (r *ArtifactMirrorReconciler) setReady(m *mirrorv1alpha1.ArtifactMirror, st
 // its namespace and any target.repository override, the source is allowed
 // and not an internal address, the spec is valid and within the target's
 // limits, and stays out of a project reserved for generated mirrors (threat
-// model T5, T6, T7, T10, T16, T23, T36). It returns a reason and
+// model T5, T6, T7, T10, T16, T23, T36, T39). It returns a reason and
 // message when it may not.
 func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) (string, string, error) {
 	if reason, msg, err := r.reserved(ctx, t, m); err != nil || reason != "" {
@@ -401,6 +401,12 @@ func (r *ArtifactMirrorReconciler) authorize(ctx context.Context, t *mirrorv1alp
 		}
 	}
 
+	if want := m.Spec.OnTagMutation; want != "" && want != targetMutation(t) &&
+		!slices.Contains(t.Spec.Policy.AllowedOnTagMutation, want) {
+		return ReasonTagMutationPolicyNotAllowed, fmt.Sprintf(
+			"ArtifactMirror %s/%s sets spec.onTagMutation to %s, but ClusterMirrorTarget %s sets policy.onTagMutation to %s and policy.allowedOnTagMutation to %v; remove spec.onTagMutation from the mirror, or add %s to policy.allowedOnTagMutation of the target",
+			m.Namespace, m.Name, want, t.Name, targetMutation(t), t.Spec.Policy.AllowedOnTagMutation, want), nil
+	}
 	if m.Spec.Type == mirrorv1alpha1.ArtifactTypeHelmRepo {
 		return ReasonInvalidSpec, "type HelmRepo is not supported yet", nil
 	}

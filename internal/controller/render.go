@@ -212,11 +212,19 @@ func cloudAuth(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.Artifact
 }
 
 // syncSpec renders the spec the sync Job reads. It holds no secret values.
+// targetMutation is the tag mutation policy of the target, Fail when unset.
+func targetMutation(t *mirrorv1alpha1.ClusterMirrorTarget) mirrorv1alpha1.OnTagMutation {
+	return cmp.Or(t.Spec.Policy.OnTagMutation, mirrorv1alpha1.OnTagMutationFail)
+}
+
+// effectiveMutation is the tag mutation policy a mirror runs with: its own
+// value, else the target's. authorize has refused a value the target does
+// not allow before this is rendered.
+func effectiveMutation(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror) mirrorv1alpha1.OnTagMutation {
+	return cmp.Or(m.Spec.OnTagMutation, targetMutation(t))
+}
+
 func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, denied []string) syncspec.Spec {
-	mutation := t.Spec.Policy.OnTagMutation
-	if mutation == "" {
-		mutation = mirrorv1alpha1.OnTagMutationFail
-	}
 	allowed := make([]string, 0, len(t.Spec.AllowedSources))
 	for _, a := range t.Spec.AllowedSources {
 		allowed = append(allowed, string(a))
@@ -231,7 +239,7 @@ func syncSpec(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactM
 		Target:            targetRepo(t, m),
 		Tags:              tagPolicy(m.Spec.Tags),
 		RequiredPlatforms: m.Spec.RequiredPlatforms,
-		OnTagMutation:     mutation,
+		OnTagMutation:     effectiveMutation(t, m),
 		MaxTags:           int(limitOr(limitsOf(t).MaxListedTags, tags.MaxTags)),
 		MaxArtifactSize:   maxSize,
 		AllowedSources:    allowed,

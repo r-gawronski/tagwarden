@@ -62,6 +62,18 @@ spec:
           spec:
             description: spec defines the desired state of ArtifactMirror
             properties:
+              onTagMutation:
+                description: |-
+                  onTagMutation is the action taken when an upstream tag of this mirror
+                  points to a new digest. When empty, spec.policy.onTagMutation of the
+                  ClusterMirrorTarget applies. A value different from the target's
+                  must be listed in the target's spec.policy.allowedOnTagMutation,
+                  otherwise the mirror is not Ready and does not sync.
+                enum:
+                - Fail
+                - Overwrite
+                - Ignore
+                type: string
               requiredPlatforms:
                 description: |-
                   requiredPlatforms lists platforms, as os/arch[/variant], that must
