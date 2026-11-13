@@ -72,7 +72,7 @@ var _ = Describe("Mirroring", Ordered, Label("mirror"), func() {
 
 		By("adding the targets and mirrors with a second helm upgrade")
 		_, err = utils.Run(exec.Command("helm", "upgrade", helmRelease, "dist/chart", "--namespace", namespace,
-			"--reuse-values", "-f", "test/e2e/testdata/values-mirrors.yaml", "--wait", "--timeout", "3m"))
+			"--reuse-values", "-f", "test/e2e/testdata/values-mirrors.yaml", "--wait=legacy", "--timeout", "3m"))
 		Expect(err).NotTo(HaveOccurred())
 
 		for _, m := range []string{"app", "app-direct"} {

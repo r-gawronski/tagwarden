@@ -88,7 +88,7 @@ func installOperator() {
 		"--set", "manager.image.repository="+repo,
 		"--set", "manager.image.tag="+tag,
 		"--set-json", "deniedCIDRs="+string(cidrs),
-		"--wait", "--timeout", "5m"))
+		"--wait=legacy", "--timeout", "5m"))
 	Expect(err).NotTo(HaveOccurred(), "Failed to install the chart")
 }
 
