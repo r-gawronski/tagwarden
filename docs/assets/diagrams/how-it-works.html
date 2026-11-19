@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How Tagwarden works</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #F6F5FA;   /* lavender mist */
+      --color-ink:     #1E1B4B;   /* indigo night */
+      --color-muted:   #4A4F75;   /* muted indigo */
+      --color-accent:  #6D28D9;   /* warden violet */
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+    /* The SVG holds its readable width (min-width == the viewBox width, so the
+       type ramp is never silently scaled down). This wrapper lets a narrow
+       screen scroll the diagram instead of the whole page. */
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 1280px; display: block; }
+    /* Paper has no scrollbar, so the local scroller would clip instead of
+       scroll. Let the diagram scale down to the sheet: smaller but whole
+       beats sharp but cut off. Must come after the svg rule above - a media
+       query adds no specificity, so a later plain rule would win. */
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture - Tagwarden</p>
+    <h1>How Tagwarden mirrors an artifact</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1280 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="how-it-works-title how-it-works-desc">
+        <title id="how-it-works-title">How Tagwarden mirrors an artifact</title>
+        <desc id="how-it-works-desc">Teams declare an ArtifactMirror and the platform declares a ClusterMirrorTarget; the Tagwarden controller reads both, schedules a sync job, and receives its result. The job lists and fetches upstream through an HTTPS proxy and pushes by digest to your own registry.</desc>
+        <defs>
+          <marker id="how-it-works-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4A4F75"/></marker>
+          <marker id="how-it-works-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#6D28D9"/></marker>
+          <marker id="how-it-works-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2952CC"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#F6F5FA"/>
+
+        <!-- Zone: Kubernetes cluster -->
+        <rect x="40" y="136" width="816" height="288" rx="8" fill="rgba(30,27,75,0.02)" stroke="rgba(30,27,75,0.10)" stroke-width="0.8"/>
+        <rect x="56" y="140" width="112" height="12" rx="2" fill="#F6F5FA"/>
+        <text x="112" y="149" fill="#585E84" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">KUBERNETES CLUSTER</text>
+
+        <!-- Arrows first (behind boxes) -->
+        <path d="M 232,200 H 288 Q 296,200 296,208 V 256 Q 296,264 304,264 H 360" fill="none" stroke="#4A4F75" stroke-width="1.2" marker-end="url(#how-it-works-arrow)"/>
+        <path d="M 232,360 H 288 Q 296,360 296,352 V 304 Q 296,296 304,296 H 360" fill="none" stroke="#4A4F75" stroke-width="1.2" marker-end="url(#how-it-works-arrow)"/>
+        <line x1="520" y1="264" x2="664" y2="264" stroke="#4A4F75" stroke-width="1.2" marker-end="url(#how-it-works-arrow)"/>
+        <line x1="664" y1="296" x2="520" y2="296" stroke="#4A4F75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#how-it-works-arrow)"/>
+        <path d="M 824,264 H 936 Q 944,264 944,256 V 184 Q 944,176 952,176 H 1040" fill="none" stroke="#2952CC" stroke-width="1.2" marker-end="url(#how-it-works-arrow-link)"/>
+        <line x1="1140" y1="144" x2="1140" y2="104" stroke="#2952CC" stroke-width="1.2" marker-end="url(#how-it-works-arrow-link)"/>
+        <line x1="824" y1="296" x2="1040" y2="296" stroke="#6D28D9" stroke-width="1.8" marker-end="url(#how-it-works-arrow-accent)"/>
+
+        <!-- Arrow labels -->
+        <rect x="238" y="180" width="44" height="12" rx="2" fill="#F6F5FA"/>
+        <text x="260" y="189" fill="#4A4F75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">TEAM</text>
+        <rect x="234" y="340" width="52" height="12" rx="2" fill="#F6F5FA"/>
+        <text x="260" y="349" fill="#4A4F75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">PLATFORM</text>
+        <rect x="566" y="244" width="52" height="12" rx="2" fill="#F6F5FA"/>
+        <text x="592" y="253" fill="#4A4F75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">CRONJOB</text>
+        <rect x="568" y="304" width="48" height="12" rx="2" fill="#F6F5FA"/>
+        <text x="592" y="313" fill="#4A4F75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">RESULT</text>
+        <rect x="860" y="244" width="64" height="12" rx="2" fill="#F6F5FA"/>
+        <text x="892" y="253" fill="#2952CC" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">LIST, FETCH</text>
+        <rect x="900" y="276" width="88" height="12" rx="2" fill="#F6F5FA"/>
+        <text x="944" y="285" fill="#6D28D9" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">PUSH BY DIGEST</text>
+        
+        <!-- Nodes -->
+        <rect x="72" y="168" width="160" height="64" rx="6" fill="#F6F5FA"/>
+        <rect x="72" y="168" width="160" height="64" rx="6" fill="rgba(74,79,117,0.10)" stroke="#585E84" stroke-width="1"/>
+        <rect x="80" y="176" width="32" height="12" rx="2" fill="transparent" stroke="rgba(88,94,132,0.40)" stroke-width="0.8"/>
+        <text x="96" y="185" fill="#585E84" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CRD</text>
+        <text x="152" y="204" fill="#1E1B4B" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">ArtifactMirror</text>
+        <text x="152" y="220" fill="#4A4F75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">custom resource</text>
+        <rect x="72" y="328" width="160" height="64" rx="6" fill="#F6F5FA"/>
+        <rect x="72" y="328" width="160" height="64" rx="6" fill="rgba(74,79,117,0.10)" stroke="#585E84" stroke-width="1"/>
+        <rect x="80" y="336" width="32" height="12" rx="2" fill="transparent" stroke="rgba(88,94,132,0.40)" stroke-width="0.8"/>
+        <text x="96" y="345" fill="#585E84" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CRD</text>
+        <text x="152" y="364" fill="#1E1B4B" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">ClusterMirrorTarget</text>
+        <text x="152" y="380" fill="#4A4F75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">custom resource</text>
+        <rect x="360" y="248" width="160" height="64" rx="6" fill="#F6F5FA"/>
+        <rect x="360" y="248" width="160" height="64" rx="6" fill="rgba(109,40,217,0.08)" stroke="#6D28D9" stroke-width="1"/>
+        <rect x="368" y="256" width="36" height="12" rx="2" fill="transparent" stroke="rgba(109,40,217,0.50)" stroke-width="0.8"/>
+        <text x="386" y="265" fill="#6D28D9" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CTRL</text>
+        <text x="440" y="284" fill="#1E1B4B" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Controller</text>
+        <text x="440" y="300" fill="#4A4F75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">schedules syncs</text>
+        <rect x="664" y="248" width="160" height="64" rx="6" fill="#F6F5FA"/>
+        <rect x="664" y="248" width="160" height="64" rx="6" fill="rgba(109,40,217,0.08)" stroke="#6D28D9" stroke-width="1"/>
+        <rect x="672" y="256" width="32" height="12" rx="2" fill="transparent" stroke="rgba(109,40,217,0.50)" stroke-width="0.8"/>
+        <text x="688" y="265" fill="#6D28D9" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">JOB</text>
+        <text x="744" y="284" fill="#1E1B4B" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Sync Job</text>
+        <text x="744" y="300" fill="#4A4F75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">copies tags by digest</text>
+        <rect x="1040" y="144" width="200" height="64" rx="6" fill="#F6F5FA"/>
+        <rect x="1040" y="144" width="200" height="64" rx="6" fill="#ffffff" stroke="#1E1B4B" stroke-width="1"/>
+        <rect x="1048" y="152" width="40" height="12" rx="2" fill="transparent" stroke="rgba(30,27,75,0.40)" stroke-width="0.8"/>
+        <text x="1068" y="161" fill="#1E1B4B" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">PROXY</text>
+        <text x="1140" y="180" fill="#1E1B4B" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">HTTPS proxy</text>
+        <text x="1140" y="196" fill="#4A4F75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">egress</text>
+        <rect x="1040" y="40" width="200" height="64" rx="6" fill="#F6F5FA"/>
+        <rect x="1040" y="40" width="200" height="64" rx="6" fill="rgba(30,27,75,0.03)" stroke="rgba(30,27,75,0.30)" stroke-width="1"/>
+        <rect x="1048" y="48" width="28" height="12" rx="2" fill="transparent" stroke="rgba(30,27,75,0.22)" stroke-width="0.8"/>
+        <text x="1062" y="57" fill="#585E84" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">EXT</text>
+        <text x="1140" y="76" fill="#1E1B4B" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Upstream</text>
+        <text x="1140" y="92" fill="#4A4F75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">source registry</text>
+        <rect x="1040" y="264" width="200" height="64" rx="6" fill="#F6F5FA"/>
+        <rect x="1040" y="264" width="200" height="64" rx="6" fill="rgba(30,27,75,0.05)" stroke="#4A4F75" stroke-width="1"/>
+        <rect x="1048" y="272" width="28" height="12" rx="2" fill="transparent" stroke="rgba(74,79,117,0.50)" stroke-width="0.8"/>
+        <text x="1062" y="281" fill="#4A4F75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">OCI</text>
+        <text x="1140" y="300" fill="#1E1B4B" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Your registry</text>
+        <text x="1140" y="316" fill="#4A4F75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">images, charts</text>
+        
+        <!-- Legend strip -->
+        <line x1="40" y1="484" x2="1240" y2="484" stroke="rgba(30,27,75,0.10)" stroke-width="0.8"/>
+        <text x="40" y="500" fill="#4A4F75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.18em">LEGEND</text>
+        <rect x="40" y="516" width="14" height="10" rx="2" fill="rgba(109,40,217,0.08)" stroke="#6D28D9" stroke-width="1"/>
+        <text x="60" y="524" fill="#4A4F75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Tagwarden component</text>
+        <rect x="200" y="516" width="14" height="10" rx="2" fill="#ffffff" stroke="#1E1B4B" stroke-width="1"/>
+        <text x="220" y="524" fill="#4A4F75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Network hop</text>
+        <rect x="320" y="516" width="14" height="10" rx="2" fill="rgba(30,27,75,0.05)" stroke="#4A4F75" stroke-width="1"/>
+        <text x="340" y="524" fill="#4A4F75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Store</text>
+        <rect x="400" y="516" width="14" height="10" rx="2" fill="rgba(30,27,75,0.03)" stroke="rgba(30,27,75,0.30)" stroke-width="1"/>
+        <text x="420" y="524" fill="#4A4F75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">External</text>
+        <line x1="520" y1="521" x2="548" y2="521" stroke="#2952CC" stroke-width="1.2" marker-end="url(#how-it-works-arrow-link)"/>
+        <text x="556" y="524" fill="#4A4F75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">HTTP request</text>
+        <line x1="680" y1="521" x2="708" y2="521" stroke="#6D28D9" stroke-width="1.8" marker-end="url(#how-it-works-arrow-accent)"/>
+        <text x="716" y="524" fill="#4A4F75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Push by digest</text>
+        <line x1="850" y1="521" x2="878" y2="521" stroke="#4A4F75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#how-it-works-arrow)"/>
+        <text x="886" y="524" fill="#4A4F75" font-size="8.5" font-family="'Geist', system-ui, sans-serif">Return</text>
+        
+      </svg>
+    </div>
+  </div>
+</body>
+</html>
