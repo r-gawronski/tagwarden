@@ -7,6 +7,29 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.1-rc.6](https://github.com/r-gawronski/tagwarden/compare/v0.1.1-rc.5...v0.1.1-rc.6) (2026-11-20)
+
+Highlights: SBOM generation for mirrored images. Set `spec.sbom` on a ClusterMirrorTarget and every image mirror of it attaches a Trivy-generated CycloneDX or SPDX SBOM to each platform as an OCI 1.1 referrer. Upstream referrers that carry `dev.tagwarden.*` annotations are no longer copied.
+
+### API
+
+#### Features
+
+* SBOM policy on ClusterMirrorTarget (#69, step 2) ([#98](https://github.com/r-gawronski/tagwarden/pull/98)) ([17bd910](https://github.com/r-gawronski/tagwarden/commit/17bd910b1e57f23d9bbb3dd28907c7daeaea861c))
+
+### Controller
+
+#### Features
+
+* SBOM status, Events and metrics (#69, step 5) ([#127](https://github.com/r-gawronski/tagwarden/pull/127)) ([b55702d](https://github.com/r-gawronski/tagwarden/commit/b55702dea7866a188f2b0b31d3f8886a8b669ec3))
+* render the SBOM generator in sync Jobs (#69, step 4) ([#126](https://github.com/r-gawronski/tagwarden/pull/126)) ([8195242](https://github.com/r-gawronski/tagwarden/commit/8195242c09bf87fa48608bdec6da38443681d57d))
+
+### Sync
+
+#### Features
+
+* generate and attach SBOMs in sync Jobs (#69, step 3) ([#125](https://github.com/r-gawronski/tagwarden/pull/125)) ([e820ea6](https://github.com/r-gawronski/tagwarden/commit/e820ea66c0700fa8f2a3955e718e90666efdcb49))
+
 ## [0.1.1-rc.5](https://github.com/r-gawronski/tagwarden/compare/v0.1.1-rc.4...v0.1.1-rc.5) (2026-11-13)
 
 ### Controller
