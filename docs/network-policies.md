@@ -109,3 +109,11 @@ external server use an `ipBlock` instead. The chart's own Trivy policy
 egress only to DNS and `trivy.networkPolicy.registryEgress`. If the server
 is unreachable, the run reports `ScannerUnavailable` after a short retry
 window.
+
+## SBOM sync pods
+
+Image mirrors of a target with an [SBOM policy](features.md#sbom-policy)
+carry `tagwarden.dev/sbom: trivy`. Their `sbom` sidecar reads the local copy
+of the image and needs no network: no DNS, no registry, no proxy. It shares
+the pod network with the sync container, so the sync policies above apply
+and no new rule is needed. A gated pod uses its `scanner` sidecar for both.

@@ -853,6 +853,40 @@ If the scanner sidecar cannot start (image pull error, crash loop), the Job
 is deleted after `trivy.scannerStartTimeout`, nothing is copied, and
 `tagwarden_scanner_start_failures_total` increases.
 
+## Generate SBOMs
+
+An SBOM policy on a `ClusterMirrorTarget` makes sync Jobs attach an SBOM to
+every image they mirror. The generator is a Trivy sidecar that reads the
+local copy of the image. It needs no Trivy server, no vulnerability DB, no
+Secret and no network. Reference and checks:
+[features.md, SBOM policy](features.md#sbom-policy). Design:
+[sbom.md](design/sbom.md).
+
+1. Mirror the Trivy image into your registry, pinned by digest (step 1 of
+   the gate above, the image only).
+2. Point the chart at it. Without `trivy.enabled` the chart runs no
+   server; it only passes the image to the manager as the default
+   generator:
+
+   ```yaml
+   # Helm chart values.yaml
+   trivy:
+     image:
+       repository: registry.example.internal/platform/ghcr.io/aquasecurity/trivy
+       tag: "0.76.1"
+       digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+   ```
+
+   Or set `spec.sbom.generator.image` and `version` per target.
+3. Set `spec.sbom` on the target, for example
+   `{mode: Generate, required: true}`.
+
+The kubelet pulls the generator image like any other image, so the nodes
+must be able to pull from your registry. NetworkPolicies need no change
+(see [network-policies.md](network-policies.md#sbom-sync-pods)). Jobs need
+more room for the local copy: `sbom.generator.storage` (default 20Gi) sets
+the size limit of its `emptyDir`.
+
 ## Prune tags a mirror no longer selects
 
 Prune is opt-in: `spec.tags.prune: true` on an `ArtifactMirror`. It is off
