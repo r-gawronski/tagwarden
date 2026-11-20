@@ -20,11 +20,13 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -459,6 +461,69 @@ var _ = Describe("SBOM policy", func() {
 			t.Spec.SBOM = &mirrorv1alpha1.SBOMPolicy{Mode: mirrorv1alpha1.SBOMModeDisabled}
 		})
 		Eventually(sidecars(image)).Should(Equal([]string{"label="}))
+	})
+
+	It("reports SBOM failures on the mirror, once per tag and digest", func() {
+		tg := createReadyTarget("sbom-status", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.SBOM = required(mirrorv1alpha1.SBOMModeGenerate, "")
+		})
+		DeferCleanup(k8sClient.Delete, ctx, tg)
+		m := newMirror(teamA, "sbom-status")
+		m.Spec.TargetRef = tg.Name
+		createMirror(m)
+		Eventually(mirrorReady(m)).Should(HaveField("Status", metav1.ConditionTrue))
+		Eventually(func() string {
+			cj, err := cronJob(m)()
+			if err != nil {
+				return ""
+			}
+			return cj.Spec.JobTemplate.Spec.Template.Labels[LabelSBOM]
+		}).Should(Equal(SBOMTrivy))
+		mirrorCond := func(typ string) func() *metav1.Condition {
+			return func() *metav1.Condition {
+				var got mirrorv1alpha1.ArtifactMirror
+				if k8sClient.Get(ctx, client.ObjectKeyFromObject(m), &got) != nil {
+					return nil
+				}
+				return meta.FindStatusCondition(got.Status.Conditions, typ)
+			}
+		}
+		digest := "sha256:" + strings.Repeat("c", 64)
+		failed := `{"v":2,"failed":1,"sbomFailed":1,"sbomFailures":[{"tag":"3.10","digest":"` + digest + `","reason":"GenerationFailed"}]}`
+		at := time.Now().Add(-time.Hour).Truncate(time.Second)
+		finishSyncJob(m, objectName(m)+"-1", at, syncspec.ExitSyncFailed, failed, false)
+		Eventually(mirrorCond(ConditionSBOM)).Should(And(HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", ReasonSBOMGenerationFailed),
+			HaveField("Message", "not published: 3.10@"+digest+" (GenerationFailed)")))
+		Expect(mirrorCond(ConditionSynced)()).To(And(HaveField("Status", metav1.ConditionFalse), HaveField("Reason", ReasonSyncFailed)))
+		sbomEvents := func() []string {
+			var out []string
+			for _, e := range recorder.Events(teamA, m.Name) {
+				if strings.Contains(e, " "+reasonSBOMFailed+" ") {
+					out = append(out, e)
+				}
+			}
+			return out
+		}
+		Eventually(sbomEvents).Should(ConsistOf(ContainSubstring("tag 3.10 (" + digest + "): SBOM GenerationFailed, not published")))
+
+		By("not repeating the Event when the next run fails the same way")
+		finishSyncJob(m, objectName(m)+"-2", at.Add(time.Minute), syncspec.ExitSyncFailed, failed, false)
+		Eventually(func() bool {
+			var j batchv1.Job
+			return k8sClient.Get(ctx, types.NamespacedName{Namespace: operatorNamespace, Name: objectName(m) + "-2"}, &j) == nil &&
+				j.Annotations[AnnotationApplied] != ""
+		}).Should(BeTrue())
+		Expect(sbomEvents()).To(HaveLen(1))
+
+		By("reporting Attached once a run succeeds")
+		finishSyncJob(m, objectName(m)+"-3", at.Add(2*time.Minute), syncspec.ExitOK,
+			`{"v":2,"copied":1,"sbomGenerated":2,"synced":[{"tag":"3.10","digest":"`+digest+`"}]}`, false)
+		Eventually(mirrorCond(ConditionSBOM)).Should(And(HaveField("Status", metav1.ConditionTrue), HaveField("Reason", ReasonSBOMAttached)))
+
+		By("removing the condition when the policy is turned off")
+		update(tg.Name, func(t *mirrorv1alpha1.ClusterMirrorTarget) { t.Spec.SBOM = nil })
+		Eventually(mirrorCond(ConditionSBOM)).Should(BeNil())
 	})
 
 	It("accepts a full policy with a matching scanner image", func() {

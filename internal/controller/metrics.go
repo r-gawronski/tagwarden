@@ -46,6 +46,13 @@ var scannerStartFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Help: "Gated sync Jobs deleted because the scanner sidecar did not start (image pull failure, bad config, crash loop), by target and waiting reason. Nothing is copied by such a run.",
 }, []string{labelTarget, "reason"})
 
+// sbomFailures counts the SBOM failures that sync Jobs report, by target,
+// failure reason and whether the tag was published.
+var sbomFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "tagwarden_sbom_failures_total",
+	Help: "Tags whose SBOM could not be generated, attached or found, as reported by sync Jobs, by target, reason (GenerationFailed, TooLarge, AttachFailed, SigningFailed, Missing) and published (false: the tag was not published because the policy requires SBOMs).",
+}, []string{labelTarget, "reason", "published"})
+
 // selectedTags is the number of tags the last sync of a mirror selected.
 var selectedTags = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "tagwarden_mirror_selected_tags",
@@ -53,5 +60,5 @@ var selectedTags = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 }, []string{"namespace", "mirror"})
 
 func init() {
-	metrics.Registry.MustRegister(gateUnscanned, sbomNotConfigured, scannerStartFailures, selectedTags)
+	metrics.Registry.MustRegister(gateUnscanned, sbomNotConfigured, sbomFailures, scannerStartFailures, selectedTags)
 }

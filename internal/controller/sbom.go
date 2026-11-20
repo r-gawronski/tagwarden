@@ -21,9 +21,13 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -182,9 +186,9 @@ func (r *ClusterMirrorTargetReconciler) targetsWithRequiredSBOM(ctx context.Cont
 // the sidecar that generates: sc with the generator added for a gated Job
 // (one sidecar for both, with the gate scanner's image, version and Java
 // DB, which the Job requires), or a new sbom sidecar. Helm mirrors and
-// targets without a policy get sc unchanged. Without a generator image a
-// required policy returns a message, and the mirror gets no CronJob; an
-// optional one renders without the generator.
+// targets without a policy get sc unchanged. Without a generator image it
+// returns sc unchanged and a message: a required policy then refuses the
+// mirror (sbomConditions), an optional one renders without the generator.
 func sbomSidecar(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, s *syncspec.Spec, sc *sidecar, defaults ScannerConfig) (*sidecar, string) {
 	p := sbomOf(t)
 	if p == nil || cmp.Or(m.Spec.Type, mirrorv1alpha1.ArtifactTypeImage) != mirrorv1alpha1.ArtifactTypeImage {
@@ -192,10 +196,11 @@ func sbomSidecar(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.Artifa
 	}
 	image, version, problem := effectiveGenerator(p, defaults)
 	if problem != "" {
+		effect := "Jobs run without the generator"
 		if p.Required {
-			return nil, fmt.Sprintf("SBOMs required on ClusterMirrorTarget %s but %s; images are not copied", t.Name, problem)
+			effect = "SBOMs are required, images are not copied"
 		}
-		return sc, ""
+		return sc, fmt.Sprintf("ClusterMirrorTarget %s has %s; %s", t.Name, problem, effect)
 	}
 	g := syncspec.SBOMGenerator{Version: version, Image: image,
 		Timeout: metav1.Duration{Duration: defaultSBOMTimeout}, JavaDB: mirrorv1alpha1.JavaDBDisabled}
@@ -215,4 +220,138 @@ func sbomSidecar(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.Artifa
 	s.SBOM = &syncspec.SBOM{Mode: p.Mode, Format: sbomFormat(p), Required: p.Required, Generator: g}
 	sc.sbom, sc.generator = &s.SBOM.Generator, p.Generator
 	return sc, ""
+}
+
+// ConditionSBOM reports on an image mirror of a target with an SBOM policy
+// whether every selected tag on the target has an SBOM.
+const ConditionSBOM = "SBOM"
+
+// Reasons of the SBOM condition.
+const (
+	ReasonSBOMAttached         = "Attached"
+	ReasonSBOMGenerationFailed = "GenerationFailed"
+	ReasonSBOMAttachFailed     = "AttachFailed"
+	ReasonSBOMMissing          = "Missing"
+	// reasonSBOMFailed is the Event of a tag whose SBOM failed.
+	reasonSBOMFailed = "SBOMFailed"
+	// reasonSBOMMissingRelay is the pod Event reason of a generated mirror
+	// that did not publish a tag for its SBOM.
+	reasonSBOMMissingRelay = "SBOMMissing"
+)
+
+// sbomNotPublished starts an SBOM condition message that lists tags the
+// policy kept from being published; the pod relay recognises it.
+const sbomNotPublished = "not published: "
+
+// sbomConditions sets or removes the SBOM condition of m before its Job is
+// rendered: absent without a policy that applies, NotConfigured with the
+// message problem from sbomSidecar. It reports whether the policy is
+// required and not configured, so the mirror must be refused.
+func (r *ArtifactMirrorReconciler) sbomConditions(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, problem string, ev *pending) bool {
+	st := &m.Status
+	p := sbomOf(t)
+	old := meta.FindStatusCondition(st.Conditions, ConditionSBOM)
+	switch {
+	case p == nil || cmp.Or(m.Spec.Type, mirrorv1alpha1.ArtifactTypeImage) != mirrorv1alpha1.ArtifactTypeImage:
+		meta.RemoveStatusCondition(&st.Conditions, ConditionSBOM)
+		r.sbomEvents.Delete(client.ObjectKeyFromObject(m))
+	case problem != "":
+		// A required policy gets the Ready Event instead.
+		if !p.Required && (old == nil || old.Reason != ReasonNotConfigured) {
+			ev.add(corev1.EventTypeWarning, ReasonNotConfigured, "Reconcile", problem)
+		}
+		meta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: ConditionSBOM, Status: metav1.ConditionFalse,
+			Reason: ReasonNotConfigured, Message: capCondition(problem), ObservedGeneration: m.Generation})
+		return p.Required
+	case old != nil && old.Reason == ReasonNotConfigured:
+		meta.RemoveStatusCondition(&st.Conditions, ConditionSBOM)
+	}
+	return false
+}
+
+// recordSBOM applies the SBOM fields of the report of a finished sync Job
+// that ran the generator. Re-scans and Jobs rendered without the
+// generator are skipped, and so is a report that does not parse (the
+// Synced condition says Crashed).
+func (r *ArtifactMirrorReconciler) recordSBOM(m *mirrorv1alpha1.ArtifactMirror, job *batchv1.Job, term *corev1.ContainerStateTerminated, ev *pending) {
+	if term == nil || job.Annotations[AnnotationTrigger] == TriggerRescan || job.Spec.Template.Labels[LabelSBOM] != SBOMTrivy {
+		return
+	}
+	rep, err := syncspec.ParseReport(term.Message)
+	if err != nil || rep.V != syncspec.ReportVersionGate {
+		return
+	}
+	key := client.ObjectKeyFromObject(m)
+	var seen map[string]bool
+	if v, ok := r.sbomEvents.Load(key); ok {
+		seen = v.(map[string]bool)
+	}
+	r.sbomEvents.Store(key, applySBOM(m, rep, term.ExitCode == syncspec.ExitOK, seen, ev))
+}
+
+// applySBOM sets the SBOM condition from a report, records one SBOMFailed
+// Event per failing tag and digest not in seen, counts the failures and
+// returns the failing pairs of this report. The report is untrusted: its
+// tags, digests and reasons were checked by ParseReport (threat model T12).
+func applySBOM(m *mirrorv1alpha1.ArtifactMirror, rep syncspec.Report, ok bool, seen map[string]bool, ev *pending) map[string]bool {
+	cond := metav1.Condition{Type: ConditionSBOM, Status: metav1.ConditionFalse, ObservedGeneration: m.Generation}
+	next := map[string]bool{}
+	if len(rep.SBOMFailures) == 0 {
+		// A failed run without SBOM failures did not check every tag.
+		if ok {
+			cond.Status, cond.Reason = metav1.ConditionTrue, ReasonSBOMAttached
+			cond.Message = fmt.Sprintf("every selected tag on the target has an SBOM; this run attached %d generated and %d upstream",
+				rep.SBOMGenerated, rep.SBOMUpstream)
+			meta.SetStatusCondition(&m.Status.Conditions, cond)
+		}
+		return next
+	}
+	var unpublished, published []string
+	for _, f := range rep.SBOMFailures {
+		pair := f.Tag + "@" + f.Digest
+		state := "published without an SBOM"
+		if !f.Published {
+			state = "not published"
+		}
+		if !seen[pair] && !next[pair] {
+			ev.add(corev1.EventTypeWarning, reasonSBOMFailed, "Sync", fmt.Sprintf("tag %s (%s): SBOM %s, %s", f.Tag, f.Digest, f.Reason, state))
+		}
+		next[pair] = true
+		sbomFailures.WithLabelValues(m.Spec.TargetRef, f.Reason, strconv.FormatBool(f.Published)).Inc()
+		entry := fmt.Sprintf("%s (%s)", pair, f.Reason)
+		if f.Published {
+			published = append(published, entry)
+			continue
+		}
+		unpublished = append(unpublished, entry)
+		if cond.Reason == "" {
+			cond.Reason = sbomConditionReason(f.Reason)
+		}
+	}
+	cond.Reason = cmp.Or(cond.Reason, sbomConditionReason(rep.SBOMFailures[0].Reason))
+	var parts []string
+	if len(unpublished) > 0 {
+		parts = append(parts, sbomNotPublished+strings.Join(unpublished, ", "))
+	}
+	if len(published) > 0 {
+		parts = append(parts, "published without an SBOM: "+strings.Join(published, ", "))
+	}
+	if more := rep.SBOMFailed - len(rep.SBOMFailures); more > 0 {
+		parts = append(parts, fmt.Sprintf("%d more tags failed, the sync Job log lists them", more))
+	}
+	cond.Message = capCondition(strings.Join(parts, "; "))
+	meta.SetStatusCondition(&m.Status.Conditions, cond)
+	return next
+}
+
+// sbomConditionReason maps a report failure reason to a condition reason.
+// A document that is too large or cannot be signed was not generated.
+func sbomConditionReason(reason string) string {
+	switch reason {
+	case syncspec.SBOMAttachFailed:
+		return ReasonSBOMAttachFailed
+	case syncspec.SBOMMissing:
+		return ReasonSBOMMissing
+	}
+	return ReasonSBOMGenerationFailed
 }

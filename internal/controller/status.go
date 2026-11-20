@@ -65,7 +65,8 @@ const AnnotationApplied = "tagwarden.dev/result-applied"
 // The termination message is untrusted: it only fills in status and is
 // never used to decide what a mirror may do (threat model T12).
 // For a gated mirror it also records the gate fields of the report.
-func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, gated bool, ev *pending, applied *[]*batchv1.Job) error {
+// With sbom it also records the SBOM fields of Jobs that ran the generator.
+func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror, gated, sbom bool, ev *pending, applied *[]*batchv1.Job) error {
 	var jobs batchv1.JobList
 	if err := r.List(ctx, &jobs, client.InNamespace(r.Namespace),
 		client.MatchingLabels{LabelMirror: mirrorHash(m.Namespace, m.Name)}); err != nil {
@@ -94,6 +95,9 @@ func (r *ArtifactMirrorReconciler) syncStatus(ctx context.Context, m *mirrorv1al
 			return err
 		}
 		recordJob(m, f.job, f.done, term, gated, ev)
+		if sbom {
+			r.recordSBOM(m, f.job, term, ev)
+		}
 		*applied = append(*applied, f.job)
 	}
 	return nil
@@ -340,7 +344,7 @@ func summary(r syncspec.Report, ok bool) string {
 		format string
 	}{
 		{r.Copied, "copied %d"}, {r.Skipped, "skipped %d"}, {r.Mutated, "mutated %d"}, {r.Failed, "failed %d"},
-		{r.Blocked, "blocked %d by the vulnerability gate"}, {len(r.Pruned), "pruned %d"},
+		{r.Blocked, "blocked %d by the vulnerability gate"}, {len(r.Pruned), "pruned %d"}, {r.SBOMFailed, "SBOM failed for %d"},
 	} {
 		if c.n > 0 || ok && i < 4 {
 			counts = append(counts, fmt.Sprintf(c.format, c.n))

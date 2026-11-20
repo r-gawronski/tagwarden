@@ -699,10 +699,8 @@ exception, and `status.gate.accepted` lists the uses. More:
 
 ### SBOM policy
 
-Owner: platform. `Disabled`. Preview: sync Jobs generate and attach
-SBOMs, but mirror status, Events and metrics for SBOM failures come in a
-later release; until then the Job's audit line and exit code report them.
-Design and plan: [design/sbom.md](design/sbom.md), issue #69.
+Owner: platform. `Disabled`. Preview. Design and plan:
+[design/sbom.md](design/sbom.md), issue #69.
 
 The policy covers every `Image` mirror of the target, user-defined and
 generated. Helm mirrors on the same target are not affected.
@@ -764,8 +762,9 @@ The sync pod of an SBOM mirror gets a native sidecar named `sbom` (or the
 gated `scanner`) and the label `tagwarden.dev/sbom: trivy`. It needs no
 NetworkPolicy rule. A sidecar that does not start within
 `--scanner-start-timeout` gets its Job deleted with nothing copied, a
-Warning Event `ScannerUnavailable` and a count in
-`tagwarden_scanner_start_failures_total`.
+Warning Event `ScannerUnavailable`, a count in
+`tagwarden_scanner_start_failures_total` and, for the `sbom` sidecar,
+`SBOM=False` with reason `GenerationFailed`.
 
 Without a generator image (`SBOMReady` reason `NotConfigured`):
 
@@ -774,6 +773,9 @@ Without a generator image (`SBOMReady` reason `NotConfigured`):
   copied.
 - `required: false`: Jobs run without the generator. Upstream SBOM
   referrers are still copied.
+
+Image mirrors also get `SBOM=False` with reason `NotConfigured`; with
+`required: false` a Warning Event `NotConfigured` too.
 
 Check: the target's `SBOMReady` condition.
 
@@ -790,6 +792,29 @@ Check: the target's `SBOMReady` condition.
 ```sh
 kubectl get clustermirrortarget registry \
   -o jsonpath='{.status.conditions[?(@.type=="SBOMReady")]}'
+```
+
+Check a mirror: its `SBOM` condition, set from each sync run.
+
+- `True`, reason `Attached`: every selected tag on the target has an SBOM.
+- `False`, reason `GenerationFailed`, `AttachFailed` or `Missing` (or
+  `NotConfigured`, above). The message lists the tags and digests, those
+  that were `not published:` first, then those `published without an
+  SBOM:`, cut at 1024 bytes. A tag that was not published also fails the
+  run, so `Synced` is `False` and the Job retries. `Ready` stays `True`.
+- Absent for Helm mirrors and targets without a policy.
+
+Each failing tag and digest gets one Warning Event `SBOMFailed` that says
+whether the tag was published. The counter
+`tagwarden_sbom_failures_total{target,reason,published}` counts the
+failures of every run (reasons `GenerationFailed`, `TooLarge`,
+`AttachFailed`, `SigningFailed`, `Missing`). Pods that use a generated
+mirror get `MirrorRefused` with `SBOMMissing` when one of its tags was not
+published for its SBOM.
+
+```sh
+kubectl get artifactmirror -n team-a app \
+  -o jsonpath='{.status.conditions[?(@.type=="SBOM")]}'
 ```
 
 Check an image on the target: list its SBOM referrers with
@@ -838,7 +863,7 @@ prometheus:
 Tagwarden metrics: `tagwarden_mirror_selected_tags`,
 `tagwarden_vulnerability_gate_unscanned`,
 `tagwarden_scanner_start_failures_total`,
-`tagwarden_sbom_not_configured`.
+`tagwarden_sbom_not_configured`, `tagwarden_sbom_failures_total`.
 
 ### Argo CD integration
 
