@@ -34,9 +34,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
@@ -53,7 +55,7 @@ type ClusterMirrorTargetReconciler struct {
 	// Namespace is the operator namespace that holds the referenced Secrets.
 	Namespace string
 	// Scanner holds the manager's --trivy-* flags, the defaults for gated
-	// targets.
+	// targets and SBOM generators.
 	Scanner ScannerConfig
 	// DeniedCIDRs are refused as scanner addresses unless the scanner host
 	// is a cluster Service name.
@@ -79,12 +81,14 @@ type probeResult struct {
 // +kubebuilder:rbac:groups=mirror.tagwarden.dev,resources=clustermirrortargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",namespace=system,resources=secrets,verbs=get;list;watch
 
-// Reconcile sets the Ready condition of a ClusterMirrorTarget.
+// Reconcile sets the Ready condition of a ClusterMirrorTarget and, when
+// enabled, the gate and SBOM conditions.
 func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var t mirrorv1alpha1.ClusterMirrorTarget
 	if err := r.Get(ctx, req.NamespacedName, &t); err != nil {
 		if apierrors.IsNotFound(err) {
 			gateUnscanned.DeleteLabelValues(req.Name)
+			sbomNotConfigured.DeleteLabelValues(req.Name)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -138,6 +142,11 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 		changed = meta.RemoveStatusCondition(&t.Status.Conditions, ConditionScannerReady) || changed
 		changed = meta.RemoveStatusCondition(&t.Status.Conditions, ConditionVulnerabilityDBReady) || changed
 	}
+	sbomChange, sbomChanged, err := r.setSBOMCondition(ctx, &t)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	changed = sbomChanged || changed
 	if !changed {
 		return res, nil
 	}
@@ -147,6 +156,13 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 	if newReason {
 		r.Recorder.Eventf(&t, nil, corev1.EventTypeWarning, reason, "Reconcile", "%s", msg)
 	}
+	if c := sbomChange; c != nil {
+		if c.Status == metav1.ConditionTrue {
+			r.Recorder.Eventf(&t, nil, corev1.EventTypeNormal, c.Type, "Reconcile", "%s", c.Message)
+		} else {
+			r.Recorder.Eventf(&t, nil, corev1.EventTypeWarning, c.Reason, "Reconcile", "%s", c.Message)
+		}
+	}
 	for _, c := range changes {
 		if c.Status == metav1.ConditionTrue {
 			r.Recorder.Eventf(&t, nil, corev1.EventTypeNormal, c.Type, "Probe", "%s", c.Message)
@@ -155,6 +171,36 @@ func (r *ClusterMirrorTargetReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 	}
 	return res, nil
+}
+
+// setSBOMCondition sets SBOMReady and the not-configured gauge of t, or
+// removes both when t has no SBOM policy. It returns the condition when
+// its status or reason changed, for the Event, and whether t changed.
+func (r *ClusterMirrorTargetReconciler) setSBOMCondition(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget) (*metav1.Condition, bool, error) {
+	p := sbomOf(t)
+	if p == nil {
+		sbomNotConfigured.DeleteLabelValues(t.Name)
+		return nil, meta.RemoveStatusCondition(&t.Status.Conditions, ConditionSBOMReady), nil
+	}
+	var targets []mirrorv1alpha1.ClusterMirrorTarget
+	if p.Required {
+		var list mirrorv1alpha1.ClusterMirrorTargetList
+		if err := r.List(ctx, &list); err != nil {
+			return nil, false, err
+		}
+		targets = list.Items
+	}
+	c := sbomCondition(t, targets, r.Scanner)
+	if c.Reason == ReasonNotConfigured {
+		sbomNotConfigured.WithLabelValues(t.Name).Set(1)
+	} else {
+		sbomNotConfigured.DeleteLabelValues(t.Name)
+	}
+	var change *metav1.Condition
+	if prev := meta.FindStatusCondition(t.Status.Conditions, c.Type); prev == nil || prev.Status != c.Status || prev.Reason != c.Reason {
+		change = &c
+	}
+	return change, meta.SetStatusCondition(&t.Status.Conditions, c), nil
 }
 
 // scanner returns the ScannerReady and VulnerabilityDBReady conditions of
@@ -473,6 +519,8 @@ func (r *ClusterMirrorTargetReconciler) SetupWithManager(mgr ctrl.Manager) error
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mirrorv1alpha1.ClusterMirrorTarget{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.targetsForSecret)).
+		Watches(&mirrorv1alpha1.ClusterMirrorTarget{}, handler.EnqueueRequestsFromMapFunc(r.targetsWithRequiredSBOM),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("clustermirrortarget").
 		Complete(r)
 }

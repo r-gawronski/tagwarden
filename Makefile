@@ -323,7 +323,7 @@ helm: manifests kustomize kubebuilder ## Regenerate the Helm chart in dist/chart
 	sed -i.bak 's#^        image: ".*manager\.image\.repository.*$$#        image: {{ include "tagwarden.managerImage" . | quote }}#' dist/chart/templates/manager/manager.yaml
 	rm dist/chart/templates/manager/manager.yaml.bak
 	grep -q 'include "tagwarden.managerImage"' dist/chart/templates/manager/manager.yaml
-	@# Add the gate flags in front of manager.args, only when trivy.enabled.
+	@# Add the Trivy flags in front of manager.args (see tagwarden.trivyManagerArgs).
 	sed -i.bak 's#^        {{- range .Values.manager.args }}$$#        {{- with (include "tagwarden.trivyManagerArgs" .) }}{{ . | nindent 8 }}{{ end }}{{- range .Values.manager.args }}#' dist/chart/templates/manager/manager.yaml
 	rm dist/chart/templates/manager/manager.yaml.bak
 	grep -q 'include "tagwarden.trivyManagerArgs"' dist/chart/templates/manager/manager.yaml
