@@ -163,7 +163,8 @@ var _ = Describe("SBOM generation", Ordered, Label("sbom"), func() {
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(string(mirror))
 		_, err := utils.Run(cmd)
-		Expect(err).To(MatchError(ContainSubstring(`unknown field "spec.sbom"`)))
+		// utils.Run quotes the output, so match without the quotes.
+		Expect(err).To(MatchError(And(ContainSubstring("strict decoding error: unknown field"), ContainSubstring("spec.sbom"))))
 
 		By("checking that the spec the sync Job reads carries the target policy")
 		out, err := utils.Run(exec.Command("kubectl", "get", "configmap", cronJobName(e2eTeam, "sbom-app"), "-n", namespace,
