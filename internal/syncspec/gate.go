@@ -51,8 +51,10 @@ const (
 // sha256:<hex> the sync container removes out/<hex>.json and out/<hex>.exit,
 // then creates req/<hex>.ready. The sidecar removes the .ready file, runs
 // the Trivy client on LayoutDir@sha256:<hex>, writes the report to
-// out/<hex>.json and then, last, the exit code to out/<hex>.exit. At start it
-// writes `trivy version --format json` to version.json.
+// out/<hex>.json and then, last, the exit code to out/<hex>.exit. An SBOM
+// request is req/<hex>.<format>, with format cyclonedx or spdx-json, and
+// its answer out/<hex>.<format>.json and out/<hex>.<format>.exit. At start
+// the sidecar writes `trivy version --format json` to version.json.
 const (
 	ScanReqDir      = "req"
 	ScanOutDir      = "out"
@@ -73,36 +75,57 @@ const (
 	ScannerTemplateEnv = "TAGWARDEN_REPORT_TEMPLATE"
 )
 
-// SidecarScript is the fixed shell loop of the scanner sidecar, run with
-// /bin/sh -c. It handles one request at a time and only names that are 64
-// lower-case hex characters. The token comes from TRIVY_TOKEN. The hex check
-// lists the characters: a range such as [0-9a-f] depends on the locale and
-// can match upper case. The sync container can write the working directory
-// /scan, so --config and --ignorefile point at /dev/null: a planted
-// trivy.yaml or .trivyignore there is never read.
+// SidecarScript is the fixed shell loop of the scanner and SBOM sidecar,
+// run with /bin/sh -c. It handles one request at a time and only names that
+// are 64 lower-case hex characters with a known suffix: .ready asks for a
+// vulnerability scan (ignored without TAGWARDEN_SCANNER_URL), .cyclonedx
+// and .spdx-json for an SBOM (ignored without TAGWARDEN_SBOM_TIMEOUT). The
+// SBOM format comes from a case on the suffix, never from file content. The
+// token comes from TRIVY_TOKEN. The hex check lists the characters: a range
+// such as [0-9a-f] depends on the locale and can match upper case. The sync
+// container can write the working directory /scan, so --config and
+// --ignorefile point at /dev/null: a planted trivy.yaml or .trivyignore
+// there is never read. SBOM generation needs no network and no
+// vulnerability DB; --cache-backend memory keeps the layer cache out of the
+// scan volume.
 const SidecarScript = `set -u
 cd /scan || exit 1
 mkdir -p req out cache
 trivy version --format json > version.json.tmp 2>/dev/null && mv -f version.json.tmp version.json
 java='--skip-files=**/*.jar,**/*.war,**/*.ear,**/*.par'
-if [ "$TAGWARDEN_JAVA_DB" = PerJob ]; then java='--cache-dir=/scan/cache'; fi
+if [ "${TAGWARDEN_JAVA_DB:-}" = PerJob ]; then java='--cache-dir=/scan/cache'; fi
 ca=''
 if [ -f /var/run/tagwarden/scanner-ca/ca.crt ]; then ca='--cacert=/var/run/tagwarden/scanner-ca/ca.crt'; fi
 while :; do
-  for r in req/*.ready; do
+  for r in req/*; do
     [ -f "$r" ] || continue
-    h=${r#req/}
-    h=${h%.ready}
+    n=${r#req/}
     rm -f "$r"
+    h=${n%%.*}
+    case ${n#"$h"} in
+      .ready) [ -n "${TAGWARDEN_SCANNER_URL:-}" ] || continue; f='' ;;
+      .cyclonedx) [ -n "${TAGWARDEN_SBOM_TIMEOUT:-}" ] || continue; f=cyclonedx ;;
+      .spdx-json) [ -n "${TAGWARDEN_SBOM_TIMEOUT:-}" ] || continue; f=spdx-json ;;
+      *) continue ;;
+    esac
     case $h in *[!0123456789abcdef]*) continue ;; esac
     [ ${#h} -eq 64 ] || continue
-    trivy image --server "$TAGWARDEN_SCANNER_URL" --token-header Trivy-Token \
-      --input "/work/layout@sha256:$h" --scanners vuln \
-      --skip-db-update --skip-java-db-update --skip-version-check --disable-telemetry \
-      --timeout "$TAGWARDEN_SCANNER_TIMEOUT" --config /dev/null --ignorefile /dev/null "$java" $ca \
-      --format template --template "$TAGWARDEN_REPORT_TEMPLATE" > "out/$h.json"
-    echo $? > "out/$h.exit.tmp"
-    mv -f "out/$h.exit.tmp" "out/$h.exit"
+    if [ -z "$f" ]; then
+      o=out/$h
+      trivy image --server "$TAGWARDEN_SCANNER_URL" --token-header Trivy-Token \
+        --input "/work/layout@sha256:$h" --scanners vuln \
+        --skip-db-update --skip-java-db-update --skip-version-check --disable-telemetry \
+        --timeout "$TAGWARDEN_SCANNER_TIMEOUT" --config /dev/null --ignorefile /dev/null "$java" $ca \
+        --format template --template "$TAGWARDEN_REPORT_TEMPLATE" > "$o.json"
+    else
+      o=out/$h.$f
+      trivy image --input "/work/layout@sha256:$h" --format "$f" \
+        --skip-db-update --skip-java-db-update --offline-scan --skip-version-check \
+        --disable-telemetry --cache-backend memory --timeout "$TAGWARDEN_SBOM_TIMEOUT" \
+        --config /dev/null --ignorefile /dev/null "$java" > "$o.json"
+    fi
+    echo $? > "$o.exit.tmp"
+    mv -f "$o.exit.tmp" "$o.exit"
   done
   sleep 1
 done
@@ -397,18 +420,5 @@ func (s GateScanner) validate(target name.Repository) error {
 	if s.Timeout.Duration <= 0 || s.Timeout.Duration > time.Hour {
 		return errors.New("timeout: must be positive and at most 1h")
 	}
-	switch s.JavaDB {
-	case v1alpha1.JavaDBDisabled:
-	case v1alpha1.JavaDBPerJob:
-		ref, err := name.NewTag(s.JavaDBRepository, name.StrictValidation)
-		if err != nil {
-			return fmt.Errorf("javaDBRepository: %w", err)
-		}
-		if CanonicalRegistry(ref.RegistryStr()) != CanonicalRegistry(target.RegistryStr()) {
-			return errors.New("javaDBRepository: must be in the target registry")
-		}
-	default:
-		return fmt.Errorf("javaDB: unknown value %q", s.JavaDB)
-	}
-	return nil
+	return validateJavaDB(s.JavaDB, s.JavaDBRepository, target)
 }
