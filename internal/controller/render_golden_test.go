@@ -27,6 +27,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -126,4 +127,57 @@ func goldenScheme(t *testing.T) *runtime.Scheme {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// TestGatedRenderGolden pins the CronJob and spec of gated mirrors. The
+// golden files were written before SBOM rendering existed, so a diff means
+// gated Jobs of targets without an SBOM policy no longer render as before.
+func TestGatedRenderGolden(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target func(*mirrorv1alpha1.ClusterMirrorTarget)
+	}{
+		{name: "plain"},
+		{name: "perjob-external", target: func(tg *mirrorv1alpha1.ClusterMirrorTarget) {
+			tg.Spec.AutoMirror.VulnerabilityGate.Scanner = &mirrorv1alpha1.ScannerSpec{
+				URL: externalScanner, Image: trivyImage, Version: trivyVersion,
+				JavaDB: mirrorv1alpha1.JavaDBPerJob, JavaDBRepository: "registry.example.internal:8443/platform/trivy-java-db:1",
+				Storage:           new(resource.MustParse("30Gi")),
+				TokenSecretRef:    &mirrorv1alpha1.TokenSecretKeyRef{Name: externalToken},
+				CABundleSecretRef: &mirrorv1alpha1.SecretKeyRef{Name: "scanner-ca", Key: caKey},
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tg, m := gatedFixture(mirrorv1alpha1.VulnerabilityGate{Enabled: true, Action: mirrorv1alpha1.GateActionBlock})
+			if tc.target != nil {
+				tc.target(tg)
+			}
+			cj, _ := renderGated(t, reconcilerWith(t), tg, m)
+			checkGolden(t, "gated-"+tc.name, map[string]any{"cronJob": cj})
+		})
+	}
+}
+
+// checkGolden compares v as indented JSON with testdata/<name>.golden.json.
+func checkGolden(t *testing.T, name string, v any) {
+	t.Helper()
+	got, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+	file := filepath.Join("testdata", name+".golden.json")
+	if *updateGolden {
+		if err := os.WriteFile(file, got, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(file) //nolint:gosec // fixed test data path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("render differs from %s:\n%s", file, got)
+	}
 }
