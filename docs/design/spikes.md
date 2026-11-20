@@ -1,6 +1,6 @@
 # Phase 0 spike results
 
-Status: spikes 1, 2 and 3 finished. Vulnerability gate spike (#21) finished, see the last section.
+Status: spikes 1, 2 and 3 finished. Vulnerability gate spike (#21) and SBOM spike (#69, step 0) finished, see the last sections.
 
 ## Environment
 
@@ -349,3 +349,55 @@ Warm server cache: alpine 0.5 s, tomcat 0.6 s. Concurrency not measured.
   descriptor per child and scan by digest.
 - No in-process TLS on the server.
 - A version mismatch is not detected by Trivy.
+
+## SBOM: Trivy SBOM from an OCI layout -- WORKS
+
+Measured 2026-11-20 for `docs/design/sbom.md` step 0.
+
+- Trivy 0.76.2, `aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb`.
+- Container: `--network none`, read-only root, `HOME` set to a writable
+  directory, layout mounted read-only.
+- Command:
+
+```
+trivy image --input /work/layout@sha256:<child digest> --format cyclonedx|spdx-json \
+  --skip-db-update --skip-java-db-update --offline-scan --skip-version-check \
+  --disable-telemetry --config /dev/null --ignorefile /dev/null
+```
+
+No vulnerability DB and no network are needed. With an SBOM format Trivy
+logs that it does not run the vulnerability scanner.
+
+### Size, time and memory
+
+| Image (linux/amd64) | Format | Version | Entries | Size | Time | RSS |
+|---|---|---|---|---|---|---|
+| nginx:1.29-alpine | CycloneDX | 1.7 | 73 components | 125,701 B | < 1 s | ~29 MiB |
+| nginx:1.29-alpine | SPDX | SPDX-2.3, `SPDXRef-DOCUMENT` | 74 packages | 169,960 B | < 1 s | ~29 MiB |
+| tomcat:11-jre21, JARs skipped | CycloneDX | 1.7 | 154 components | 348,260 B | - | - |
+
+The 64 MiB cap leaves a wide margin.
+
+### Java DB
+
+Without a Java DB, tomcat:11-jre21 exits FATAL: "The first run cannot skip
+downloading Java DB". With
+`--skip-files=**/*.jar,**/*.war,**/*.ear,**/*.par` it exits 0 and the
+SBOM lists no JAR content, as in the gate. So SBOM generation needs the
+same two modes as the gate: skip JARs (`javaDB: Disabled`) or a Java DB per
+Job.
+
+### Layer cache
+
+Standalone Trivy writes a layer analysis cache under `$HOME/.cache/trivy`
+(512 KiB for nginx:1.29-alpine). In the sidecar `HOME` is the 64 MiB scan
+volume, shared with the SBOM files, and the cache grows with every image
+of a run. `--cache-backend memory` (marked experimental in 0.76) writes
+nothing besides the output and gives the same SBOM. The sidecar uses it.
+
+### Registries
+
+Harbor 2.15.4 serves `/v2/<repo>/referrers/<digest>` (401 without auth, so
+the route exists). The in-process go-containerregistry registry is tested
+with and without the referrers API. Other registries of the design list
+and the signing questions of step 0 are left for steps 6 and 8.
