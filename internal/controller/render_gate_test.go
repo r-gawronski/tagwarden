@@ -135,7 +135,7 @@ func TestGatedRender(t *testing.T) {
 	if sc.Name != scannerContainer || sc.Image != trivyImage || ptr.Deref(sc.RestartPolicy, "") != corev1.ContainerRestartPolicyAlways {
 		t.Errorf("sidecar = %s %s %v", sc.Name, sc.Image, sc.RestartPolicy)
 	}
-	if !slices.Equal(sc.Command, []string{"/bin/sh", "-c", syncspec.SidecarScript}) || sc.Args != nil {
+	if !slices.Equal(sc.Command, sidecarCommand) || sc.Args != nil {
 		t.Errorf("sidecar command = %q args %q", sc.Command, sc.Args)
 	}
 	if !equality.Semantic.DeepEqual(sc.SecurityContext, sync.SecurityContext) {
@@ -234,7 +234,7 @@ func TestGatedRenderTargetScanner(t *testing.T) {
 		CABundleSecretRef: &mirrorv1alpha1.SecretKeyRef{Name: "external-ca", Key: "ca.pem"},
 		TokenSecretRef:    &mirrorv1alpha1.TokenSecretKeyRef{Name: externalToken, Key: "t"},
 		Image:             "registry.example.internal/trivy" + trivyDigest, Version: "0.76.2",
-		JavaDB: mirrorv1alpha1.JavaDBPerJob, JavaDBRepository: "registry.example.internal:8443/platform/trivy-java-db:1",
+		JavaDB: mirrorv1alpha1.JavaDBPerJob, JavaDBRepository: testJavaDBRepo,
 		Timeout: duration(5 * time.Minute), Storage: &storage, Resources: &limits,
 	}})
 	cj, spec := renderGated(t, reconcilerWith(t), tg, m)

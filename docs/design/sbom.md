@@ -1,6 +1,6 @@
 # SBOM generation and enforcement for mirrored images
 
-Status: Approved (2026-11-04), step 0 done, steps 1 to 3 implemented. Issue #69. Builds on the vulnerability gate (#21,
+Status: Approved (2026-11-04), step 0 done, steps 1 to 4 implemented. Issue #69. Builds on the vulnerability gate (#21,
 `docs/design/vulnerability-gate.md`) and reuses its Trivy sidecar.
 
 ## Goal
@@ -512,8 +512,8 @@ Each step is a PR with tests first.
      tags this one would not: no policy or `Disabled`, `required: false`,
      another format, or `PreferUpstream` under `Generate`. Targets being
      deleted are ignored.
-   - Until step 3 the `SBOMReady` messages end with "sync Jobs do not
-     generate or require SBOMs yet", so a `True` condition is not read as
+   - Until step 4 the `SBOMReady` messages ended with "sync Jobs do not
+     generate or require SBOMs yet", so a `True` condition was not read as
      enforcement.
    - `--trivy-image` and `--trivy-version` are valid without
      `--trivy-url`. A gated target with its own `scanner.url` and no
@@ -555,9 +555,30 @@ Each step is a PR with tests first.
      `published: true` and never fail the run.
    - Threat model rows are T40 and T41: T38 and T39 were taken when this
      design was approved.
-4. **Rendering.** `sbom` sidecar for SBOM Jobs, shared `scanner` sidecar for
+4. **Rendering.** Done. `sbom` sidecar for SBOM Jobs, shared `scanner` sidecar for
    gated Jobs, `securityDrift`, `NotConfigured` handling. Golden test:
-   Jobs of targets without an SBOM policy render byte for byte as before.
+   Jobs of targets without an SBOM policy render byte for byte as before. Notes from the implementation:
+   - A gated Job generates with the gate scanner's image, version,
+     `javaDB` and `javaDBRepository`, whatever `sbom.generator` says for
+     them: the Job requires one sidecar and one Java DB mode, and the gate
+     settings are part of its policy fingerprint. The CEL rule already
+     makes explicit images equal. `generator.timeout` still applies, and
+     the work volume takes the larger of `scanner.storage` and
+     `generator.storage`. The sidecar keeps the scanner resources.
+   - The `NotConfigured` check uses the generator of the target or the
+     manager flags only, like `SBOMReady`, also for gated Jobs whose
+     scanner has its own image. Target condition and mirror behaviour so
+     always agree.
+   - An `sbom` sidecar that does not start is handled like the scanner
+     (Job deleted, Event `ScannerUnavailable`, counter), but does not set
+     the `VulnerabilityGate` condition. The mirror condition comes with
+     step 5.
+   - Re-scan Jobs stay gated only.
+   - The `SBOMReady` messages lose the "not yet" note in this step, not
+     step 5: from here on Jobs do generate. A `NotConfigured` message
+     says what happens to the mirrors.
+   - Golden files for gated Jobs were added before the change, so both
+     gated and ungated Jobs without a policy are pinned.
 5. **Status, Events, metrics, pod relay.** Envtest.
 6. **e2e on kind.** `Generate` attaches a CycloneDX referrer per platform
    of a multi-arch image; `required: true` with a failing generator

@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
 const sbomRegistry = "sbom.example.internal"
@@ -171,13 +173,17 @@ func TestSBOMCondition(t *testing.T) {
 
 	c := sbomCondition(strict, []mirrorv1alpha1.ClusterMirrorTarget{*strict}, suiteScanner)
 	if c.Status != metav1.ConditionTrue || c.Reason != ReasonReady || c.ObservedGeneration != 3 ||
-		!strings.Contains(c.Message, "mode Generate, format CycloneDX, required true, generator trivy/"+trivyVersion) ||
-		!strings.HasSuffix(c.Message, sbomNotApplied) {
+		c.Message != "mode Generate, format CycloneDX, required true, generator trivy/"+trivyVersion {
 		t.Errorf("ready: %+v", c)
 	}
 	c = sbomCondition(strict, nil, ScannerConfig{})
-	if c.Status != metav1.ConditionFalse || c.Reason != ReasonNotConfigured || !strings.Contains(c.Message, "sbom.generator.image") {
+	if c.Status != metav1.ConditionFalse || c.Reason != ReasonNotConfigured || !strings.Contains(c.Message, "sbom.generator.image") ||
+		!strings.HasSuffix(c.Message, "; image mirrors get no CronJob") {
 		t.Errorf("not configured: %+v", c)
+	}
+	optional := sbomTarget("optional", &mirrorv1alpha1.SBOMPolicy{Mode: mirrorv1alpha1.SBOMModeGenerate}, "shared")
+	if c = sbomCondition(optional, nil, ScannerConfig{}); !strings.HasSuffix(c.Message, "; Jobs run without the generator") {
+		t.Errorf("not configured, optional: %+v", c)
 	}
 	// Not configured wins over a weaker target.
 	c = sbomCondition(strict, []mirrorv1alpha1.ClusterMirrorTarget{*strict, *open}, ScannerConfig{})
@@ -412,6 +418,48 @@ var _ = Describe("SBOM policy", func() {
 				Scanner: &mirrorv1alpha1.ScannerSpec{Image: trivyImage, Version: nextVersion}}}
 		}, "must equal autoMirror.vulnerabilityGate.scanner image and version"),
 	)
+
+	It("renders the generator into the Jobs of image mirrors only", func() {
+		tg := createReadyTarget("sbom-render", func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.SBOM = required(mirrorv1alpha1.SBOMModeGenerate, mirrorv1alpha1.SBOMFormatSPDX)
+		})
+		DeferCleanup(k8sClient.Delete, ctx, tg)
+		image := newMirror(teamA, "sbom-image")
+		image.Spec.TargetRef = tg.Name
+		helm := newMirror(teamA, "sbom-helm")
+		helm.Spec.TargetRef, helm.Spec.Type = tg.Name, mirrorv1alpha1.ArtifactTypeHelmOCI
+		helm.Spec.Target.Repository, helm.Spec.RequiredPlatforms = "charts/pause", nil
+		createMirror(image)
+		createMirror(helm)
+		sidecars := func(m *mirrorv1alpha1.ArtifactMirror) func() []string {
+			return func() []string {
+				cj, err := cronJob(m)()
+				if err != nil {
+					return []string{err.Error()}
+				}
+				pod := cj.Spec.JobTemplate.Spec.Template
+				out := []string{"label=" + pod.Labels[LabelSBOM]}
+				for _, c := range pod.Spec.InitContainers {
+					out = append(out, c.Name+"="+c.Image)
+				}
+				return out
+			}
+		}
+		Eventually(sidecars(image)).Should(Equal([]string{"label=" + SBOMTrivy, sbomContainer + "=" + trivyImage}))
+		Eventually(sidecars(helm)).Should(Equal([]string{"label="}))
+		var cm corev1.ConfigMap
+		Expect(k8sClient.Get(ctx, objectKey(image), &cm)).To(Succeed())
+		spec, err := syncspec.Decode(strings.NewReader(cm.Data[specKey]))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spec.SBOM).To(HaveField("Format", mirrorv1alpha1.SBOMFormatSPDX))
+		Expect(spec.SBOM).To(HaveField("Required", true))
+
+		By("rendering as before when the policy is turned off")
+		update(tg.Name, func(t *mirrorv1alpha1.ClusterMirrorTarget) {
+			t.Spec.SBOM = &mirrorv1alpha1.SBOMPolicy{Mode: mirrorv1alpha1.SBOMModeDisabled}
+		})
+		Eventually(sidecars(image)).Should(Equal([]string{"label="}))
+	})
 
 	It("accepts a full policy with a matching scanner image", func() {
 		obj := sbomTarget("sbom-full", required(mirrorv1alpha1.SBOMModePreferUpstream, mirrorv1alpha1.SBOMFormatSPDX), "shared")

@@ -47,7 +47,7 @@ feature; the other lines are the minimum the object needs.
 | [Vulnerability gate](#vulnerability-gate) | platform | off | ClusterMirrorTarget `spec.autoMirror.vulnerabilityGate`, chart `trivy` |
 | [Re-scan and untag](#re-scan-and-untag) | platform | off | ClusterMirrorTarget `vulnerabilityGate.rescanInterval`, `onVulnerableTag` |
 | [Vulnerability exceptions](#vulnerability-exceptions) | security | none | `VulnerabilityException` |
-| [SBOM policy](#sbom-policy) (preview: API only) | platform | `Disabled` | ClusterMirrorTarget `spec.sbom`, chart `trivy.image` |
+| [SBOM policy](#sbom-policy) (preview) | platform | `Disabled` | ClusterMirrorTarget `spec.sbom`, chart `trivy.image` |
 | [Signatures and referrers](#signatures-and-referrers) | - | always on | - |
 | [Metrics](#metrics) | platform | on | chart `metrics`, `prometheus` |
 | [Audit log](#audit-log) | - | always on | sync Job stdout |
@@ -699,15 +699,25 @@ exception, and `status.gate.accepted` lists the uses. More:
 
 ### SBOM policy
 
-Owner: platform. `Disabled`. Preview: this release adds the API and the
-`SBOMReady` condition only. **Sync Jobs do not generate, attach or require
-SBOMs yet**, also with `required: true`; the condition message says so.
+Owner: platform. `Disabled`. Preview: sync Jobs generate and attach
+SBOMs, but mirror status, Events and metrics for SBOM failures come in a
+later release; until then the Job's audit line and exit code report them.
 Design and plan: [design/sbom.md](design/sbom.md), issue #69.
 
 The policy covers every `Image` mirror of the target, user-defined and
-generated. `ArtifactMirror` has no SBOM field, so a tenant cannot turn it
-off. The generator is a Trivy sidecar that needs no network, no
-vulnerability DB and no Secret.
+generated. Helm mirrors on the same target are not affected.
+`ArtifactMirror` has no SBOM field, so a tenant cannot turn it off. The
+generator is a Trivy sidecar that needs no network, no vulnerability DB and
+no Secret.
+
+Each image child gets an SBOM as an OCI 1.1 referrer: `subject` is the
+child digest, `artifactType` is `application/vnd.cyclonedx+json` or
+`application/spdx+json`. A multi-arch index also gets one copy per child,
+so tools that resolve the tag find them. The annotation
+`dev.tagwarden.sbom.generator` marks a generated SBOM. With
+`required: true` a new tag whose SBOMs cannot all be made and attached is
+not published and the Job fails, so it retries. Tags already published are
+never untagged; missing SBOMs are attached on the next run.
 
 ```yaml
 apiVersion: mirror.tagwarden.dev/v1alpha1
@@ -745,7 +755,25 @@ trivy:
 ```
 
 When `autoMirror.vulnerabilityGate.scanner.image` is also set,
-`sbom.generator` must use the same image and version.
+`sbom.generator` must use the same image and version. A gated Job runs one
+Trivy sidecar for both: it generates SBOMs with the scanner's image,
+version and `javaDB` mode, and its work volume takes the larger of
+`scanner.storage` and `generator.storage`.
+
+The sync pod of an SBOM mirror gets a native sidecar named `sbom` (or the
+gated `scanner`) and the label `tagwarden.dev/sbom: trivy`. It needs no
+NetworkPolicy rule. A sidecar that does not start within
+`--scanner-start-timeout` gets its Job deleted with nothing copied, a
+Warning Event `ScannerUnavailable` and a count in
+`tagwarden_scanner_start_failures_total`.
+
+Without a generator image (`SBOMReady` reason `NotConfigured`):
+
+- `required: true`: image mirrors of the target get `Ready=False` with
+  reason `SBOMNotConfigured`, a Warning Event and no CronJob. Nothing is
+  copied.
+- `required: false`: Jobs run without the generator. Upstream SBOM
+  referrers are still copied.
 
 Check: the target's `SBOMReady` condition.
 
@@ -762,6 +790,19 @@ Check: the target's `SBOMReady` condition.
 ```sh
 kubectl get clustermirrortarget registry \
   -o jsonpath='{.status.conditions[?(@.type=="SBOMReady")]}'
+```
+
+Check an image on the target: list its SBOM referrers with
+[oras](https://oras.land) and read one. On a registry without the
+referrers API, `crane ls` shows the `sha256-<hex>` fallback tag that lists
+them.
+
+```sh
+oras discover --format tree registry.example.internal/shared/docker.io/library/nginx:1.27
+oras discover --format json --artifact-type application/vnd.cyclonedx+json \
+  registry.example.internal/shared/docker.io/library/nginx:1.27
+oras pull -o sbom registry.example.internal/shared/docker.io/library/nginx@sha256:<referrer digest>
+crane ls registry.example.internal/shared/docker.io/library/nginx | grep '^sha256-'
 ```
 
 ## Always on

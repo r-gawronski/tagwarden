@@ -1,0 +1,384 @@
+{
+  "cronJob": {
+    "metadata": {
+      "name": "team-a-auto-11cf7d7efd22a5b3-f91cd2bc",
+      "labels": {
+        "app.kubernetes.io/managed-by": "tagwarden",
+        "tagwarden.dev/egress": "proxy",
+        "tagwarden.dev/mirror": "f91cd2bcf660fbe5611a",
+        "tagwarden.dev/scanner": "trivy",
+        "tagwarden.dev/target": "gated"
+      },
+      "annotations": {
+        "tagwarden.dev/cronjob-checksum": "adc97b41e5f22521fd71131eee1bd5c5742771f880289ef6dc7ee34807d500b5",
+        "tagwarden.dev/mirror-name": "auto-11cf7d7efd22a5b3",
+        "tagwarden.dev/mirror-namespace": "team-a"
+      }
+    },
+    "spec": {
+      "schedule": "0 3 * * *",
+      "startingDeadlineSeconds": 300,
+      "concurrencyPolicy": "Forbid",
+      "suspend": false,
+      "jobTemplate": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "tagwarden",
+            "tagwarden.dev/egress": "proxy",
+            "tagwarden.dev/mirror": "f91cd2bcf660fbe5611a",
+            "tagwarden.dev/scanner": "trivy",
+            "tagwarden.dev/target": "gated"
+          },
+          "annotations": {
+            "tagwarden.dev/mirror-name": "auto-11cf7d7efd22a5b3",
+            "tagwarden.dev/mirror-namespace": "team-a"
+          }
+        },
+        "spec": {
+          "activeDeadlineSeconds": 3600,
+          "podFailurePolicy": {
+            "rules": [
+              {
+                "action": "FailJob",
+                "onExitCodes": {
+                  "containerName": "sync",
+                  "operator": "In",
+                  "values": [
+                    3
+                  ]
+                }
+              }
+            ]
+          },
+          "backoffLimit": 2,
+          "template": {
+            "metadata": {
+              "labels": {
+                "app.kubernetes.io/managed-by": "tagwarden",
+                "tagwarden.dev/egress": "proxy",
+                "tagwarden.dev/mirror": "f91cd2bcf660fbe5611a",
+                "tagwarden.dev/scanner": "trivy",
+                "tagwarden.dev/target": "gated"
+              },
+              "annotations": {
+                "tagwarden.dev/mirror-name": "auto-11cf7d7efd22a5b3",
+                "tagwarden.dev/mirror-namespace": "team-a",
+                "tagwarden.dev/spec-checksum": "d6b77c56238f5a5b4883edbc86f418b5f24b65871177b2410f5d3b1fec968111"
+              }
+            },
+            "spec": {
+              "volumes": [
+                {
+                  "name": "spec",
+                  "configMap": {
+                    "name": "team-a-auto-11cf7d7efd22a5b3-f91cd2bc",
+                    "items": [
+                      {
+                        "key": "spec.json",
+                        "path": "spec.json"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "target-auth",
+                  "secret": {
+                    "secretName": "registry-push",
+                    "items": [
+                      {
+                        "key": ".dockerconfigjson",
+                        "path": ".dockerconfigjson"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "tmp",
+                  "emptyDir": {}
+                },
+                {
+                  "name": "target-ca",
+                  "secret": {
+                    "secretName": "registry-ca",
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "client-cert",
+                  "secret": {
+                    "secretName": "registry-client-tls",
+                    "items": [
+                      {
+                        "key": "tls.crt",
+                        "path": "tls.crt"
+                      },
+                      {
+                        "key": "tls.key",
+                        "path": "tls.key"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "proxy-ca",
+                  "secret": {
+                    "secretName": "proxy-ca",
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                },
+                {
+                  "name": "work",
+                  "emptyDir": {
+                    "sizeLimit": "30Gi"
+                  }
+                },
+                {
+                  "name": "scan",
+                  "emptyDir": {
+                    "sizeLimit": "3Gi"
+                  }
+                },
+                {
+                  "name": "scanner-ca",
+                  "secret": {
+                    "secretName": "scanner-ca",
+                    "items": [
+                      {
+                        "key": "ca.crt",
+                        "path": "ca.crt"
+                      }
+                    ],
+                    "defaultMode": 288
+                  }
+                }
+              ],
+              "initContainers": [
+                {
+                  "name": "scanner",
+                  "image": "registry.example.internal/platform/ghcr.io/aquasecurity/trivy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "command": [
+                    "/bin/sh",
+                    "-c",
+                    "set -u\ncd /scan || exit 1\nmkdir -p req out cache\ntrivy version --format json \u003e version.json.tmp 2\u003e/dev/null \u0026\u0026 mv -f version.json.tmp version.json\njava='--skip-files=**/*.jar,**/*.war,**/*.ear,**/*.par'\nif [ \"${TAGWARDEN_JAVA_DB:-}\" = PerJob ]; then java='--cache-dir=/scan/cache'; fi\nca=''\nif [ -f /var/run/tagwarden/scanner-ca/ca.crt ]; then ca='--cacert=/var/run/tagwarden/scanner-ca/ca.crt'; fi\nwhile :; do\n  for r in req/*; do\n    [ -f \"$r\" ] || continue\n    n=${r#req/}\n    rm -f \"$r\"\n    h=${n%%.*}\n    case ${n#\"$h\"} in\n      .ready) [ -n \"${TAGWARDEN_SCANNER_URL:-}\" ] || continue; f='' ;;\n      .cyclonedx) [ -n \"${TAGWARDEN_SBOM_TIMEOUT:-}\" ] || continue; f=cyclonedx ;;\n      .spdx-json) [ -n \"${TAGWARDEN_SBOM_TIMEOUT:-}\" ] || continue; f=spdx-json ;;\n      *) continue ;;\n    esac\n    case $h in *[!0123456789abcdef]*) continue ;; esac\n    [ ${#h} -eq 64 ] || continue\n    if [ -z \"$f\" ]; then\n      o=out/$h\n      trivy image --server \"$TAGWARDEN_SCANNER_URL\" --token-header Trivy-Token \\\n        --input \"/work/layout@sha256:$h\" --scanners vuln \\\n        --skip-db-update --skip-java-db-update --skip-version-check --disable-telemetry \\\n        --timeout \"$TAGWARDEN_SCANNER_TIMEOUT\" --config /dev/null --ignorefile /dev/null \"$java\" $ca \\\n        --format template --template \"$TAGWARDEN_REPORT_TEMPLATE\" \u003e \"$o.json\"\n    else\n      o=out/$h.$f\n      trivy image --input \"/work/layout@sha256:$h\" --format \"$f\" \\\n        --skip-db-update --skip-java-db-update --offline-scan --skip-version-check \\\n        --disable-telemetry --cache-backend memory --timeout \"$TAGWARDEN_SBOM_TIMEOUT\" \\\n        --config /dev/null --ignorefile /dev/null \"$java\" \u003e \"$o.json\"\n    fi\n    echo $? \u003e \"$o.exit.tmp\"\n    mv -f \"$o.exit.tmp\" \"$o.exit\"\n  done\n  sleep 1\ndone\n"
+                  ],
+                  "env": [
+                    {
+                      "name": "TAGWARDEN_SCANNER_URL",
+                      "value": "https://trivy.scanners.example.internal.:4954"
+                    },
+                    {
+                      "name": "TAGWARDEN_SCANNER_TIMEOUT",
+                      "value": "10m0s"
+                    },
+                    {
+                      "name": "TAGWARDEN_JAVA_DB",
+                      "value": "PerJob"
+                    },
+                    {
+                      "name": "TAGWARDEN_REPORT_TEMPLATE",
+                      "value": "[{{- $f := true -}}{{- range . -}}{{- range .Vulnerabilities -}}{{- if $f }}{{ $f = false }}{{ else }},{{ end -}}\n{\"id\":\"{{ .VulnerabilityID | escapeString }}\",\"pkg\":\"{{ .PkgName | escapeString }}\",\"ver\":\"{{ .InstalledVersion | escapeString }}\",\"fix\":\"{{ .FixedVersion | escapeString }}\",\"sev\":\"{{ .Severity }}\",\"status\":\"{{ .Status }}\"}\n{{- end -}}{{- end -}}]\n"
+                    },
+                    {
+                      "name": "HOME",
+                      "value": "/scan"
+                    },
+                    {
+                      "name": "TMPDIR",
+                      "value": "/scan"
+                    },
+                    {
+                      "name": "NO_PROXY",
+                      "value": "*"
+                    },
+                    {
+                      "name": "TRIVY_TOKEN",
+                      "valueFrom": {
+                        "secretKeyRef": {
+                          "name": "external-token",
+                          "key": "token",
+                          "optional": true
+                        }
+                      }
+                    }
+                  ],
+                  "resources": {
+                    "limits": {
+                      "cpu": "2",
+                      "memory": "2Gi"
+                    },
+                    "requests": {
+                      "cpu": "100m",
+                      "memory": "256Mi"
+                    }
+                  },
+                  "restartPolicy": "Always",
+                  "volumeMounts": [
+                    {
+                      "name": "work",
+                      "readOnly": true,
+                      "mountPath": "/work"
+                    },
+                    {
+                      "name": "scan",
+                      "mountPath": "/scan"
+                    },
+                    {
+                      "name": "scanner-ca",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/scanner-ca"
+                    }
+                  ],
+                  "terminationMessagePolicy": "File",
+                  "securityContext": {
+                    "capabilities": {
+                      "drop": [
+                        "ALL"
+                      ]
+                    },
+                    "readOnlyRootFilesystem": true,
+                    "allowPrivilegeEscalation": false
+                  }
+                }
+              ],
+              "containers": [
+                {
+                  "name": "sync",
+                  "image": "registry.example.internal/tagwarden:test",
+                  "args": [
+                    "sync",
+                    "--spec",
+                    "/etc/tagwarden/spec.json"
+                  ],
+                  "env": [
+                    {
+                      "name": "HTTPS_PROXY",
+                      "value": "http://proxy.example.internal:3128"
+                    },
+                    {
+                      "name": "NO_PROXY",
+                      "value": ".example.internal,10.0.0.0/8"
+                    },
+                    {
+                      "name": "TAGWARDEN_PROXY_USER",
+                      "valueFrom": {
+                        "secretKeyRef": {
+                          "name": "proxy-auth",
+                          "key": "username"
+                        }
+                      }
+                    },
+                    {
+                      "name": "TAGWARDEN_PROXY_PASSWORD",
+                      "valueFrom": {
+                        "secretKeyRef": {
+                          "name": "proxy-auth",
+                          "key": "password"
+                        }
+                      }
+                    }
+                  ],
+                  "resources": {
+                    "limits": {
+                      "cpu": "1",
+                      "memory": "512Mi"
+                    },
+                    "requests": {
+                      "cpu": "50m",
+                      "memory": "64Mi"
+                    }
+                  },
+                  "volumeMounts": [
+                    {
+                      "name": "spec",
+                      "readOnly": true,
+                      "mountPath": "/etc/tagwarden"
+                    },
+                    {
+                      "name": "target-auth",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/target"
+                    },
+                    {
+                      "name": "tmp",
+                      "mountPath": "/tmp"
+                    },
+                    {
+                      "name": "target-ca",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/target-ca"
+                    },
+                    {
+                      "name": "client-cert",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/client-cert"
+                    },
+                    {
+                      "name": "proxy-ca",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/proxy-ca"
+                    },
+                    {
+                      "name": "work",
+                      "mountPath": "/work"
+                    },
+                    {
+                      "name": "scan",
+                      "mountPath": "/scan"
+                    },
+                    {
+                      "name": "scanner-ca",
+                      "readOnly": true,
+                      "mountPath": "/var/run/tagwarden/scanner-ca"
+                    }
+                  ],
+                  "terminationMessagePolicy": "File",
+                  "securityContext": {
+                    "capabilities": {
+                      "drop": [
+                        "ALL"
+                      ]
+                    },
+                    "readOnlyRootFilesystem": true,
+                    "allowPrivilegeEscalation": false
+                  }
+                }
+              ],
+              "restartPolicy": "Never",
+              "serviceAccountName": "tagwarden-sync",
+              "automountServiceAccountToken": false,
+              "securityContext": {
+                "runAsUser": 65532,
+                "runAsGroup": 65532,
+                "runAsNonRoot": true,
+                "fsGroup": 65532,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "enableServiceLinks": false
+            }
+          },
+          "ttlSecondsAfterFinished": 86400
+        }
+      },
+      "successfulJobsHistoryLimit": 3,
+      "failedJobsHistoryLimit": 3
+    },
+    "status": {}
+  }
+}

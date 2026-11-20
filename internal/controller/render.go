@@ -63,12 +63,16 @@ const (
 	// server's NetworkPolicy admits them.
 	LabelScanner = "tagwarden.dev/scanner"
 	ScannerTrivy = "trivy"
+	// LabelSBOM is SBOMTrivy on sync pods that generate SBOMs.
+	LabelSBOM = "tagwarden.dev/sbom"
+	SBOMTrivy = "trivy"
 
 	// SyncServiceAccount runs the sync pods unless a pod uses cloud auth
 	// with spec.workloadIdentity.serviceAccountName. It has no RBAC bindings.
 	SyncServiceAccount = "tagwarden-sync"
 	syncContainer      = "sync"
 	scannerContainer   = "scanner"
+	sbomContainer      = "sbom"
 	workVolume         = "work"
 	scanVolume         = "scan"
 	trivyTokenEnv      = "TRIVY_TOKEN" //nolint:gosec // env var name, not a credential
@@ -293,11 +297,18 @@ func renderConfigMap(cm *corev1.ConfigMap, m *mirrorv1alpha1.ArtifactMirror, spe
 	cm.Data = map[string]string{specKey: string(spec)}
 }
 
-// sidecar is the scanner sidecar of a gated sync pod.
+// sidecar is the Trivy sidecar of a sync pod: the scanner of a gated pod,
+// which also generates SBOMs when the pod needs them, or the sbom sidecar
+// of an ungated pod that generates SBOMs.
 type sidecar struct {
 	// gate is the resolved gate of the spec: scanner URL, image, timeout
-	// and javaDB mode.
+	// and javaDB mode. nil for the sbom sidecar.
 	gate *syncspec.Gate
+	// sbom is the resolved generator of the spec, nil when the pod
+	// generates no SBOMs.
+	sbom *syncspec.SBOMGenerator
+	// generator is the target's generator spec, nil for the defaults.
+	generator *mirrorv1alpha1.SBOMGenerator
 	// scanner is the target's scanner spec, nil for the defaults.
 	scanner *mirrorv1alpha1.ScannerSpec
 	// token is the Secret with the server token, nil for none.
@@ -330,8 +341,11 @@ func sidecarResources(s *mirrorv1alpha1.ScannerSpec) corev1.ResourceRequirements
 func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, image string, spec []byte, sc *sidecar, trackLabels, trackAnnotations map[string]string) {
 	labels, annotations := mirrorMeta(m)
 	labels[LabelTarget] = targetLabel(t.Name)
-	if sc != nil {
+	if sc != nil && sc.gate != nil {
 		labels[LabelScanner] = ScannerTrivy
+	}
+	if sc != nil && sc.sbom != nil {
+		labels[LabelSBOM] = SBOMTrivy
 	}
 	labels[LabelEgress] = EgressDirect
 	if t.Spec.Proxy != nil && t.Spec.Proxy.HTTPSProxy != "" {
@@ -526,17 +540,33 @@ func renderCronJob(cj *batchv1.CronJob, t *mirrorv1alpha1.ClusterMirrorTarget, m
 	cj.Annotations[annotationCronJobChecksum] = hex.EncodeToString(sum[:])
 }
 
-// scannerSidecar adds the gate volumes to the sync pod and returns the
-// scanner container, a native sidecar that runs syncspec.SidecarScript. It
-// gets the token and the scanner CA only: no registry Secrets, no proxy,
+// scannerSidecar adds the layout and scan volumes to the sync pod and
+// returns the Trivy container, a native sidecar that runs
+// syncspec.SidecarScript: scanner in a gated pod, sbom otherwise. It gets
+// the scanner token and CA only when gated: no registry Secrets, no proxy,
 // the layout read-only. The security context is set by the caller.
 func scannerSidecar(sc *sidecar, volumes []corev1.Volume, mounts []corev1.VolumeMount) ([]corev1.Volume, []corev1.VolumeMount, corev1.Container) {
+	var name, image string
+	var javaDB mirrorv1alpha1.JavaDBMode
+	if g := sc.gate; g != nil {
+		name, image, javaDB = scannerContainer, g.Scanner.Image, g.Scanner.JavaDB
+	} else {
+		name, image, javaDB = sbomContainer, sc.sbom.Image, sc.sbom.JavaDB
+	}
 	work, scan := defaultWorkSize, scanVolumeSize
-	if sc.gate.Scanner.JavaDB == mirrorv1alpha1.JavaDBPerJob {
+	if javaDB == mirrorv1alpha1.JavaDBPerJob {
 		scan = scanVolumeSizePerJob
 	}
 	if s := sc.scanner; s != nil && s.Storage != nil {
 		work = *s.Storage
+	}
+	// One layout serves both: a gated pod takes the larger size.
+	if g := sc.generator; sc.sbom != nil && g != nil && g.Storage != nil && (sc.gate == nil || g.Storage.Cmp(work) > 0) {
+		work = *g.Storage
+	}
+	resources := sidecarResources(sc.scanner)
+	if g := sc.generator; sc.gate == nil && g != nil && g.Resources != nil {
+		resources = *g.Resources
 	}
 	workDir := filepath.Dir(syncspec.LayoutDir)
 	volumes = append(volumes,
@@ -560,15 +590,22 @@ func scannerSidecar(sc *sidecar, volumes []corev1.Volume, mounts []corev1.Volume
 		mounts = append(mounts, ca)
 		scannerMounts = append(scannerMounts, ca)
 	}
-	env := []corev1.EnvVar{
-		{Name: syncspec.ScannerURLEnv, Value: sc.gate.Scanner.URL},
-		{Name: syncspec.ScannerTimeoutEnv, Value: sc.gate.Scanner.Timeout.Duration.String()},
-		{Name: syncspec.ScannerJavaDBEnv, Value: string(sc.gate.Scanner.JavaDB)},
-		{Name: syncspec.ScannerTemplateEnv, Value: vuln.ReportTemplate},
-		{Name: "HOME", Value: syncspec.ScanDir},
-		{Name: "TMPDIR", Value: syncspec.ScanDir},
-		{Name: "NO_PROXY", Value: "*"},
+	env := []corev1.EnvVar{{Name: syncspec.ScannerJavaDBEnv, Value: string(javaDB)}}
+	if g := sc.gate; g != nil {
+		env = []corev1.EnvVar{
+			{Name: syncspec.ScannerURLEnv, Value: g.Scanner.URL},
+			{Name: syncspec.ScannerTimeoutEnv, Value: g.Scanner.Timeout.Duration.String()},
+			env[0],
+			{Name: syncspec.ScannerTemplateEnv, Value: vuln.ReportTemplate},
+		}
 	}
+	if sc.sbom != nil {
+		env = append(env, corev1.EnvVar{Name: syncspec.SBOMTimeoutEnv, Value: sc.sbom.Timeout.Duration.String()})
+	}
+	env = append(env,
+		corev1.EnvVar{Name: "HOME", Value: syncspec.ScanDir},
+		corev1.EnvVar{Name: "TMPDIR", Value: syncspec.ScanDir},
+		corev1.EnvVar{Name: "NO_PROXY", Value: "*"})
 	if tok := sc.token; tok != nil {
 		// Optional: without the Secret the sidecar still starts, the server
 		// refuses its scans and onScanError applies, instead of a pod that
@@ -578,12 +615,12 @@ func scannerSidecar(sc *sidecar, volumes []corev1.Volume, mounts []corev1.Volume
 		}}})
 	}
 	return volumes, mounts, corev1.Container{
-		Name:                     scannerContainer,
-		Image:                    sc.gate.Scanner.Image,
+		Name:                     name,
+		Image:                    image,
 		Command:                  []string{"/bin/sh", "-c", syncspec.SidecarScript},
 		Env:                      env,
 		RestartPolicy:            ptr.To(corev1.ContainerRestartPolicyAlways),
-		Resources:                sidecarResources(sc.scanner),
+		Resources:                resources,
 		TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 		VolumeMounts:             scannerMounts,
 	}
