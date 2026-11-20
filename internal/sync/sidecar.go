@@ -104,7 +104,12 @@ var errWaitTimeout = errors.New("timed out")
 
 // wait polls done until it reports true, the timeout passes or ctx ends.
 func (g *gateState) wait(ctx context.Context, timeout time.Duration, done func() (bool, error)) error {
-	poll := g.Poll
+	return wait(ctx, g.Poll, timeout, done)
+}
+
+// wait polls done every poll until it reports true, the timeout passes or
+// ctx ends.
+func wait(ctx context.Context, poll, timeout time.Duration, done func() (bool, error)) error {
 	if poll <= 0 {
 		poll = defaultPoll
 	}

@@ -160,7 +160,7 @@ func (g *gateState) check(ctx context.Context, s *syncer) (string, string) {
 		return reason, detail
 	}
 	if g.JavaDB != nil {
-		if err := g.fetchJavaDB(ctx, s); err != nil {
+		if !s.javaDB(ctx, g.root, *g.JavaDB) {
 			return syncspec.GateScannerUnavailable, "java DB unavailable"
 		}
 		g.javaScanned = true
@@ -241,10 +241,20 @@ func minor(v string) string {
 
 func sameMinor(a, b string) bool { return minor(a) != "" && minor(a) == minor(b) }
 
+// javaDB fetches the Java DB into the scan volume once per run and reports
+// whether it is there. The gate and SBOM generation share it.
+func (s *syncer) javaDB(ctx context.Context, root *os.Root, tag name.Tag) bool {
+	if !s.javaTried {
+		s.javaTried = true
+		s.javaOK = fetchJavaDB(ctx, s.dst, root, tag) == nil
+	}
+	return s.javaOK
+}
+
 // fetchJavaDB pulls the Java DB through the target transport and extracts
 // it into ScanDir/cache/java-db.
-func (g *gateState) fetchJavaDB(ctx context.Context, s *syncer) error {
-	desc, err := s.dst.Get(ctx, *g.JavaDB)
+func fetchJavaDB(ctx context.Context, p *remote.Puller, root *os.Root, tag name.Tag) error {
+	desc, err := p.Get(ctx, tag)
 	if err != nil {
 		return err
 	}
@@ -266,18 +276,18 @@ func (g *gateState) fetchJavaDB(ctx context.Context, s *syncer) error {
 	if n, err := l.Size(); err != nil || n > maxJavaDBCompressed {
 		return errors.New("layer too large")
 	}
-	if err := g.root.MkdirAll(syncspec.JavaDBDir, 0o755); err != nil {
+	if err := root.MkdirAll(syncspec.JavaDBDir, 0o755); err != nil {
 		return err
 	}
-	if err := g.extractJavaDB(l); err != nil {
-		_ = g.root.RemoveAll(syncspec.JavaDBDir)
+	if err := extractJavaDBLayer(root, l); err != nil {
+		_ = root.RemoveAll(syncspec.JavaDBDir)
 		return err
 	}
 	return nil
 }
 
-func (g *gateState) extractJavaDB(l v1.Layer) error {
-	dir, err := g.root.OpenRoot(syncspec.JavaDBDir)
+func extractJavaDBLayer(root *os.Root, l v1.Layer) error {
+	dir, err := root.OpenRoot(syncspec.JavaDBDir)
 	if err != nil {
 		return err
 	}
@@ -323,8 +333,9 @@ func extractJavaDB(compressed io.Reader, dir *os.Root) error {
 type child struct {
 	platform string
 	digest   v1.Hash
-	skip     bool   // an attestation manifest, never scanned
-	unusable string // why it cannot be scanned
+	desc     v1.Descriptor // as the index lists it, or the image's own
+	skip     bool          // an attestation manifest, never scanned
+	unusable string        // why it cannot be scanned
 }
 
 // scan judges desc. When the scanner check failed it judges without a
@@ -345,7 +356,7 @@ func (s *syncer) scan(ctx context.Context, desc *remote.Descriptor, present bool
 		judge([]vuln.PlatformInput{{Digest: desc.Digest.String(), ScanError: g.reason}})
 		return sc, desc, nil
 	}
-	t, children, err := writeLayout(g.LayoutDir, desc)
+	t, children, err := s.layout(g.LayoutDir, desc)
 	switch {
 	case errors.Is(err, syscall.ENOSPC):
 		sc.Detail = "scan volume full, raise scanner.storage"
@@ -380,6 +391,38 @@ func (s *syncer) scan(ctx context.Context, desc *remote.Descriptor, present bool
 	return sc, t, nil
 }
 
+// laidOut is the layout of one artifact, kept while its tag is processed
+// so that the gate and SBOM generation share one download.
+type laidOut struct {
+	digest   v1.Hash
+	t        remote.Taggable
+	children []child
+}
+
+// layout writes desc to the layout in dir unless it is there already.
+func (s *syncer) layout(dir string, desc *remote.Descriptor) (remote.Taggable, []child, error) {
+	if l := s.laid; l != nil && l.digest == desc.Digest {
+		return l.t, l.children, nil
+	}
+	s.laid = nil
+	t, children, err := writeLayout(dir, desc)
+	if err == nil {
+		s.laid = &laidOut{digest: desc.Digest, t: t, children: children}
+	}
+	return t, children, err
+}
+
+// dropLayout deletes the layout of the current tag.
+func (s *syncer) dropLayout() {
+	s.laid = nil
+	switch {
+	case s.gate != nil:
+		_ = os.RemoveAll(s.gate.LayoutDir)
+	case s.sbom != nil:
+		_ = os.RemoveAll(s.sbom.LayoutDir)
+	}
+}
+
 // writeLayout replaces dir with an OCI layout of desc that lists every
 // child of an index at the top level of index.json, because the Trivy
 // client only selects top-level digests. The returned taggable keeps the
@@ -406,7 +449,7 @@ func writeLayout(dir string, desc *remote.Descriptor) (remote.Taggable, []child,
 		if err := p.AppendDescriptor(desc.Descriptor); err != nil {
 			return nil, nil, err
 		}
-		c := child{digest: desc.Digest}
+		c := child{digest: desc.Digest, desc: desc.Descriptor}
 		if cf, err := img.ConfigFile(); err == nil && cf.Platform() != nil {
 			c.platform = cf.Platform().String()
 		}
@@ -428,7 +471,7 @@ func writeLayout(dir string, desc *remote.Descriptor) (remote.Taggable, []child,
 	}
 	var children []child
 	for _, m := range im.Manifests {
-		c := child{digest: m.Digest}
+		c := child{digest: m.Digest, desc: m}
 		if m.Platform != nil {
 			c.platform = m.Platform.String()
 		}

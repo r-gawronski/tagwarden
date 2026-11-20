@@ -314,6 +314,10 @@ type Spec struct {
 	// runs exactly as an ungated one.
 	Gate *Gate `json:"gate,omitempty"`
 
+	// SBOM is set for an image mirror of a target with an SBOM policy.
+	// Without it the Job attaches no SBOM.
+	SBOM *SBOM `json:"sbom,omitempty"`
+
 	// SourceRepo, TargetRepo and DeniedPrefixes are set by Decode.
 	SourceRepo     name.Repository `json:"-"`
 	TargetRepo     name.Repository `json:"-"`
@@ -339,6 +343,11 @@ func Decode(r io.Reader) (Spec, error) {
 	if s.Gate != nil {
 		if err := s.Gate.validate(s.TargetRepo); err != nil {
 			return Spec{}, fmt.Errorf("spec: gate: %w", err)
+		}
+	}
+	if s.SBOM != nil {
+		if err := s.SBOM.validate(s.TargetRepo, s.Gate); err != nil {
+			return Spec{}, fmt.Errorf("spec: sbom: %w", err)
 		}
 	}
 	return s, nil
@@ -502,8 +511,9 @@ func AuthKeyHost(key string) string {
 // MaxReportSize is the Kubernetes limit for a termination message.
 const MaxReportSize = 4096
 
-// Report versions. Ungated Jobs write ReportVersion as before; gated Jobs
-// write ReportVersionGate, which adds the gate fields.
+// Report versions. Jobs without the gate or an SBOM policy write
+// ReportVersion as before; gated Jobs and Jobs with an SBOM policy write
+// ReportVersionGate, which adds the gate and SBOM fields.
 const (
 	ReportVersion     = 1
 	ReportVersionGate = 2
@@ -574,6 +584,17 @@ type Report struct {
 	Pruned          []SyncedTag `json:"pruned,omitempty"`
 	Dropped         []SyncedTag `json:"dropped,omitempty"`
 	PrunedTruncated bool        `json:"prunedTruncated,omitempty"`
+
+	// Version 2, Jobs with an SBOM policy. SBOMGenerated and SBOMUpstream
+	// count the platform SBOMs this run attached, generated or copied from
+	// upstream. SBOMFailed counts the tags with an SBOM failure;
+	// SBOMFailures lists the first MaxSBOMFailures of them, newest first,
+	// and is cut before the synced tags when the report does not fit.
+	// JavaScanned is set too.
+	SBOMGenerated int           `json:"sbomGenerated,omitempty"`
+	SBOMUpstream  int           `json:"sbomUpstream,omitempty"`
+	SBOMFailed    int           `json:"sbomFailed,omitempty"`
+	SBOMFailures  []SBOMFailure `json:"sbomFailures,omitempty"`
 
 	// Selection says what the tag selection did. Nil in a re-scan and from
 	// Jobs that predate it; the controller then judges nothing from it.
@@ -668,7 +689,7 @@ func ValidTag(t string) bool { return tagPattern.MatchString(t) }
 // ParseReport decodes a termination message. The message comes from the
 // Job, so it is untrusted: it must fit MaxReportSize, have version
 // ReportVersion or ReportVersionGate, non-negative counts and valid tags,
-// digests and gate fields. Unknown fields are ignored so that a newer Job
+// digests, gate and SBOM fields. Unknown fields are ignored so that a newer Job
 // can add some.
 func ParseReport(msg string) (Report, error) {
 	if len(msg) > MaxReportSize {
@@ -693,6 +714,9 @@ func ParseReport(msg string) (Report, error) {
 		return Report{}, err
 	}
 	if err := validatePruneFields(r); err != nil {
+		return Report{}, err
+	}
+	if err := validateSBOMFields(r); err != nil {
 		return Report{}, err
 	}
 	if r.V == ReportVersion && (r.Findings+r.Accepted+r.ScanErrors+r.Blocked > 0 || r.Gate != "" || r.JavaScanned != nil || len(r.TagFindings) > 0 || len(r.Judged) > 0 || len(r.AcceptedBy) > 0 || r.JudgedFingerprint != "" || r.Rescan) {

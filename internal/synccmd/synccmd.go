@@ -131,6 +131,9 @@ func run(ctx context.Context, args []string, stdout io.Writer, termPath string, 
 	if spec.Gate != nil {
 		gateSummary(&r, res, req.Gate.Fingerprint, rescan)
 	}
+	if req.SBOM != nil {
+		sbomSummary(&r, res)
+	}
 	code = syncspec.ExitOK
 	if err != nil {
 		code = syncspec.ExitSyncFailed
@@ -164,6 +167,10 @@ func setup(ctx context.Context, args []string, p options, getenv func(string) st
 	spec, req, err := load(ctx, *specPath, p, getenv)
 	if err == nil && *rescan && spec.Gate == nil {
 		err = errors.New("--rescan needs a gated spec")
+	}
+	if *rescan {
+		// Re-scan Jobs do not generate SBOMs.
+		req.SBOM = nil
 	}
 	return spec, req, *rescan, err
 }
@@ -217,8 +224,15 @@ func load(ctx context.Context, specPath string, p options, getenv func(string) s
 			return syncspec.Spec{}, sync.Request{}, err
 		}
 	}
+	var sb *sync.SBOM
+	if spec.SBOM != nil {
+		if sb, err = newSBOM(spec, p); err != nil {
+			return syncspec.Spec{}, sync.Request{}, err
+		}
+	}
 	req := sync.Request{
 		Gate:              gate,
+		SBOM:              sb,
 		Source:            spec.SourceRepo,
 		Target:            spec.TargetRepo,
 		Policy:            spec.Tags,
@@ -468,6 +482,8 @@ type auditLine struct {
 	SkippedReferrers []string `json:"skippedReferrers,omitempty"`
 	// Untag is what a re-scan did with a tag with findings.
 	Untag string `json:"untag,omitempty"`
+	// SBOM is set for a tag of a mirror with an SBOM policy.
+	SBOM *auditSBOM `json:"sbom,omitempty"`
 }
 
 // audit writes one JSON line per selected tag, newest first. Every tag a
@@ -512,6 +528,7 @@ func audit(w io.Writer, spec syncspec.Spec, res sync.Result, rescan bool) {
 			Error:     errs[tag],
 			Scan:      newAuditScan(spec.Gate, e.a.Scan),
 			Untag:     string(e.a.Untag),
+			SBOM:      newAuditSBOM(spec.SBOM, e.a.SBOM),
 
 			SkippedReferrers: e.a.SkippedReferrers,
 		}
@@ -617,6 +634,10 @@ func encode(r report) []byte {
 			r.TagFindings = findings[:largest(len(findings), func(k int) bool { r.TagFindings = findings[:k]; return fits(r) })]
 		}
 		r.Synced = synced
+	}
+	// SBOM failures are cut before the synced tags; their count stays.
+	if failures := r.SBOMFailures; !fits(r) {
+		r.SBOMFailures = failures[:largest(len(failures), func(k int) bool { r.SBOMFailures = failures[:k]; return fits(r) })]
 	}
 	if !fits(r) {
 		r.Truncated = true

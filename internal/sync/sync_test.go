@@ -17,6 +17,7 @@ limitations under the License.
 package sync
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -67,7 +68,9 @@ type testRegistry struct {
 	headStatus atomic.Int32
 	// listFailing makes /tags/list answer 500 from now on.
 	listFailing atomic.Bool
-	mu          stdsync.Mutex
+	// refuseReferrers answers 400 to manifest PUTs with a subject.
+	refuseReferrers atomic.Bool
+	mu              stdsync.Mutex
 	// puts lists the paths of manifest PUT requests.
 	puts []string
 	// flipBlob maps a blob digest to a byte offset inverted on GET.
@@ -125,6 +128,14 @@ func newRegistry(t *testing.T, o regOpts) *testRegistry {
 		if code := r.headStatus.Load(); code != 0 && req.Method == http.MethodHead && strings.Contains(req.URL.Path, "/manifests/") {
 			w.WriteHeader(int(code))
 			return
+		}
+		if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/manifests/") && r.refuseReferrers.Load() {
+			body, _ := io.ReadAll(req.Body)
+			if bytes.Contains(body, []byte(`"subject"`)) {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			req.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/manifests/") {
 			r.mu.Lock()

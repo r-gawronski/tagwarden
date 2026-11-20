@@ -1,6 +1,6 @@
 # SBOM generation and enforcement for mirrored images
 
-Status: Approved (2026-11-04), steps 1 and 2 implemented. Issue #69. Builds on the vulnerability gate (#21,
+Status: Approved (2026-11-04), step 0 done, steps 1 to 3 implemented. Issue #69. Builds on the vulnerability gate (#21,
 `docs/design/vulnerability-gate.md`) and reuses its Trivy sidecar.
 
 ## Goal
@@ -224,7 +224,7 @@ native sidecar:
 ```
 trivy image --input "/work/layout@sha256:$h" --format <fixed by suffix> \
   --skip-db-update --skip-java-db-update --offline-scan --skip-version-check \
-  --disable-telemetry --timeout "$TAGWARDEN_SBOM_TIMEOUT" \
+  --disable-telemetry --cache-backend memory --timeout "$TAGWARDEN_SBOM_TIMEOUT" \
   --config /dev/null --ignorefile /dev/null "$java" > "out/$h.<suffix>.json"
 ```
 
@@ -328,7 +328,7 @@ The check of a generated document (untrusted sidecar output):
 - SPDX: `spdxVersion` is `SPDX-2.<n>` and `SPDXID` is `SPDXRef-DOCUMENT`.
 
 The content is not cross-checked against the image. A compromised
-generator can write a false SBOM (T38).
+generator can write a false SBOM (T40).
 
 ### Upstream SBOMs
 
@@ -453,7 +453,7 @@ Audit line, per tag:
   `securityDrift` like `scanner`.
 - T34: the sidecar protocol gets a second request kind with the same
   checks; the SBOM output cap is 64 MiB.
-- New T38, false or missing SBOM: a compromised generator can describe an
+- New T40, false or missing SBOM: a compromised generator can describe an
   image falsely; the SBOM is never used for a security decision inside
   Tagwarden, the generator image is pinned by digest and mirrored, and
   consumers who need provenance verify the platform signature. Upstream
@@ -462,7 +462,7 @@ Audit line, per tag:
   `PreferUpstream` the SBOM is the publisher's word. Accepted: two targets
   on one registry and project with different policies let tags in through
   the weaker one (reported as `WeakerTargetOnRegistry`).
-- New T39 (step 8), signing key theft: key only in a Secret in the operator
+- New T41 (step 8), signing key theft: key only in a Secret in the operator
   namespace, mounted only in the sync container of SBOM Jobs, never in the
   sidecar, never in status, Events, logs, errors or the report (tests).
   Accepted: a sync container holds the key while it runs, so a compromised
@@ -488,7 +488,9 @@ Audit line, per tag:
 
 Each step is a PR with tests first.
 
-0. **Spike.** Trivy SBOM from an OCI layout with no network and no DB;
+0. **Spike.** Done, see `docs/design/spikes.md` (SBOM). The registry
+   survey beyond Harbor and the signing questions move to steps 6 and 8.
+   Trivy SBOM from an OCI layout with no network and no DB;
    Java DB need; time, memory and SBOM size for the gate spike images;
    referrers API and tag fallback on the registries listed above; which
    signed attestation format cosign, Kyverno and policy-controller verify
@@ -516,11 +518,43 @@ Each step is a PR with tests first.
    - `--trivy-image` and `--trivy-version` are valid without
      `--trivy-url`. A gated target with its own `scanner.url` and no
      `scanner.image` now gets the chart's image as its client default.
-3. **Sync integration.** Sidecar request kind, generation per child,
+3. **Sync integration.** Done. Sidecar request kind, generation per child,
    referrer push (with and without the referrers API, in-process
    registries), present-tag backfill, upstream selection, reserved
    annotation skip, report fields, audit, exit codes. Fake sidecar with
-   canned, late, garbage and huge output.
+   canned, late, garbage and huge output. Notes from the implementation:
+   - The spec carries `sbom` (`mode`, `format`, `required`, `generator`
+     with `version`, `image`, `timeout`, `javaDB`, `javaDBRepository`).
+     The controller leaves it out for `Disabled`, for Helm mirrors and
+     when the generator is not configured. With a gate, `generator`
+     version, `javaDB` and `javaDBRepository` (and `image` when both are
+     set) must equal `gate.scanner`: one sidecar, one Java DB mode. The
+     Java DB is fetched once per Job for both.
+   - The sidecar reads the timeout from `TAGWARDEN_SBOM_TIMEOUT` and drops
+     SBOM requests without it, as it drops scan requests without
+     `TAGWARDEN_SCANNER_URL`. `TAGWARDEN_JAVA_DB` serves both kinds.
+   - `--cache-backend memory`: the default file cache would fill the
+     64 MiB scan volume over a run (spike).
+   - Index-level copies are made for generated SBOMs only. An upstream
+     SBOM is the publisher's document; a copy with Tagwarden annotations
+     would claim it as generated.
+   - Upstream referrers with `dev.tagwarden.*` annotations are skipped on
+     every Job, also without an SBOM policy. Otherwise a target that
+     turns the policy on later would take a forged referrer copied
+     earlier for a generated SBOM.
+   - Under `PreferUpstream` a present tag counts an upstream SBOM on the
+     target by its manifest (`sbom.Upstream`), without reading the
+     document again: it was checked when it was copied.
+   - A generator that never starts or stops answering fails the run with
+     exit 1, also with `required: false`, so the Job retries. A request
+     that times out is a `GenerationFailed` tag.
+   - Report counts: `sbomGenerated` and `sbomUpstream` count platform
+     SBOMs attached in this run; `sbomFailed` counts tags. `sbomFailures`
+     is cut first when the report does not fit. Present tags that cannot
+     be checked or fetched report `Missing`; all their failures are
+     `published: true` and never fail the run.
+   - Threat model rows are T40 and T41: T38 and T39 were taken when this
+     design was approved.
 4. **Rendering.** `sbom` sidecar for SBOM Jobs, shared `scanner` sidecar for
    gated Jobs, `securityDrift`, `NotConfigured` handling. Golden test:
    Jobs of targets without an SBOM policy render byte for byte as before.
