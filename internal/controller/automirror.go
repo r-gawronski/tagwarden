@@ -432,6 +432,13 @@ func (r *AutoMirrorReconciler) relay(pod *corev1.Pod, state string, cur *mirrorv
 			fmt.Sprintf("%s: %s", c.Reason, c.Message))
 		return
 	}
+	// SBOM before Synced: a tag the SBOM policy kept back also fails the run.
+	if c := meta.FindStatusCondition(cur.Status.Conditions, ConditionSBOM); c != nil && c.Status == metav1.ConditionFalse &&
+		strings.HasPrefix(c.Message, sbomNotPublished) {
+		r.report(pod, state, "sbom:"+c.Reason+c.Message, corev1.EventTypeWarning, reasonMirrorRefused,
+			capMessage(fmt.Sprintf("%s: %s; see ArtifactMirror %s/%s", reasonSBOMMissingRelay, c.Message, cur.Namespace, cur.Name)))
+		return
+	}
 	if c := meta.FindStatusCondition(cur.Status.Conditions, ConditionSynced); c != nil && c.Status == metav1.ConditionFalse {
 		r.report(pod, state, "synced:"+c.Reason+c.Message, corev1.EventTypeWarning, reasonSyncFailed,
 			fmt.Sprintf("%s: %s", c.Reason, c.Message))

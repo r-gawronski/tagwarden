@@ -28,6 +28,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -261,11 +262,21 @@ func TestSBOMRenderNotConfigured(t *testing.T) {
 		withSBOM(mirrorv1alpha1.SBOMPolicy{Mode: mirrorv1alpha1.SBOMModeGenerate, Required: required})(tg)
 		s := syncSpec(tg, m, nil)
 		sc, msg := sbomSidecar(tg, m, &s, nil, ScannerConfig{URL: inChartURL})
-		switch {
-		case required && (msg == "" || sc != nil || !strings.Contains(msg, "no SBOM generator")):
-			t.Errorf("required: sidecar %+v, message %q", sc, msg)
-		case !required && (msg != "" || sc != nil || s.SBOM != nil):
-			t.Errorf("not required: sidecar %+v, message %q, spec %+v", sc, msg, s.SBOM)
+		if sc != nil || s.SBOM != nil || !strings.Contains(msg, "no SBOM generator") {
+			t.Errorf("required %t: sidecar %+v, message %q, spec %+v", required, sc, msg, s.SBOM)
+		}
+		var ev pending
+		r := &ArtifactMirrorReconciler{}
+		if refuse := r.sbomConditions(tg, m, msg, &ev); refuse != required {
+			t.Errorf("required %t: refuse %t", required, refuse)
+		}
+		c := meta.FindStatusCondition(m.Status.Conditions, ConditionSBOM)
+		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != ReasonNotConfigured || c.Message != msg {
+			t.Errorf("required %t: condition %+v", required, c)
+		}
+		// Only an optional policy gets its own Event; a required one has Ready's.
+		if len(ev) != map[bool]int{true: 0, false: 1}[required] {
+			t.Errorf("required %t: events %+v", required, ev)
 		}
 	}
 }

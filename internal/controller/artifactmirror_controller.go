@@ -101,6 +101,9 @@ type ArtifactMirrorReconciler struct {
 
 	// trackingMismatch holds the tracking id last reported per mirror.
 	trackingMismatch sync.Map
+	// sbomEvents holds per mirror the tag@digest pairs whose SBOMFailed
+	// Event was recorded, so each failing pair gets one Event.
+	sbomEvents sync.Map
 }
 
 // +kubebuilder:rbac:groups=mirror.tagwarden.dev,resources=artifactmirrors,verbs=get;list;watch;update
@@ -251,7 +254,8 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	}
 	gated := gateOf(&t) != nil && isGenerated(&t, m)
 	gateConditions(m, gated, sc, ev)
-	if sc, msg = sbomSidecar(&t, m, &s, sc, r.Scanner); msg != "" {
+	sc, msg = sbomSidecar(&t, m, &s, sc, r.Scanner)
+	if r.sbomConditions(&t, m, msg, ev) {
 		return notReady(ReasonSBOMNotConfigured, msg)
 	}
 	spec, err := json.MarshalIndent(s, "", "  ")
@@ -312,7 +316,7 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 		ev.add(corev1.EventTypeNormal, "Created", "Reconcile", fmt.Sprintf("Created CronJob %s/%s", key.Namespace, key.Name))
 	}
 	r.setReady(m, metav1.ConditionTrue, ReasonReady, fmt.Sprintf("CronJob %s/%s mirrors to %s", key.Namespace, key.Name, targetRepo(&t, m)))
-	if err := r.syncStatus(ctx, m, gated, ev, applied); err != nil {
+	if err := r.syncStatus(ctx, m, gated, s.SBOM != nil, ev, applied); err != nil {
 		return ctrl.Result{}, err
 	}
 	if pruneHeld {
@@ -543,6 +547,7 @@ func (r *ArtifactMirrorReconciler) deleteObjects(ctx context.Context, objs []cli
 // mirror. It deletes only objects whose annotations name the mirror.
 func (r *ArtifactMirrorReconciler) cleanup(ctx context.Context, m *mirrorv1alpha1.ArtifactMirror) error {
 	r.trackingMismatch.Delete(client.ObjectKeyFromObject(m))
+	r.sbomEvents.Delete(client.ObjectKeyFromObject(m))
 	objs, err := r.mirrorObjects(ctx, m)
 	if err != nil {
 		return err

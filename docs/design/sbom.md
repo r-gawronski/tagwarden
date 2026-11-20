@@ -1,6 +1,6 @@
 # SBOM generation and enforcement for mirrored images
 
-Status: Approved (2026-11-04), step 0 done, steps 1 to 4 implemented. Issue #69. Builds on the vulnerability gate (#21,
+Status: Approved (2026-11-04), step 0 done, steps 1 to 5 implemented. Issue #69. Builds on the vulnerability gate (#21,
 `docs/design/vulnerability-gate.md`) and reuses its Trivy sidecar.
 
 ## Goal
@@ -579,7 +579,28 @@ Each step is a PR with tests first.
      says what happens to the mirrors.
    - Golden files for gated Jobs were added before the change, so both
      gated and ungated Jobs without a policy are pinned.
-5. **Status, Events, metrics, pod relay.** Envtest.
+5. **Status, Events, metrics, pod relay.** Done. Envtest. Notes from the
+   implementation:
+   - The condition `SBOM` follows the last sync run that ran the
+     generator (pod label `tagwarden.dev/sbom`). `Attached` needs exit 0
+     and no failures; a failed run without SBOM failures leaves it as it
+     was. Re-scans and Jobs without the generator never touch it.
+   - Reasons: an unpublished tag names the reason before a published one.
+     `TooLarge` and `SigningFailed` map to `GenerationFailed`; the message
+     keeps the report reason per tag.
+   - The message lists `not published:` tags first. The pod relay sends
+     `MirrorRefused` with `SBOMMissing` when it starts so, before it looks
+     at `Synced`. Tags published without an SBOM do not stop pods.
+   - "Once per tag and digest" is kept in memory per mirror and resets
+     to the failures of each run: a manager restart, or a tag that
+     recovers and fails again, gets one more Event. Status needs no new
+     field for it.
+   - The counter counts every listed failure of every run, so a tag that
+     fails each run counts each time. Failures beyond the 10 listed in
+     the report are not counted; the message says how many there were.
+   - An `sbom` sidecar that does not start sets `SBOM=False`,
+     `GenerationFailed`.
+   - The Synced message counts `SBOM failed for <n>` tags.
 6. **e2e on kind.** `Generate` attaches a CycloneDX referrer per platform
    of a multi-arch image; `required: true` with a failing generator
    publishes nothing and reports why; an `ArtifactMirror` cannot weaken the

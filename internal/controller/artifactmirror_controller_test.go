@@ -676,6 +676,10 @@ func finishJob(m *mirrorv1alpha1.ArtifactMirror, name string, at time.Time, exit
 			Labels: labels, Annotations: annotations},
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: podSpec}},
 	}
+	// Pod labels come from the CronJob, as for a Job the CronJob creates.
+	if cj, err := cronJob(m)(); err == nil {
+		job.Spec.Template.Labels = cj.Spec.JobTemplate.Spec.Template.Labels
+	}
 	ExpectWithOffset(1, k8sClient.Create(ctx, job)).To(Succeed())
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: job.Name + "-pod", Namespace: operatorNamespace,

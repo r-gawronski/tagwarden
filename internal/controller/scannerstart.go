@@ -80,7 +80,7 @@ func scannerStartFailure(pod *corev1.Pod, now time.Time, grace time.Duration) st
 // the mirror, its target and (through the mirror) the pods that use it.
 // Nothing was copied by such a run, so this stays fail-closed. It returns
 // when to look again while a sidecar is failing within its grace period.
-// The VulnerabilityGate condition is set only when gated.
+// It sets the VulnerabilityGate condition when gated, else SBOM.
 func (r *ArtifactMirrorReconciler) scannerStart(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, gated bool, ev *pending) (time.Duration, error) {
 	grace := r.ScannerStartTimeout
 	if grace <= 0 {
@@ -133,6 +133,9 @@ func (r *ArtifactMirrorReconciler) scannerStart(ctx context.Context, t *mirrorv1
 			if gated {
 				meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{Type: ConditionVulnerabilityGate, Status: metav1.ConditionFalse,
 					Reason: ReasonScannerUnavailable, Message: msg, ObservedGeneration: m.Generation})
+			} else {
+				meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{Type: ConditionSBOM, Status: metav1.ConditionFalse,
+					Reason: ReasonSBOMGenerationFailed, Message: msg, ObservedGeneration: m.Generation})
 			}
 			ev.add(corev1.EventTypeWarning, ReasonScannerUnavailable, "Sync", msg)
 			r.Recorder.Eventf(t, nil, corev1.EventTypeWarning, ReasonScannerUnavailable, "Sync", "%s", msg)

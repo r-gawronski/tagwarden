@@ -229,7 +229,7 @@ func TestSyncStatusAppliesEachJobOnce(t *testing.T) {
 	for range 2 {
 		var ev pending
 		var applied []*batchv1.Job
-		if err := r.syncStatus(context.Background(), m, true, &ev, &applied); err != nil {
+		if err := r.syncStatus(context.Background(), m, true, false, &ev, &applied); err != nil {
 			t.Fatal(err)
 		}
 		r.markApplied(context.Background(), applied)
@@ -584,7 +584,7 @@ func TestSyncStatusPodCacheLag(t *testing.T) {
 			r := &ArtifactMirrorReconciler{Client: cache, APIReader: api, Namespace: opsNS}
 			var ev pending
 			var applied []*batchv1.Job
-			if err := r.syncStatus(context.Background(), m, false, &ev, &applied); err != nil {
+			if err := r.syncStatus(context.Background(), m, false, false, &ev, &applied); err != nil {
 				t.Fatal(err)
 			}
 			if c := meta.FindStatusCondition(m.Status.Conditions, ConditionSynced); c == nil || c.Reason != tc.wantReason {
