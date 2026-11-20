@@ -22,12 +22,14 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mirrorv1alpha1 "github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/syncspec"
 )
 
 // ConditionSBOMReady reports on a target with an SBOM policy whether the
@@ -38,9 +40,13 @@ const ConditionSBOMReady = "SBOMReady"
 // a project of a target with required: true under a weaker SBOM policy.
 const ReasonWeakerTargetOnRegistry = "WeakerTargetOnRegistry"
 
-// sbomNotApplied ends the SBOMReady messages until sync Jobs generate
-// SBOMs (docs/design/sbom.md, step 3).
-const sbomNotApplied = "sync Jobs do not generate or require SBOMs yet"
+// ReasonSBOMNotConfigured: the target requires SBOMs but has no generator
+// image, so its image mirrors get no CronJob.
+const ReasonSBOMNotConfigured = "SBOMNotConfigured"
+
+// defaultSBOMTimeout is the generation timeout of one platform child
+// without sbom.generator.timeout.
+const defaultSBOMTimeout = 10 * time.Minute
 
 // sbomOf returns the SBOM policy of t, or nil when it is off.
 func sbomOf(t *mirrorv1alpha1.ClusterMirrorTarget) *mirrorv1alpha1.SBOMPolicy {
@@ -126,18 +132,22 @@ func sbomCondition(t *mirrorv1alpha1.ClusterMirrorTarget, targets []mirrorv1alph
 	c := metav1.Condition{Type: ConditionSBOMReady, Status: metav1.ConditionFalse, ObservedGeneration: t.Generation}
 	_, version, problem := effectiveGenerator(p, defaults)
 	if problem != "" {
-		c.Reason, c.Message = ReasonNotConfigured, fmt.Sprintf("mode %s but %s; %s", p.Mode, problem, sbomNotApplied)
+		effect := "Jobs run without the generator"
+		if p.Required {
+			effect = "image mirrors get no CronJob"
+		}
+		c.Reason, c.Message = ReasonNotConfigured, fmt.Sprintf("mode %s but %s; %s", p.Mode, problem, effect)
 		return c
 	}
 	if weak := weakerTargets(t, targets); len(weak) > 0 {
-		msg := fmt.Sprintf("other ClusterMirrorTargets on registry %s publish to the same projects with a weaker SBOM policy: %s; %s",
-			t.Spec.Registry, strings.Join(weak, "; "), sbomNotApplied)
+		msg := fmt.Sprintf("other ClusterMirrorTargets on registry %s publish to the same projects with a weaker SBOM policy: %s",
+			t.Spec.Registry, strings.Join(weak, "; "))
 		c.Reason, c.Message = ReasonWeakerTargetOnRegistry, capCondition(msg)
 		return c
 	}
 	c.Status, c.Reason = metav1.ConditionTrue, ReasonReady
-	c.Message = fmt.Sprintf("mode %s, format %s, required %t, generator trivy/%s; %s",
-		p.Mode, sbomFormat(p), p.Required, version, sbomNotApplied)
+	c.Message = fmt.Sprintf("mode %s, format %s, required %t, generator trivy/%s",
+		p.Mode, sbomFormat(p), p.Required, version)
 	return c
 }
 
@@ -166,4 +176,43 @@ func (r *ClusterMirrorTargetReconciler) targetsWithRequiredSBOM(ctx context.Cont
 		}
 	}
 	return reqs
+}
+
+// sbomSidecar resolves the SBOM policy of t for m into s.SBOM and returns
+// the sidecar that generates: sc with the generator added for a gated Job
+// (one sidecar for both, with the gate scanner's image, version and Java
+// DB, which the Job requires), or a new sbom sidecar. Helm mirrors and
+// targets without a policy get sc unchanged. Without a generator image a
+// required policy returns a message, and the mirror gets no CronJob; an
+// optional one renders without the generator.
+func sbomSidecar(t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, s *syncspec.Spec, sc *sidecar, defaults ScannerConfig) (*sidecar, string) {
+	p := sbomOf(t)
+	if p == nil || cmp.Or(m.Spec.Type, mirrorv1alpha1.ArtifactTypeImage) != mirrorv1alpha1.ArtifactTypeImage {
+		return sc, ""
+	}
+	image, version, problem := effectiveGenerator(p, defaults)
+	if problem != "" {
+		if p.Required {
+			return nil, fmt.Sprintf("SBOMs required on ClusterMirrorTarget %s but %s; images are not copied", t.Name, problem)
+		}
+		return sc, ""
+	}
+	g := syncspec.SBOMGenerator{Version: version, Image: image,
+		Timeout: metav1.Duration{Duration: defaultSBOMTimeout}, JavaDB: mirrorv1alpha1.JavaDBDisabled}
+	if pg := p.Generator; pg != nil {
+		if pg.Timeout != nil {
+			g.Timeout = *pg.Timeout
+		}
+		g.JavaDB = cmp.Or(pg.JavaDB, g.JavaDB)
+		g.JavaDBRepository = pg.JavaDBRepository
+	}
+	if sc != nil && sc.gate != nil {
+		gs := sc.gate.Scanner
+		g.Image, g.Version, g.JavaDB, g.JavaDBRepository = gs.Image, gs.Version, gs.JavaDB, gs.JavaDBRepository
+	} else {
+		sc = &sidecar{}
+	}
+	s.SBOM = &syncspec.SBOM{Mode: p.Mode, Format: sbomFormat(p), Required: p.Required, Generator: g}
+	sc.sbom, sc.generator = &s.SBOM.Generator, p.Generator
+	return sc, ""
 }

@@ -39,6 +39,9 @@ const DefaultScannerStartTimeout = 5 * time.Minute
 // that did not start; the pod relay recognises it.
 const scannerStartPrefix = "scanner sidecar did not start"
 
+// sbomStartPrefix starts the message of an sbom sidecar that did not start.
+const sbomStartPrefix = "SBOM generator sidecar did not start"
+
 // scannerStartReasons are the waiting reasons of a sidecar that will not
 // start without help. Anything else (such as PodInitializing) is normal.
 var scannerStartReasons = map[string]bool{
@@ -46,16 +49,16 @@ var scannerStartReasons = map[string]bool{
 	"CreateContainerConfigError": true, "CrashLoopBackOff": true,
 }
 
-// scannerWaiting returns the waiting reason of the scanner sidecar of
-// pod when it is one of scannerStartReasons and the sync container cannot
-// have started (the pod is Pending). A sidecar that dies in the middle of a
+// scannerWaiting returns the waiting reason of the Trivy sidecar (scanner
+// or sbom) of pod when it is one of scannerStartReasons and the sync
+// container cannot have started (the pod is Pending). A sidecar that dies in the middle of a
 // run is a scan error, reported by the Job itself.
 func scannerWaiting(pod *corev1.Pod) string {
 	if pod.Status.Phase != corev1.PodPending {
 		return ""
 	}
 	for _, s := range pod.Status.InitContainerStatuses {
-		if w := s.State.Waiting; s.Name == scannerContainer && w != nil && scannerStartReasons[w.Reason] {
+		if w := s.State.Waiting; (s.Name == scannerContainer || s.Name == sbomContainer) && w != nil && scannerStartReasons[w.Reason] {
 			return w.Reason
 		}
 	}
@@ -72,12 +75,13 @@ func scannerStartFailure(pod *corev1.Pod, now time.Time, grace time.Duration) st
 	return scannerWaiting(pod)
 }
 
-// scannerStart deletes the unfinished Jobs of m whose scanner sidecar does
+// scannerStart deletes the unfinished Jobs of m whose Trivy sidecar does
 // not start, so the CronJob retries on its next schedule, and says so on
 // the mirror, its target and (through the mirror) the pods that use it.
 // Nothing was copied by such a run, so this stays fail-closed. It returns
 // when to look again while a sidecar is failing within its grace period.
-func (r *ArtifactMirrorReconciler) scannerStart(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, ev *pending) (time.Duration, error) {
+// The VulnerabilityGate condition is set only when gated.
+func (r *ArtifactMirrorReconciler) scannerStart(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, gated bool, ev *pending) (time.Duration, error) {
 	grace := r.ScannerStartTimeout
 	if grace <= 0 {
 		grace = DefaultScannerStartTimeout
@@ -121,9 +125,15 @@ func (r *ArtifactMirrorReconciler) scannerStart(ctx context.Context, t *mirrorv1
 			} else if err != nil {
 				return 0, err
 			}
-			msg := fmt.Sprintf("%s (%s); sync Job deleted, nothing copied", scannerStartPrefix, reason)
-			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{Type: ConditionVulnerabilityGate, Status: metav1.ConditionFalse,
-				Reason: ReasonScannerUnavailable, Message: msg, ObservedGeneration: m.Generation})
+			prefix := sbomStartPrefix
+			if gated {
+				prefix = scannerStartPrefix
+			}
+			msg := fmt.Sprintf("%s (%s); sync Job deleted, nothing copied", prefix, reason)
+			if gated {
+				meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{Type: ConditionVulnerabilityGate, Status: metav1.ConditionFalse,
+					Reason: ReasonScannerUnavailable, Message: msg, ObservedGeneration: m.Generation})
+			}
 			ev.add(corev1.EventTypeWarning, ReasonScannerUnavailable, "Sync", msg)
 			r.Recorder.Eventf(t, nil, corev1.EventTypeWarning, ReasonScannerUnavailable, "Sync", "%s", msg)
 			scannerStartFailures.WithLabelValues(t.Name, reason).Inc()

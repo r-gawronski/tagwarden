@@ -141,7 +141,7 @@ func TestGatedRenderGolden(t *testing.T) {
 		{name: "perjob-external", target: func(tg *mirrorv1alpha1.ClusterMirrorTarget) {
 			tg.Spec.AutoMirror.VulnerabilityGate.Scanner = &mirrorv1alpha1.ScannerSpec{
 				URL: externalScanner, Image: trivyImage, Version: trivyVersion,
-				JavaDB: mirrorv1alpha1.JavaDBPerJob, JavaDBRepository: "registry.example.internal:8443/platform/trivy-java-db:1",
+				JavaDB: mirrorv1alpha1.JavaDBPerJob, JavaDBRepository: testJavaDBRepo,
 				Storage:           new(resource.MustParse("30Gi")),
 				TokenSecretRef:    &mirrorv1alpha1.TokenSecretKeyRef{Name: externalToken},
 				CABundleSecretRef: &mirrorv1alpha1.SecretKeyRef{Name: "scanner-ca", Key: caKey},

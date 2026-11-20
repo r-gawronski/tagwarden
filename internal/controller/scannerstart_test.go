@@ -67,6 +67,7 @@ func TestScannerStartFailure(t *testing.T) {
 		{"running sidecar", pod(old, corev1.PodPending, corev1.ContainerStatus{Name: scannerContainer,
 			State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}), ""},
 		{"no status yet", pod(old, corev1.PodPending), ""},
+		{"sbom sidecar", pod(old, corev1.PodPending, corev1.ContainerStatus{Name: sbomContainer, State: waiting("ErrImagePull").State}), "ErrImagePull"},
 	} {
 		if got := scannerStartFailure(c.pod, now, grace); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)

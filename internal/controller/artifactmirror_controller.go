@@ -251,6 +251,9 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	}
 	gated := gateOf(&t) != nil && isGenerated(&t, m)
 	gateConditions(m, gated, sc, ev)
+	if sc, msg = sbomSidecar(&t, m, &s, sc, r.Scanner); msg != "" {
+		return notReady(ReasonSBOMNotConfigured, msg)
+	}
 	spec, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return ctrl.Result{}, err
@@ -315,24 +318,27 @@ func (r *ArtifactMirrorReconciler) reconcile(ctx context.Context, m *mirrorv1alp
 	if pruneHeld {
 		notePruneHeld(m)
 	}
-	return r.syncRequestAndWatch(ctx, &t, m, cj, sc != nil, ev)
+	return r.syncRequestAndWatch(ctx, &t, m, cj, sc, ev)
 }
 
-// syncRequestAndWatch handles a sync request and, for a gated mirror,
-// checks that the scanner sidecars start and starts re-scans.
-func (r *ArtifactMirrorReconciler) syncRequestAndWatch(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, cj *batchv1.CronJob, scanning bool, ev *pending) (ctrl.Result, error) {
+// syncRequestAndWatch handles a sync request, checks that the Trivy
+// sidecar sc starts, and for a gated mirror starts re-scans.
+func (r *ArtifactMirrorReconciler) syncRequestAndWatch(ctx context.Context, t *mirrorv1alpha1.ClusterMirrorTarget, m *mirrorv1alpha1.ArtifactMirror, cj *batchv1.CronJob, sc *sidecar, ev *pending) (ctrl.Result, error) {
 	var wait time.Duration
-	if scanning {
+	if sc != nil {
 		var err error
-		if wait, err = r.scannerStart(ctx, t, m, ev); err != nil {
+		if wait, err = r.scannerStart(ctx, t, m, sc.gate != nil, ev); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 	res, err := r.syncNow(ctx, t, m, cj, ev)
-	if err != nil || !scanning {
+	if err != nil || sc == nil {
 		return res, err
 	}
 	res = sooner(res, ctrl.Result{RequeueAfter: wait})
+	if sc.gate == nil {
+		return res, nil
+	}
 	rres, err := r.rescan(ctx, t, m, cj, ev)
 	return sooner(res, rres), err
 }
