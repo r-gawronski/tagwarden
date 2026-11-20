@@ -1,6 +1,6 @@
 # SBOM generation and enforcement for mirrored images
 
-Status: Approved (2026-11-04), step 0 done, steps 1 to 5 implemented. Issue #69. Builds on the vulnerability gate (#21,
+Status: Approved (2026-11-04), step 0 done, steps 1 to 6 implemented, step 7 in part. Issue #69. Builds on the vulnerability gate (#21,
 `docs/design/vulnerability-gate.md`) and reuses its Trivy sidecar.
 
 ## Goal
@@ -601,12 +601,24 @@ Each step is a PR with tests first.
    - An `sbom` sidecar that does not start sets `SBOM=False`,
      `GenerationFailed`.
    - The Synced message counts `SBOM failed for <n>` tags.
-6. **e2e on kind.** `Generate` attaches a CycloneDX referrer per platform
+6. **e2e on kind.** Done (`test/e2e/sbom_test.go`, label `sbom`). `Generate` attaches a CycloneDX referrer per platform
    of a multi-arch image; `required: true` with a failing generator
    publishes nothing and reports why; an `ArtifactMirror` cannot weaken the
    target policy.
+   Notes from the implementation:
+   - The tests run with `make test-e2e`, not the gate job: the generator
+     needs the pinned Trivy image on the nodes but no DB.
+   - The failing generator is real Trivy on an image whose arm64 layer is
+     not a tar archive ("failed to extract the archive"), so the whole
+     index stays unpublished.
+   - Backfill is covered: a tag mirrored without a policy gets its SBOMs
+     once the target turns the policy on, and the tag does not move.
 7. **Docs.** Platform guide, install and NetworkPolicy notes, threat model
-   rows, consumer-side check with `oras discover` and `trivy sbom`.
+   rows, consumer-side check with `oras discover` and `trivy sbom`. Partly done: `features.md` (policy,
+   status, consumer check with `oras discover` and `crane`),
+   `install.md` (Generate SBOMs), `network-policies.md` (SBOM sync pods),
+   threat model T11, T12, T34 and T40. A longer platform guide and
+   `trivy sbom` examples remain.
 8. **Signing.** Key from a Secret, signed attestation, consumer examples
    for Kyverno and policy-controller.
 

@@ -50,6 +50,10 @@ the source, start sync Jobs with `kubectl create job --from=cronjob/...`
 and check the target, the referrers and the mirror status. CI needs no
 internet access beyond pulling images.
 
+The SBOM tests (Ginkgo label `sbom`) use the same infrastructure. Each kind
+node pulls the pinned Trivy image from ghcr.io as the generator. They need
+no vulnerability DB.
+
 `E2E_INTERNET=1 make test-e2e` also mirrors `registry.k8s.io/pause`
 through the proxy. `E2E_SKIP_IMAGE_BUILD=1` skips `make docker-build` and
 loads an image you built as `example.com/tagwarden:v0.0.1`. CI uses it to
