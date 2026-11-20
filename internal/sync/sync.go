@@ -27,7 +27,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"os"
 	"slices"
 	"time"
 	"unicode/utf8"
@@ -38,6 +37,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 
 	"github.com/r-gawronski/tagwarden/api/v1alpha1"
+	"github.com/r-gawronski/tagwarden/internal/sbom"
 	"github.com/r-gawronski/tagwarden/internal/tags"
 	"github.com/r-gawronski/tagwarden/internal/vuln"
 )
@@ -78,6 +78,9 @@ type Request struct {
 	MaxArtifactSize int64
 	// Gate scans tags before they are copied. Nil copies without a scan.
 	Gate *Gate
+	// SBOM attaches an SBOM to every image child of each tag. Nil attaches
+	// none; Rescan ignores it.
+	SBOM *SBOM
 	// DeleteTag deletes a target tag from one digest. Nil uses the OCI
 	// distribution tag delete. synccmd sets it for registries that refuse
 	// that, such as Harbor; it returns registry.ErrTagNotFound when the
@@ -103,9 +106,13 @@ type Artifact struct {
 	// Scan is the gate outcome; nil when the tag was not scanned.
 	Scan *Scan
 	// SkippedReferrers lists the digests of referrers and cosign tag-scheme
-	// artifacts the gate did not copy because they are not only
-	// signatures, attestations or SBOMs.
+	// artifacts not copied: with the gate, those that are not only
+	// signatures, attestations or SBOMs; always, upstream referrers that
+	// carry dev.tagwarden.* annotations.
 	SkippedReferrers []string
+	// SBOM is the SBOM outcome; nil without an SBOM policy or when the tag
+	// got no SBOM processing (blocked, or failed before it).
+	SBOM *SBOMResult
 	// Untag is what a re-scan did with a tag with findings.
 	Untag v1alpha1.VulnerableTagAction
 }
@@ -134,7 +141,8 @@ type Result struct {
 	// Gate is the scanner check of a gated run, syncspec.GateOK or a scan
 	// error reason; empty when nothing was scanned.
 	Gate string
-	// JavaScanned means the Java DB was used, so JAR files were scanned.
+	// JavaScanned means the Java DB was used, so JAR files were scanned
+	// (by the gate when it is on, else by SBOM generation).
 	JavaScanned bool
 }
 
@@ -144,6 +152,11 @@ type syncer struct {
 	src, dst  *remote.Puller
 	pusher    *remote.Pusher
 	gate      *gateState
+	sbom      *sbomState
+	// laid is the layout of the tag being processed.
+	laid *laidOut
+	// javaTried and javaOK record the one Java DB fetch of the run.
+	javaTried, javaOK bool
 	// listed is the source tag listing of the run; nil when the policy
 	// lists only explicit tags.
 	listed []string
@@ -179,10 +192,20 @@ func Run(ctx context.Context, r Request) (Result, error) {
 			mutated = true
 			res.Errors = append(res.Errors, tag+": "+err.Error())
 		default:
-			res.Failed = append(res.Failed, Artifact{Tag: tag})
+			f := Artifact{Tag: tag}
+			if se := (*sbomError)(nil); errors.As(err, &se) {
+				f = se.a
+			}
+			res.Failed = append(res.Failed, f)
 			res.Errors = append(res.Errors, tag+": "+short(err))
 		}
 		stamp(&res, tag, time.Now())
+	}
+	if s.sbom != nil {
+		res.JavaScanned = s.sbom.javaScanned
+		if s.sbom.root != nil {
+			_ = s.sbom.root.Close()
+		}
 	}
 	if s.gate != nil {
 		res.Gate, res.JavaScanned = s.gate.reason, s.gate.javaScanned
@@ -197,6 +220,9 @@ func Run(ctx context.Context, r Request) (Result, error) {
 	}
 	if mutated {
 		errs = append(errs, ErrTagMutated)
+	}
+	if s.sbom != nil && s.sbom.unavailable {
+		errs = append(errs, ErrSBOMGeneratorUnavailable)
 	}
 	if len(res.Failed) > 0 {
 		errs = append(errs, fmt.Errorf("sync: %d of %d tags failed", len(res.Failed), len(selected)))
@@ -228,6 +254,12 @@ func newSyncer(r Request) (*syncer, error) {
 	s := &syncer{req: r}
 	if r.Gate != nil {
 		s.gate = &gateState{Gate: *r.Gate}
+	}
+	if b := r.SBOM; b != nil {
+		if !b.Format.Valid() || b.Mode != v1alpha1.SBOMModePreferUpstream && b.Mode != v1alpha1.SBOMModeGenerate {
+			return nil, fmt.Errorf("sync: SBOM mode %q, format %q", b.Mode, b.Format)
+		}
+		s.sbom = &sbomState{SBOM: *b}
 	}
 	for _, p := range r.RequiredPlatforms {
 		pl, err := v1.ParsePlatform(p)
@@ -325,6 +357,11 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 	}
 	a := Artifact{Tag: tag, Digest: src.Digest.String()}
 	overwrite := false
+	if s.gate != nil || s.sbom != nil {
+		defer s.dropLayout()
+	}
+	// Referrers copied and SBOMs attached for one artifact share a budget.
+	var budget int64
 
 	dst, err := resolve(ctx, s.dst, s.req.Target.Tag(tag))
 	switch {
@@ -339,7 +376,10 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 		}
 		// A blocked tag gets nothing more, also when it is already there.
 		if a.Scan == nil || !a.Scan.Block {
-			if a.Referrers, err = s.referrers(ctx, src.Digest, &a.SkippedReferrers); err != nil {
+			if s.sbom != nil {
+				a.SBOM = s.presentSBOMs(ctx, s.src, s.req.Source, a.Digest, &budget)
+			}
+			if a.Referrers, err = s.referrers(ctx, src.Digest, &a.SkippedReferrers, &budget); err != nil {
 				return err
 			}
 		}
@@ -354,6 +394,9 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 				return err
 			}
 		}
+		if s.sbom != nil && (a.Scan == nil || !a.Scan.Block) {
+			a.SBOM = s.presentSBOMs(ctx, s.dst, s.req.Target, a.Digest, &budget)
+		}
 		res.Skipped = append(res.Skipped, a)
 		return nil
 	case s.req.OnTagMutation == v1alpha1.OnTagMutationOverwrite:
@@ -362,7 +405,12 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 		res.Mutated = append(res.Mutated, a)
 		return fmt.Errorf("%w: target %s, upstream %s", ErrTagMutated, dst.Digest, src.Digest)
 	}
+	return s.copyTag(ctx, a, overwrite, res, &budget)
+}
 
+// copyTag copies the digest of a to the target, with its SBOMs and
+// referrers, and moves the tag last.
+func (s *syncer) copyTag(ctx context.Context, a Artifact, overwrite bool, res *Result, budget *int64) error {
 	desc, err := s.src.Get(ctx, s.req.Source.Digest(a.Digest))
 	if err != nil {
 		return fmt.Errorf("fetch source manifest: %w", err)
@@ -375,7 +423,6 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 	}
 	var from remote.Taggable = desc
 	if s.gate != nil {
-		defer func() { _ = os.RemoveAll(s.gate.LayoutDir) }()
 		if a.Scan, from, err = s.scan(ctx, desc, false); err != nil {
 			return err
 		}
@@ -384,13 +431,34 @@ func (s *syncer) tag(ctx context.Context, tag string, res *Result) error {
 			return nil
 		}
 	}
+	var sboms []sbomItem
+	if s.sbom != nil {
+		var t remote.Taggable
+		if t, sboms, a.SBOM, err = s.newSBOMs(ctx, desc, budget); err != nil {
+			return err
+		}
+		// Push what the SBOMs describe: the layout bytes.
+		if t != nil {
+			from = t
+		}
+		if a.SBOM.Reason != "" && s.sbom.Required {
+			return &sbomError{a}
+		}
+	}
 	if err := s.push(ctx, desc.Digest, from); err != nil {
 		return err
 	}
-	if a.Referrers, err = s.referrers(ctx, desc.Digest, &a.SkippedReferrers); err != nil {
+	if s.sbom != nil {
+		s.attachSBOMs(ctx, indexOf(desc), sboms, a.SBOM)
+		// The digest stays on the target untagged; the next run retries.
+		if a.SBOM.Reason != "" && s.sbom.Required {
+			return &sbomError{a}
+		}
+	}
+	if a.Referrers, err = s.referrers(ctx, desc.Digest, &a.SkippedReferrers, budget); err != nil {
 		return err
 	}
-	if err := s.pusher.Put(ctx, s.req.Target.Tag(tag), desc); err != nil {
+	if err := s.pusher.Put(ctx, s.req.Target.Tag(a.Tag), desc); err != nil {
 		return fmt.Errorf("tag target: %w", err)
 	}
 	if overwrite {
@@ -551,9 +619,11 @@ func (s *syncer) push(ctx context.Context, d v1.Hash, t remote.Taggable) error {
 }
 
 // referrers copies the OCI referrers of d and the cosign tag-scheme
-// artifacts sha256-<hex>.sig, .att and .sbom that the target lacks. It
-// returns how many the target holds afterwards.
-func (s *syncer) referrers(ctx context.Context, d v1.Hash, skipped *[]string) (int, error) {
+// artifacts sha256-<hex>.sig, .att and .sbom that the target lacks, within
+// the referrer budget of the artifact. Upstream referrers with
+// dev.tagwarden.* annotations are never copied: only Tagwarden may claim a
+// referrer as its own. It returns how many the target holds afterwards.
+func (s *syncer) referrers(ctx context.Context, d v1.Hash, skipped *[]string, budget *int64) (int, error) {
 	opts := append(slices.Clone(s.req.SourceOpts), remote.Reuse(s.src), remote.WithContext(ctx))
 	idx, err := remote.Referrers(s.req.Source.Digest(d.String()), opts...)
 	if err != nil {
@@ -564,7 +634,6 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash, skipped *[]string) (i
 		return 0, fmt.Errorf("list referrers: %w", err)
 	}
 	n := 0
-	var budget int64
 	for _, m := range im.Manifests {
 		// Check the target first: some registries count manifest GETs as pulls.
 		_, err := resolve(ctx, s.dst, s.req.Target.Digest(m.Digest.String()))
@@ -584,15 +653,22 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash, skipped *[]string) (i
 		}
 		// Without a referrers API ggcr reads the sha256-<hex> fallback tag,
 		// which may point at unrelated manifests. Keep only real referrers.
-		var mf struct{ Subject *v1.Descriptor }
+		var mf struct {
+			Subject     *v1.Descriptor
+			Annotations map[string]string
+		}
 		if err := json.Unmarshal(desc.Manifest, &mf); err != nil || mf.Subject == nil || mf.Subject.Digest != d {
+			continue
+		}
+		if sbom.Reserved(mf.Annotations) {
+			*skipped = append(*skipped, desc.Digest.String())
 			continue
 		}
 		if !s.ungatedArtifact(desc) {
 			*skipped = append(*skipped, desc.Digest.String())
 			continue
 		}
-		if err := s.checkReferrerSize(ctx, desc, &budget); err != nil {
+		if err := s.checkReferrerSize(ctx, desc, budget); err != nil {
 			return n, err
 		}
 		if !s.jsonArtifact(desc) {
@@ -629,7 +705,7 @@ func (s *syncer) referrers(ctx context.Context, d v1.Hash, skipped *[]string) (i
 			*skipped = append(*skipped, desc.Digest.String())
 			continue
 		}
-		if err := s.checkReferrerSize(ctx, desc, &budget); err != nil {
+		if err := s.checkReferrerSize(ctx, desc, budget); err != nil {
 			return n, err
 		}
 		if !s.jsonArtifact(desc) {
@@ -762,7 +838,6 @@ func (s *syncer) scanPresent(ctx context.Context, p *remote.Puller, repo name.Re
 	if err := s.checkSize(ctx, p, repo, desc); err != nil {
 		return nil, err
 	}
-	defer func() { _ = os.RemoveAll(s.gate.LayoutDir) }()
 	sc, _, err := s.scan(ctx, desc, true)
 	return sc, err
 }

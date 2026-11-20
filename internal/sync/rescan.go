@@ -90,6 +90,7 @@ func (s *syncer) rescanTag(ctx context.Context, tag string, res *Result) error {
 		return fmt.Errorf("check target tag: %w", err)
 	}
 	a := Artifact{Tag: tag, Digest: dst.Digest.String()}
+	defer s.dropLayout()
 	if a.Scan, err = s.scanPresent(ctx, s.dst, s.req.Target, a.Digest); err != nil {
 		return err
 	}

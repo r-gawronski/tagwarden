@@ -180,8 +180,9 @@ func checkGatedAudit(t *testing.T, out, auditAction string, verdict v1alpha1.Fin
 	}
 }
 
-// An ungated spec runs exactly as before: report version 1 without gate
-// fields, no scan fields in the audit, and the scan paths are never touched.
+// A spec without the gate or an SBOM policy runs exactly as before: report
+// version 1 without gate or SBOM fields, no scan or SBOM fields in the
+// audit, and the scan paths are never touched.
 func TestRunUngatedUnchanged(t *testing.T) {
 	src, dst := newRegistry(t, false), newRegistry(t, true)
 	pushImages(t, src, v110)
@@ -196,12 +197,13 @@ func TestRunUngatedUnchanged(t *testing.T) {
 	if err := json.Unmarshal([]byte(msg), &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"findings", "accepted", "scanErrors", "blocked", "gate", "javaScanned", "tagFindings"} {
+	for _, k := range []string{"findings", "accepted", "scanErrors", "blocked", "gate", "javaScanned", "tagFindings",
+		"sbomGenerated", "sbomUpstream", "sbomFailed", "sbomFailures"} {
 		if _, ok := raw[k]; ok {
 			t.Fatalf("ungated report has %s: %s", k, msg)
 		}
 	}
-	if raw["v"] != float64(syncspec.ReportVersion) || strings.Contains(out, `"scan"`) {
+	if raw["v"] != float64(syncspec.ReportVersion) || strings.Contains(out, `"scan"`) || strings.Contains(out, `"sbom"`) {
 		t.Fatalf("report %s\naudit %s", msg, out)
 	}
 	for _, d := range []string{e.opts.scanDir, filepath.Dir(e.opts.layoutDir)} {

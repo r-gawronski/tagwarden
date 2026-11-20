@@ -770,6 +770,9 @@ kubectl get clustermirrortarget registry \
 
 OCI referrers and cosign `.sig`, `.att` and `.sbom` tags are copied with
 each image, also later for tags already mirrored. Nothing to enable.
+Upstream referrers with annotations under `dev.tagwarden.` are never
+copied: only Tagwarden may claim a referrer as its own. The audit line
+lists them in `skippedReferrers`.
 
 ### Audit log
 
